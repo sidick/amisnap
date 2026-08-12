@@ -89,6 +89,41 @@ without relying on the bit.
   windowed, never fully resident); the encrypted/TLS cloud tier may
   document 8MB+.
 
+## Stack management (StackSwap)
+
+The Shell's default stack (as little as 4000-8000 bytes depending on the
+caller's `STACK` setting) and a Workbench icon's default stack tooltype
+are both far too small for this program, and an Amiga stack overflow is
+silent corruption, not a clean crash -- unacceptable under principle 1
+(a data-losing bug is fatal). AmiSnap does real recursion and deep call
+chains from day one: `scan.c`'s directory walk, BLAKE2s/manifest
+encoding call depth, and (later) chunking/crypto layered on top of I/O.
+
+Policy: **`main()` swaps to an explicitly allocated, generously sized
+stack via `StackSwap()` before any real work runs**, unconditionally,
+regardless of what stack it was launched with. Sized well above any
+measured watermark (start at 32KB, revisit once `scan.c`'s real
+recursion depth against a deep test tree is measured -- see below), one
+`AllocMem()`/`FreeMem()` pair per process lifetime, restored via a
+second `StackSwap()` before exit so DOS gets its own stack back on the
+way out. This lands with the Phase 1 CLI skeleton
+(`src/amiga/stackswap.c`/`.h`), not deferred to "later hardening" --
+every subsequent phase's code runs on top of it from the start rather
+than being retrofitted once something actually overflows.
+
+**Testing (host CI, not just on-target):** the CI container
+(`ghcr.io/sidick/amiga-dev`) already has `vamos` (amitools' m68k
+emulator, confirmed available there; already how sibling AmiAuth runs
+its asm crypto tests under `make test-host`). vamos can launch the
+cross-built `AmiSnap` binary directly with a deliberately tiny stack, so
+`test-host` gets a real regression test: run a deep-recursion operation
+(e.g. `scan` against a fixture tree many directories deep) under vamos
+first with the *unswapped* default stack size to confirm it fails
+predictably (or is skipped as N/A pre-StackSwap-landing), then with
+`StackSwap()` in place to confirm the same operation succeeds -- proving
+the swap actually happens and is sized adequately, without needing
+Copperline/Amiberry for this specific property.
+
 ## Architecture and module map
 
 ```
@@ -126,6 +161,10 @@ src/amiga/          m68k build only
                       applied metadata-last; degradation policy
                       (fail/skip/truncate+log)             [phase 1]
   dosio.c             DOS I/O for backend_dir on real volumes [phase 1]
+  stackswap.[ch]      StackSwap() to a generously sized allocated
+                      stack at process start -- see "Stack management"
+                      above; every other Amiga-side module runs on top
+                      of this from the start                [phase 1]
   socket.c            bsdsocket glue for webdav/s3         [phase 3]
   tls.c               soft-loaded AmiSSL, per-destination  [phase 3]
 
@@ -140,7 +179,8 @@ tools/
                                                            [phase 2]
 
 tests/              host vector/unit tests (test.h harness) + CI
-                    round-trip suite + Copperline/Amiberry on-target
+                    round-trip suite + vamos m68k-binary runs (stack
+                    swap, asm) + Copperline/Amiberry on-target
                     harnesses
 ```
 
@@ -191,9 +231,14 @@ Order of work within the phase:
    above; `list`.
 5. `restore` (full/subtree, alternate path, metadata-last) + `verify`
    (structural; `FULL` re-hashes) against the directory backend.
-6. Amiga side: `scan.c`, `restore_meta.c`, `dosio.c`, capability probe;
-   CLI with ReadArgs templates and RC codes.
-7. On-target harness: Copperline job snapshots a guest tree, host
+6. Amiga side: `stackswap.c` first (see "Stack management" above --
+   every module below runs on top of it, not the other way round),
+   then `scan.c`, `restore_meta.c`, `dosio.c`, capability probe; CLI
+   with ReadArgs templates and RC codes.
+7. vamos regression test (`test-host`) proving the stack swap actually
+   happens and covers `scan.c`'s real recursion depth against a deep
+   fixture tree, before any on-target work.
+8. On-target harness: Copperline job snapshots a guest tree, host
    asserts metadata fidelity via `.uaem` sidecars; Amiberry smoke test
    against a Samba share for the real-NAS path.
 
@@ -243,6 +288,12 @@ ClassAct GUI + ARexx, repository mirroring.
   snapshot/restore/prune/verify cycle against the directory backend,
   C↔Python cross-implementation check, and (from phase 3/5) container
   services (WebDAV, MinIO).
+- **Host CI, m68k binaries via vamos:** the cross-built `AmiSnap`
+  binary runs directly under amitools' vamos (already in
+  `ghcr.io/sidick/amiga-dev`, same tool sibling AmiAuth uses for its
+  asm crypto tests) with a controlled stack size -- the stack-swap
+  regression test above, and later the 68k asm crypto paths (phase
+  4's optimisation work) the same way AmiAuth validates theirs.
 - **On-target (Copperline):** deterministic boot, snapshot inside the
   guest, assert `.uaem` sidecar metadata on the host; deterministic
   `rtc_time` makes "byte-identical repository given identical input" a
