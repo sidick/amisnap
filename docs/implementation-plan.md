@@ -115,11 +115,23 @@ application) is V39+; on V37 it is simply unavailable, and restore's
 already-planned "owner applied where supported, reported as skipped
 where not" behavior covers this for free once the version check
 exists — no new degradation path needed, just gating the call.
-**Open, to verify when `scan.c` is actually written (not assumed
-now):** whether `ExAll()`'s `ED_OWNER` tag (the *read* side, capturing
-ownership into a snapshot) is available on V37, or is itself gated
-later — the NDK autodocs are the source of truth here, not this
-document's memory of them.
+**Resolved when `scan.c` was written (2026-08-12), confirmed against
+the real NDK, not assumed:** `ExAll()`'s `ED_OWNER` tag is V39
+(`dos/exall.h`: `ed_OwnerUID`/`ed_OwnerGID` are explicitly commented
+"new for V39", and the header states outright that V37 dos.library/
+filesystems return `ERROR_BAD_NUMBER` for it). But this is a
+**different, simpler case than a version-gated function call**:
+`ExAll()` itself exists at V37 and is just rejecting an unsupported
+parameter value at runtime — a normal, self-describing error, not a
+call past the end of a V37 jump table. `dos/exall.h` documents the
+exact sanctioned fallback itself: request `ED_OWNER`; on
+`ERROR_BAD_NUMBER`, retry the *whole* call with `ED_COMMENT`. `scan.c`
+implements exactly that (once per volume, not per entry) rather than a
+version check — a second, distinct pattern worth keeping alongside the
+version-check one above: **"function may not exist -> check the
+library version before calling" vs. "function exists but may reject
+this parameter -> check the documented return code and retry."** Both
+are real, and picking the right one matters.
 
 ## Minimum requirements
 
@@ -158,15 +170,24 @@ than being retrofitted once something actually overflows.
 **Testing (host CI, not just on-target):** the CI container
 (`ghcr.io/sidick/amiga-dev`) already has `vamos` (amitools' m68k
 emulator, confirmed available there; already how sibling AmiAuth runs
-its asm crypto tests under `make test-host`). vamos can launch the
-cross-built `AmiSnap` binary directly with a deliberately tiny stack, so
-`test-host` gets a real regression test: run a deep-recursion operation
-(e.g. `scan` against a fixture tree many directories deep) under vamos
-first with the *unswapped* default stack size to confirm it fails
-predictably (or is skipped as N/A pre-StackSwap-landing), then with
-`StackSwap()` in place to confirm the same operation succeeds -- proving
-the swap actually happens and is sized adequately, without needing
-Copperline/Amiberry for this specific property.
+its asm crypto tests under `make test-host`) -- confirmed working for
+real by running the cross-built `AmiSnap` binary under `vamos -C 020`
+(the `-C <cpu>` flag is required; vamos's default CPU model alerts and
+aborts even a bare "hello world"). **Revised after actually trying
+this against `scan.c` (2026-08-12):** vamos's own Python dos.library
+emulation does NOT implement `AllocDosObject(DOS_EXALLCONTROL,...)` or
+`Info()` (confirmed via vamos's own diagnostic messages -- "unsupported
+type=1/DOS_EXALLCONTROL" -- not a guess), so `ExAll()`-based directory
+walking, and therefore this section's original plan to exercise
+`scan.c`'s real recursion depth under vamos, cannot run there at all.
+`Lock()`/`Examine()`/`Open()`/`Write()`/`Close()` DO work under vamos
+(confirmed via real execution), so vamos remains useful for testing
+simpler dos.library call sequences and for `stackswap.c`'s own
+mechanism (allocate/swap/run/swap-back, verifiable without any
+ExAll-shaped operation at all) -- but the deep-recursion-against-a-
+real-scan regression test originally envisioned here moves to item 7's
+Copperline/Amiberry harness, which runs the real ROM and has no
+stub-coverage gaps to work around.
 
 ## Architecture and module map
 
@@ -236,10 +257,52 @@ src/core/           portable engine (host CI runs all of it)
                                                           [phase 3/5]
 
 src/amiga/          m68k build only
-  scan.c              ExAll()/Examine() volume walk producing the
-                      core's neutral entry records; long-name + ED_OWNER
-                      sized buffers; per-volume capability probe
-                      (DosType, name length, owner support) [phase 1]
+  scan.c              ExAll()/Examine()/Info()/Lock() volume walk
+                      producing meta.h's entry records, depth-first
+                      directories-before-contents (matching the
+                      manifest's own required order). Every struct
+                      field/constant/version floor verified against
+                      the real NDK before writing code (not memory) --
+                      including a genuine 68k signedness bug
+                      (STRPTR/TEXT* are unsigned char* on this target;
+                      libnix's strlen() wants char*) that only the
+                      cross-build's -Werror caught, invisible from a
+                      host build. Verification status, precisely:
+                      compiles+links clean; Lock()/Examine() confirmed
+                      via REAL execution under `vamos -C 020` against
+                      RAM:; Info()/AllocDosObject(DOS_EXALLCONTROL)/
+                      ExAll() are NOT supported by vamos's own Python
+                      dos.library emulation (confirmed via vamos's own
+                      diagnostic messages, not a bug in this code) --
+                      so the actual directory-walk logic remains
+                      cross-build-verified only, pending item 7's
+                      Copperline/Amiberry harness (real ROM execution,
+                      no stub-coverage gaps) for genuine confirmation.
+                      Two explicit, tracked gaps, not silent: (1)
+                      soft/hard links are detected (ST_SOFTLINK/
+                      ST_LINKDIR/ST_LINKFILE, verified against
+                      dos/dosextens.h -- note ST_SOFTLINK=3 is
+                      *positive*, "looks like dir, but may point to a
+                      file!", so naive type>0-means-directory logic
+                      would have silently misclassified it) but not
+                      captured as entries -- ReadLink()'s msgport-level
+                      packet contract and hard-link source resolution
+                      aren't implemented; counted via
+                      result->links_skipped, symmetric with restore.c's
+                      own gap. (2) The root directory's own owner
+                      fields are never populated, even on a volume that
+                      supports ownership -- the ED_OWNER/ED_COMMENT
+                      capability negotiation happens inside the
+                      recursive walk, after the root's own entry is
+                      already emitted; fixing this cleanly needs a
+                      small interface change (thread a pre-negotiated
+                      type into the walk, or negotiate before emitting
+                      root) deferred rather than rushed here.
+                      maxnamelen is deliberately observational (the
+                      longest name actually seen this scan), not an
+                      invasive probe that writes a test file to the
+                      volume being backed up -- a backup tool must
+                      never mutate its source.                [done]
   restore_meta.c      SetProtection/SetComment/SetFileDate/SetOwner,
                       applied metadata-last; degradation policy
                       (fail/skip/truncate+log)             [phase 1]
@@ -410,12 +473,27 @@ Order of work within the phase:
    (see its own module-map entry) but stays pending item 7's on-target
    confirmation. Remaining: `scan.c`, `restore_meta.c`, capability
    probe; CLI with ReadArgs templates and RC codes.
-7. vamos regression test (`test-host`) proving the stack swap actually
-   happens and covers `scan.c`'s real recursion depth against a deep
-   fixture tree, before any on-target work.
+   **`scan.c` done** (the walk itself; capability-probe caveats and two
+   explicit gaps recorded in its own module-map entry above). A real,
+   if partial, execution-verification milestone along the way: trying
+   to run it under vamos (rather than assuming the earlier-planned
+   vamos regression test would just work) surfaced that vamos's own
+   dos.library emulation doesn't implement `ExAll()`'s prerequisites at
+   all -- see the "Stack management" testing section above for what
+   this changes.
+7. vamos regression test (`test-host`) covering `stackswap.c`'s own
+   mechanism against a deep (but safely bounded -- see "Stack
+   management" above on why deliberately triggering a real overflow is
+   unsafe to test) recursive operation that doesn't depend on
+   `ExAll()`, since vamos can't run that. `scan.c`'s own real recursion
+   depth is verified on-target instead (item 8), not under vamos.
 8. On-target harness: Copperline job snapshots a guest tree, host
    asserts metadata fidelity via `.uaem` sidecars; Amiberry smoke test
-   against a Samba share for the real-NAS path.
+   against a Samba share for the real-NAS path. This is also where
+   `scan.c`'s actual directory-walk logic (`ExAll`/`Info`/
+   `AllocDosObject(DOS_EXALLCONTROL)`, none exercisable under vamos)
+   and `backend_dir.c`'s real filesystem I/O get their first genuine
+   execution confirmation, not just a cross-build.
 
 Gate: snapshot → wipe → restore on FFS is metadata-bit-perfect in the
 emulator harness; 10k-file unchanged run under a minute on emulated
@@ -466,9 +544,14 @@ ClassAct GUI + ARexx, repository mirroring.
 - **Host CI, m68k binaries via vamos:** the cross-built `AmiSnap`
   binary runs directly under amitools' vamos (already in
   `ghcr.io/sidick/amiga-dev`, same tool sibling AmiAuth uses for its
-  asm crypto tests) with a controlled stack size -- the stack-swap
-  regression test above, and later the 68k asm crypto paths (phase
-  4's optimisation work) the same way AmiAuth validates theirs.
+  asm crypto tests, and confirmed to need `-C <cpu>` explicitly) with
+  a controlled stack size -- the stack-swap regression test above, and
+  later the 68k asm crypto paths (phase 4's optimisation work) the
+  same way AmiAuth validates theirs. Confirmed working: `Lock()`/
+  `Examine()`/`Open()`/`Write()`/`Close()`. Confirmed NOT implemented
+  by vamos's own dos.library emulation, so anything needing them is
+  cross-build-verified only until item 8's real on-target harness:
+  `Info()`, `AllocDosObject(DOS_EXALLCONTROL,...)`, `ExAll()`.
 - **On-target (Copperline):** deterministic boot, snapshot inside the
   guest, assert `.uaem` sidecar metadata on the host; deterministic
   `rtc_time` makes "byte-identical repository given identical input" a
