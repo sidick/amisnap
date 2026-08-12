@@ -129,12 +129,19 @@ Copperline/Amiberry for this specific property.
 ```
 src/core/           portable engine (host CI runs all of it)
   xxhash32.[ch]       change-detection hash              [done]
-  blake2s.[ch]        integrity hash (RFC 7693)          [phase 1]
-  meta.[ch]           metadata record model: the tag-based, extensible
-                      per-path record (protection, comment, datestamp,
-                      owner, links) + encode/decode       [phase 1]
-  manifest.[ch]       snapshot manifest: paths + metadata + content
-                      refs; serialize/parse               [phase 1]
+  blake2s.[ch]        integrity hash (RFC 7693)          [done]
+  tlv.[ch]            shared big-endian TLV framing (write buffer,
+                      read cursor, scalar/string codecs, the
+                      critical-tag rule) -- format.md "TLV encoding"
+                      and "Conventions"; meta.c and (later) manifest.c
+                      both build on this                  [done]
+  meta.[ch]           metadata record model: REC_ENTRY, the tag-based,
+                      extensible per-path record (protection, comment,
+                      datestamp, owner, links) + encode/decode; 500-case
+                      random round-trip property test      [done]
+  manifest.[ch]       snapshot manifest: REC_SNAP/REC_VOLUME/REC_END +
+                      the REC_ENTRY sequence meta.c encodes/decodes;
+                      serialize/parse a whole manifest      [phase 1]
   index.[ch]          local snapshot index: streamed compare of an
                       ExAll-shaped walk against the last snapshot;
                       the skip rule lives here            [phase 1]
