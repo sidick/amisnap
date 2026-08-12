@@ -686,33 +686,49 @@ Order of work within the phase:
      installed README, which only describes the *capability*
      ("protection bits/comments/datestamps in `.uaem` sidecars"), never
      the byte format; no sibling repo has ever needed to parse one.
-     Building an automated assertion on an unverified, reverse-
-     engineered format would be exactly the kind of guess house rule 6
-     warns against. Instead: a small `readback` helper `Examine()`s the
-     restored tree and prints observed protection/comment/date/owner
-     into a results file on the host mount; the host script pattern-
-     matches that as plain text -- the same proven technique
-     `amipilot`/`amiauth` already use for their own assertions. `.uaem`
-     inspection stays a worthwhile secondary check later (a genuinely
-     independent verification channel, outside AmiSnap's own
-     reporting) once its format is empirically understood, not a
-     blocker for the first working harness. Checked WinUAE's own
-     source (`~/src/WinUAE/fsdb.cpp`) for a possible shortcut: its
-     classic mechanism is a *different* thing than Copperline's --
-     `_UAEFSDB.___`, one shared binary database per directory (not
-     Copperline's per-file `.uaem` naming), with a record format
-     documented directly in the source comment (`Offset 0, 1 byte,
-     valid; Offset 1, 4 bytes, mode; Offset 5, 257 bytes, aname;
-     Offset 263, 257 bytes, nname; Offset 519, 81 bytes, comment` --
-     600 bytes total, notably **no datestamp field**, since WinUAE
-     reads that from the host file's own mtime rather than a side
-     channel). Useful comparative context (confirms protection+comment
-     are the two fields with no native host equivalent, and that
-     datestamp handling commonly piggybacks on host mtime) but not
-     Copperline's actual byte format -- a genuinely independent, newer
-     emulator, almost certainly a different design. Copperline's own
-     source, not WinUAE's, is where the real answer lives if `.uaem`
-     inspection is ever pursued.
+     **Revised (2026-08-13):** the Amiberry project's own wiki
+     ("Host-Directory-Filesystem-Metadata") documents the `.uaem`
+     format precisely, and it's simple enough to change the plan --
+     one per-file, **plain-text** sidecar (`<name>.uaem`), one line:
+     `----rwed 2024-03-15 14:30:22.50 optional file comment` -- an
+     8-character HSPARWED-style protection flag string (`-` for unset),
+     a `YYYY-MM-DD HH:MM:SS.CC` (centisecond) timestamp, then a
+     free-form comment to end of line. No magic number, no binary
+     layout, no owner/UID field. Documented as the FS-UAE-originated
+     convention Amiberry adopted for interop ("host directory trees
+     prepared for FS-UAE... should work directly when mounted in
+     Amiberry"), matching this plan's own earlier claim that WinUAE/
+     Amiberry/Copperline converged on the same `.uaem` naming -- almost
+     certainly the same text format for the same interop reason, though
+     that's still an inference about Copperline specifically (the wiki
+     documents Amiberry, not Copperline) and needs empirical
+     confirmation against a real Copperline-written `.uaem` file before
+     any parser is trusted, not assumed correct from a different tool's
+     docs alone (house rule 6). Checked WinUAE's own source
+     (`~/src/WinUAE/fsdb.cpp`) too, on the chance it would shortcut
+     this further: its classic mechanism is a genuinely different,
+     older design -- `_UAEFSDB.___`, one shared *binary* database per
+     directory (not per-file), a documented 600-byte fixed record
+     (`valid` + `mode` + `aname` + `nname` + `comment`, no datestamp
+     field at all -- WinUAE reads that from the host file's own mtime
+     instead). Useful only as background (confirms protection+comment
+     are the two fields with no native host equivalent across every
+     variant of this idea); not what Copperline actually uses.
+
+     **Given the format is this simple, run both checks as primary,
+     not one deferred behind the other** (per explicit direction): the
+     `readback` helper (`Examine()`-based, printed to a host-mount
+     results file) and direct `.uaem` parsing are complementary, not
+     redundant -- `.uaem` is a genuinely independent verification
+     channel outside AmiSnap's own reporting (catches a bug where
+     AmiSnap's restore_meta.c *thinks* it succeeded but didn't, the
+     exact class of gap vamos's own incomplete SetComment/SetProtection
+     stubs already surfaced once), while `readback` is the only path to
+     owner/UID-GID fidelity (`.uaem` has no such field per the
+     documented format) and exercises the real `Examine()` call AmiSnap
+     itself depends on. A plain-text one-line format is cheap to parse
+     from the host side (`awk`/a few lines of Python), so there's no
+     real cost to keeping both.
    - **AmiSnap output capture: `LOG=<path>` CLI option** (decided over
      relying on Startup-Sequence `>` redirection, which is probably
      fine for a minimal boot -- the one sibling-repo gotcha found
