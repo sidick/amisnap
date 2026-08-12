@@ -1,0 +1,68 @@
+# Copperline machine profile for AmiSnap's Phase 1 performance gate
+# (implementation-plan.md: "10k-file unchanged run under a minute on
+# emulated 68030 without archive-bit help").
+#
+# 68030 at its documented reference clock (docs/proposal.md's CPU
+# budget table: "68030/50", the realistic mid-range target) -- not the
+# 68020 floor run.sh/run-ffs.sh use elsewhere, since this gate is
+# specifically about 68030-class performance. warp_speed stays "max":
+# it only skips host-side real-time pacing/vsync waits, not emulated
+# CPU cycle accuracy, so it doesn't affect what's being measured (the
+# guest's own DateStamp()-measured elapsed *emulated* time) -- only how
+# fast the host can get there.
+#
+# run-perf.sh passes `--model A4000` on the command line (not settable
+# from this file -- confirmed empirically: --model/--cpu/etc. only
+# exist as CLI flags, not TOML keys). Required, not cosmetic: `--cpu
+# 68030` alone, with no --model, leaves this ROM's default chipset
+# profile (ECS, matching the other harnesses' A1200-shaped machine)
+# paired with a 68030 CPU -- confirmed empirically to hang before any
+# display output or HOSTFS handler starts, no matter how long
+# --benchmark-until runs (tried up to 180s). A4000 was a real,
+# historical 68030 Amiga model and boots cleanly with this exact ROM +
+# CPU combination -- unlike run.sh/run-ffs.sh's own `--model A1200`
+# avoidance (an EC020/Zorro-autoconfig-crowding gotcha, different
+# issue), this harness needs --model set, not omitted.
+#
+# Boot volume + Results: stay HOSTFS, same as run.sh -- but Source:/
+# Repo: also stay HOSTFS here (not real floppies like run-ffs.sh): a
+# 10,000-file tree doesn't remotely fit on an 880K ADF, and this gate is
+# about scan/hash/write throughput, not filesystem-semantics fidelity
+# (that's what run-ffs.sh already covers separately).
+
+[cpu]
+model = "68030"
+clock_mhz = 50.0
+
+[memory]
+chip = "1M"
+fast = "4M"   # headroom for 10k ExAll entries + scan.c's per-directory
+              # buffers alongside bulkstage/timeit/AmiSnap all resident
+
+[floppy]
+drives = 1    # DF0 wired but left empty -- Copperline requires at
+              # least one drive configured; nothing here uses it
+
+[[filesys]]
+path = "boot-perf"
+volume = "AmiSnapBoot"
+bootpri = 10
+
+[[filesys]]
+path = "source-perf"
+volume = "Source"
+bootpri = -128
+
+[[filesys]]
+path = "repo-perf"
+volume = "Repo"
+bootpri = -128
+
+[[filesys]]
+path = "results-perf"
+volume = "Results"
+bootpri = -128
+
+[emulation]
+power_on = true
+warp_speed = "max"

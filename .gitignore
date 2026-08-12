@@ -25,6 +25,14 @@ __pycache__/
 /tests/copperline/results/
 /tests/copperline/ffs/
 
+# run-perf.sh -- same story, its own boot volume + host mounts.
+/tests/copperline/boot-perf/C/AmiSnap
+/tests/copperline/boot-perf/C/bulkstage
+/tests/copperline/boot-perf/C/timeit
+/tests/copperline/source-perf/
+/tests/copperline/repo-perf/
+/tests/copperline/results-perf/
+
 # Emulator-generated Workbench/UAE mount metadata when the repo root is
 # mounted as an Amiga volume for on-target testing -- not source.
 /Disk.info

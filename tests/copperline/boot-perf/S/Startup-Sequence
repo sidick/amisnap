@@ -1,0 +1,4 @@
+bulkstage
+AmiSnap ACTION=SNAPSHOT SOURCE=Source: REPO=Repo: LOG=Results:snapshot1.log
+timeit AmiSnap ACTION=SNAPSHOT SOURCE=Source: REPO=Repo: LOG=Results:snapshot2.log
+AmiSnap ACTION=LIST REPO=Repo: LOG=Results:list.log

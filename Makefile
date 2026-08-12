@@ -105,7 +105,16 @@ $(COPPERLINE_FIXTURE_DIR)/readback: tests/copperline/fixture/readback.c | $(BUIL
 	@mkdir -p $(COPPERLINE_FIXTURE_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) $< -o $@
 
-copperline-fixtures: $(COPPERLINE_FIXTURE_DIR)/stage $(COPPERLINE_FIXTURE_DIR)/readback
+$(COPPERLINE_FIXTURE_DIR)/bulkstage: tests/copperline/fixture/bulkstage.c | $(BUILD)/.dir
+	@mkdir -p $(COPPERLINE_FIXTURE_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) $< -o $@
+
+$(COPPERLINE_FIXTURE_DIR)/timeit: tests/copperline/fixture/timeit.c | $(BUILD)/.dir
+	@mkdir -p $(COPPERLINE_FIXTURE_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) $< -o $@
+
+copperline-fixtures: $(COPPERLINE_FIXTURE_DIR)/stage $(COPPERLINE_FIXTURE_DIR)/readback \
+	$(COPPERLINE_FIXTURE_DIR)/bulkstage $(COPPERLINE_FIXTURE_DIR)/timeit
 
 # Copperline on-target harness (docs/proposal.md "Toolchain and testing",
 # implementation-plan.md Phase 1 item 8): boots a minimal A1200/68020 from
@@ -120,9 +129,20 @@ copperline-fixtures: $(COPPERLINE_FIXTURE_DIR)/stage $(COPPERLINE_FIXTURE_DIR)/r
 # AmigaDOS floppy filesystems (OFS/FFS/FFS+International, via amitools'
 # xdftool) instead of Copperline's own HOSTFS pass-through. Skips cleanly
 # if xdftool isn't on PATH, same convention as the ROM check.
+#
+# run-perf.sh is Phase 1's own performance gate: "10k-file unchanged run
+# under a minute on emulated 68030 without archive-bit help" -- a real
+# 68030/50 emulated run (--model A4000, needed: bare --cpu 68030 with no
+# --model hangs before boot on this ROM's default chipset profile,
+# confirmed empirically), timed by the guest's own DateStamp() rather
+# than host wall-clock (accurate under Copperline's deterministic core
+# regardless of host speed/warp-speed pacing). Slower than the other two
+# on-target scripts (a several-minute --benchmark-until window) but
+# still skips cleanly on the same missing-ROM/missing-tool convention.
 test-target: m68k copperline-fixtures
 	sh tests/copperline/run.sh
 	sh tests/copperline/run-ffs.sh
+	sh tests/copperline/run-perf.sh
 
 # semgrep installs into a venv rather than the system/user Python, so
 # `make lint` doesn't need pip on PATH (bare `pip` doesn't exist on

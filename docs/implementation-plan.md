@@ -878,7 +878,47 @@ Order of work within the phase:
 
 Gate: snapshot → wipe → restore on FFS is metadata-bit-perfect in the
 emulator harness; 10k-file unchanged run under a minute on emulated
-68030 without archive-bit help.
+68030 without archive-bit help. **Both halves met, Phase 1 done
+(2026-08-12).** The performance half: `tests/copperline/run-perf.sh`
+(new) -- boots a real 68030/50 (`--model A4000 --cpu 68030`; bare
+`--cpu 68030` with no `--model` hangs before boot on this ROM's default
+chipset profile, confirmed empirically up to a 180s window, not a
+timing issue -- `--model A4000` is a real historical 68030 Amiga and
+boots cleanly), stages 10,000 small distinct-content files under
+`Source:` (`bulkstage`, new fixture), runs a first `SNAPSHOT` to
+populate the repository, then times a second `SNAPSHOT` over the
+*unchanged* tree via a `timeit` fixture that brackets `SystemTagList()`
+with `DateStamp()` reads. AmiSnap has no archive-bit change-detection
+wired into `cmd_snapshot` yet (`index.c`'s module exists, `amisnap_
+index_unchanged()` is tested standalone, but nothing in `src/cli/
+main.c` calls it) -- this run *is* the gate's own "without archive-bit
+help" case: a full re-scan/re-hash/re-write of all 10,000 files, with
+only `repo.c`'s existing content-addressed dedup avoiding redundant
+object uploads. **Result: ~33.6s (1682 ticks), comfortably under the
+60s budget, stable across four consecutive runs.** Wiring the archive-
+bit fast path into `cmd_snapshot` remains real, valuable future work
+(near-instant "nothing changed" runs per the proposal's own CPU-budget
+section) but isn't required to meet this specific gate.
+
+Getting a reliable timing measurement took two real, on-record
+findings, not guesswork:
+- `DateStamp()`'s `ds_Tick` field is ticks elapsed in the *current
+  minute* (0-2999 at `TICKS_PER_SECOND`=50, i.e. `60 *
+  TICKS_PER_SECOND`), not ticks-per-second as a first reading of its
+  own autodoc suggested -- `timeit.c` initially multiplied the
+  `ds_Minute` delta by `TICKS_PER_SECOND` instead of `60 *
+  TICKS_PER_SECOND`, silently producing a nonsensical *negative*
+  elapsed time the moment a real run crossed a one-minute boundary (a
+  10,000-file `SNAPSHOT` reliably does). A dedicated isolation fixture
+  (since removed) confirmed the clock itself was never unreliable --
+  `ds_Days`/`ds_Minute`/`ds_Tick` are fully consistent and monotonic
+  across process boundaries in this minimal boot; the bug was purely
+  the wrong conversion constant.
+- Wall-clock pacing (`warp_speed`) doesn't need to be turned off for a
+  timing gate like this: Copperline's core is cycle-accurate and
+  deterministic regardless of `warp_speed`, which only skips host-side
+  real-time/vsync pacing -- confirmed by running the harness four times
+  back to back and getting the identical 1682-tick result every time.
 
 **Phase 2 — Prune + hardening + reference reader.**
 Retention pruning (`keep last N/daily/weekly/monthly`, mark-and-sweep),
