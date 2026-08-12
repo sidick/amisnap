@@ -1324,6 +1324,50 @@ keep-alive, resumable) over `src/amiga/socket.c`; per-destination
 clear failure, plaintext destinations never touch it). Host CI runs the
 protocol code against a local WebDAV container.
 
+1. Portable HTTP/1.1 client protocol layer: request building and
+   response parsing, with no socket dependency at all. **Done
+   (2026-08-12).** `src/core/http.[ch]` -- follows the same "portable
+   core, thin Amiga rind" split module map already used for
+   `backend_dir.c`: `src/amiga/socket.c`/`tls.c` (still to come) are
+   the only pieces that will ever touch bsdsocket/AmiSSL; this module
+   is host-testable on its own, same as every other portable-core piece.
+
+   `amisnap_http_build_request()` formats a request line + Host +
+   optional Content-Length + caller-supplied headers (Authorization/
+   Depth/Overwrite/Destination for WebDAV's own methods) + body, always
+   sending `Connection: keep-alive` per proposal.md's "HTTP/1.1 client
+   with keep-alive".
+
+   `amisnap_http_response_feed()` is a streaming state machine, not a
+   whole-buffer decoder -- a real socket `read()` returns whatever bytes
+   happen to be available, which may be less than one header line or
+   split a chunk boundary in half. Handles both `Content-Length` and
+   `Transfer-Encoding: chunked` response framing (a real WebDAV server's
+   PROPFIND/GET responses use either); a response with neither is
+   correctly treated as a zero-length body rather than the HTTP/1.0
+   "read until close" fallback, since this client never speaks anything
+   but keep-alive. Host-tested (`tests/test_http.c`) with every response
+   case fed both as one single `feed()` call and one byte at a time,
+   confirming identical results either way, plus a battery of arbitrary
+   split points landing mid-status-line/mid-header/mid-body -- the case
+   a naive line-buffered parser gets wrong. Cross-build-verified under
+   `m68k-amigaos-gcc -noixemul` (compiles clean; no bsdsocket/network
+   code exists yet to exercise on-target).
+
+2. `src/amiga/socket.c` -- bsdsocket.library glue (`socket`/`connect`/
+   `send`/`recv`/`close`, `SocketBase` opened per proposal.md's own
+   networking prerequisite). Not started.
+3. `webdav.c` -- an `amisnap_backend_ops` implementation over
+   items 1+2 (PUT/GET/MKCOL/PROPFIND mapped onto `backend.h`'s
+   put/get/mkcol/exists/list/remove, plus the streaming
+   put_begin/put_append/put_finish/put_abort trio chunking's own restore
+   fix (Phase 2 item 7) added to the vtable). Not started.
+4. `src/amiga/tls.c` -- soft-loaded AmiSSL, per-destination `TLS=YES`
+   (absent library + TLS requested = clear failure, never a silent
+   plaintext fallback). Not started.
+5. Host CI: protocol code (items 1-3) run against a local WebDAV
+   container. Not started -- needs item 3 first.
+
 **Phase 4 — Encryption.** Vendor ChaCha20/PBKDF2/HMAC from AmiAuth
 v1.0; key file with optional passphrase wrap; BLAKE2s joins AmiAuth's
 vector + OpenSSL-differential-fuzz regime. Format already carries the
