@@ -39,6 +39,7 @@
 #include "amipath.h"
 #include "backend_dir.h"
 #include "index.h"
+#include "applyuaem.h"
 #include "prune.h"
 #include "repo.h"
 #include "restore.h"
@@ -782,6 +783,35 @@ static LONG cmd_prune(const char *repo, const char *snapid_arg, const LONG *keep
     return RETURN_OK;
 }
 
+/* --- applyuaem -------------------------------------------------------------- */
+
+/* Companion to `tools/amisnap_reader.py restore --uaem`: applies
+ * .uaem sidecars a host reader wrote (real AmigaDOS metadata that host
+ * couldn't apply itself) onto a tree that's now on real AmigaDOS --
+ * see src/amiga/applyuaem.h for the full rationale. */
+static LONG cmd_applyuaem(const char *source)
+{
+    amisnap_applyuaem_result result;
+    int rc;
+
+    if (!source) {
+        amilog_err("AmiSnap: APPLYUAEM needs SOURCE=<path>\n");
+        return RETURN_ERROR;
+    }
+
+    rc = amisnap_applyuaem_run(source, &result);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: APPLYUAEM of \"%s\" aborted (error %d) -- %lu applied, %lu failed "
+                        "before the failure\n",
+                source, rc, (unsigned long)result.applied, (unsigned long)result.failed);
+        return RETURN_FAIL;
+    }
+
+    amilog("ApplyUAEM %s: %lu applied, %lu failed\n",
+           source, (unsigned long)result.applied, (unsigned long)result.failed);
+    return result.failed > 0 ? RETURN_WARN : RETURN_OK;
+}
+
 /* --- restore ----------------------------------------------------------------- */
 
 static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_arg,
@@ -939,8 +969,11 @@ static int real_main(void *arg)
     } else if (str_ieq(action, "PRUNE")) {
         rc = cmd_prune((const char *)args[ARG_REPO], (const char *)args[ARG_SNAPID],
                         (const LONG *)args[ARG_KEEP_LAST]);
+    } else if (str_ieq(action, "APPLYUAEM")) {
+        rc = cmd_applyuaem((const char *)args[ARG_SOURCE]);
     } else {
-        amilog_err("AmiSnap: unknown ACTION \"%s\" -- expected SNAPSHOT, RESTORE, LIST, VERIFY, or PRUNE\n",
+        amilog_err("AmiSnap: unknown ACTION \"%s\" -- expected SNAPSHOT, RESTORE, LIST, VERIFY, "
+                       "PRUNE, or APPLYUAEM\n",
                    action ? action : "");
         rc = RETURN_ERROR;
     }

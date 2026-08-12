@@ -34,6 +34,11 @@ __pycache__/
 /tests/copperline/repo-perf/
 /tests/copperline/results-perf/
 
+# run-uaem.sh -- entirely self-contained under one work directory
+# (boot volume, sample repo, Source floppy ADF, results), not reusing
+# the checked-in boot/ tree the way run.sh/run-ffs.sh do.
+/tests/copperline/uaem-work/
+
 # Emulator-generated Workbench/UAE mount metadata when the repo root is
 # mounted as an Amiga volume for on-target testing -- not source.
 /Disk.info

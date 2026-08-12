@@ -136,8 +136,13 @@ $(COPPERLINE_FIXTURE_DIR)/modify: tests/copperline/fixture/modify.c | $(BUILD)/.
 	@mkdir -p $(COPPERLINE_FIXTURE_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) $< -o $@
 
+$(COPPERLINE_FIXTURE_DIR)/checkuaem: tests/copperline/fixture/checkuaem.c | $(BUILD)/.dir
+	@mkdir -p $(COPPERLINE_FIXTURE_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) $< -o $@
+
 copperline-fixtures: $(COPPERLINE_FIXTURE_DIR)/stage $(COPPERLINE_FIXTURE_DIR)/readback \
-	$(COPPERLINE_FIXTURE_DIR)/bulkstage $(COPPERLINE_FIXTURE_DIR)/timeit $(COPPERLINE_FIXTURE_DIR)/modify
+	$(COPPERLINE_FIXTURE_DIR)/bulkstage $(COPPERLINE_FIXTURE_DIR)/timeit $(COPPERLINE_FIXTURE_DIR)/modify \
+	$(COPPERLINE_FIXTURE_DIR)/checkuaem
 
 # Copperline on-target harness (docs/proposal.md "Toolchain and testing",
 # implementation-plan.md Phase 1 item 8): boots a minimal A1200/68020 from
@@ -162,10 +167,21 @@ copperline-fixtures: $(COPPERLINE_FIXTURE_DIR)/stage $(COPPERLINE_FIXTURE_DIR)/r
 # regardless of host speed/warp-speed pacing). Slower than the other two
 # on-target scripts (a several-minute --benchmark-until window) but
 # still skips cleanly on the same missing-ROM/missing-tool convention.
-test-target: m68k copperline-fixtures
+#
+# run-uaem.sh proves the .uaem round trip end to end across all three
+# pieces built for it: the C repository writer (build/gen_sample_repo,
+# same fixture make cross-check uses), the Python reference reader's
+# own `restore --uaem`, and AmiSnap's ACTION=APPLYUAEM
+# (src/amiga/applyuaem.c) applying the sidecars for real on a real FFS
+# floppy (deliberately not HOSTFS -- see that script's own header for
+# why HOSTFS's native .uaem awareness would make ApplyUAEM's own effect
+# unobservable). Depends on the same $(CROSS_GEN_BIN) make cross-check
+# builds, not on running that whole check again here.
+test-target: m68k copperline-fixtures $(CROSS_GEN_BIN)
 	sh tests/copperline/run.sh
 	sh tests/copperline/run-ffs.sh
 	sh tests/copperline/run-perf.sh
+	sh tests/copperline/run-uaem.sh
 
 # semgrep installs into a venv rather than the system/user Python, so
 # `make lint` doesn't need pip on PATH (bare `pip` doesn't exist on

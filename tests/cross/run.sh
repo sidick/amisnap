@@ -21,11 +21,12 @@ GEN="$ROOT/build/gen_sample_repo"
 READER="$ROOT/tools/amisnap_reader.py"
 REPO="$ROOT/build/cross-check-repo"
 DEST="$ROOT/build/cross-check-restored"
+UAEM_DEST="$ROOT/build/cross-check-restored-uaem"
 
 [ -e "$GEN" ] || { echo "FAIL: missing $GEN (run: make cross-check)" >&2; exit 2; }
 command -v python3 >/dev/null || { echo "FAIL: python3 not found" >&2; exit 2; }
 
-rm -rf "$REPO" "$DEST"
+rm -rf "$REPO" "$DEST" "$UAEM_DEST"
 SNAPID=$("$GEN" "$REPO")
 echo "generated snapshot: $SNAPID"
 
@@ -62,6 +63,25 @@ if [ ! -f "$DEST/empty.dat" ] || [ -s "$DEST/empty.dat" ]; then
     fail=1
 fi
 
+echo "--- restore --uaem ---"
+python3 "$READER" restore "$REPO" "$UAEM_DEST" --uaem > /dev/null
+
+# Values transcribed straight from tests/cross/gen_sample_repo.c's own
+# fixture data -- prot/date/comment for readme.txt (archive bit,
+# comment, owner -- owner has no .uaem field at all, a real, documented
+# limit of the format itself, not this check's problem) and Docs (no
+# comment at all -- E_COMMENT absent, so no trailing text, not even an
+# empty one).
+if [ ! -f "$UAEM_DEST/readme.txt.uaem" ] || \
+   ! grep -q "^---arwed 2024-07-18 00:10:00.40 a readme\$" "$UAEM_DEST/readme.txt.uaem"; then
+    echo "FAIL: readme.txt.uaem content mismatch"
+    fail=1
+fi
+if [ ! -f "$UAEM_DEST/Docs.uaem" ] || \
+   ! grep -q "^----rwed 2024-07-18 00:00:00.00\$" "$UAEM_DEST/Docs.uaem"; then
+    echo "FAIL: Docs.uaem content mismatch"
+    fail=1
+fi
 echo "--- corrupt an object, confirm --full independently catches it ---"
 OBJ=$(find "$REPO/objects" -type f | head -1)
 echo "corrupting $OBJ"

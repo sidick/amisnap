@@ -1172,7 +1172,53 @@ Amiga-specific metadata field rather than literally applying it.
    Confirmed passing inside `ghcr.io/sidick/amiga-dev` (CI's actual
    environment, not just macOS).
 
-6. **Deferred design note: a backup exclude list.** Raised in
+6. `.uaem` sidecars for metadata the Python reader can't apply, plus a
+   companion Amiga-side `ACTION=APPLYUAEM` to apply them for real.
+   **Done (2026-08-12)**, raised in discussion right after item 5's own
+   "can't apply metadata on a bare POSIX host" caveat: `restore --uaem`
+   now optionally writes a `<name>.uaem` sidecar next to each restored
+   entry -- the same FS-UAE/Amiberry/Copperline host-directory-
+   metadata convention item 8 already reverse-engineered and documented
+   (protection flags, `YYYY-MM-DD HH:MM:SS.CC` datestamp, optional
+   comment) -- so metadata a PC can't apply itself still survives the
+   round trip, either for a later emulator mount or for this new tool.
+   The exact HSPARWED bit-to-character mapping and centisecond math
+   were re-derived from real `dos/dos.h` `FIBB_*` values and checked
+   against three real captured Copperline `.uaem` lines from item 8
+   (not assumed from the letter names alone) before writing either
+   side.
+
+   `src/amiga/applyuaem.c` (`ACTION=APPLYUAEM SOURCE=<path>`) is the
+   from-scratch inverse on real AmigaDOS: walks a tree via classic
+   `Examine()`/`ExNext()` (simpler than `ExAll()` -- this only needs
+   filenames), finds every `.uaem` sidecar, and calls `SetComment()`/
+   `SetFileDate()`/`SetProtection()` (protection last, restore_meta.c's
+   own established ordering) on its sibling. The date parse needed real
+   calendar arithmetic AmigaOS/libnix has no library for at all --
+   Howard Hinnant's public-domain `days_from_civil` algorithm, the same
+   one flagged as the right tool for daily/weekly/monthly retention
+   (item 1) whenever that lands, used here for real for the first time.
+
+   **A genuine, not-obvious testing pitfall found while proving this
+   round trip**: an identical test run against Copperline's own HOSTFS
+   mount reported "0 applied" yet still showed perfectly correct
+   metadata -- not because `ApplyUAEM` did anything, but because
+   HOSTFS's own driver already interprets `.uaem` sidecars natively (the
+   same mechanism `run.sh`'s own `.uaem` inspection section already
+   relies on) and had synthesized the metadata before `ApplyUAEM` ever
+   ran, while also apparently not exposing the sidecar files themselves
+   to `ExNext()` at all. Confirmed live on a **real FFS floppy** instead
+   (no native `.uaem` awareness to confound the result): `ApplyUAEM`
+   reports "4 applied, 0 failed" and an independent `Examine()` (a new
+   `checkuaem` fixture) confirms every field -- protection, comment,
+   datestamp -- matches the original values exactly. Now a permanent
+   regression, `tests/copperline/run-uaem.sh` (wired into `test-target`):
+   generates the same known sample repo `make cross-check` uses,
+   restores it with `--uaem` via the Python reader, stages the result
+   onto a real FFS floppy via `xdftool`, runs `ApplyUAEM`, and asserts
+   the `Examine()` output exactly.
+
+7. **Deferred design note: a backup exclude list.** Raised in
    discussion (2026-08-12), not scheduled to a phase yet: a plain-text
    file (per-source-directory, or one global list, TBD) naming files/
    directories the user never wants backed up, read by `scan.c` before

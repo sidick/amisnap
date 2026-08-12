@@ -31,7 +31,7 @@ Subcommands:
   verify <repo> [--snapid ID] [--full]
                                      structural (default) or full
                                      (re-hash every object) verify
-  restore <repo> <dest> [--snapid ID] [--subtree PATH]
+  restore <repo> <dest> [--snapid ID] [--subtree PATH] [--uaem]
                                      reconstruct file content under
                                      dest; reports what metadata exists
                                      per entry (this host can apply
@@ -42,9 +42,24 @@ Subcommands:
                                      dropped, matching format.md's own
                                      "apply metadata as far as the
                                      target system allows, reporting
-                                     what it couldn't apply")
+                                     what it couldn't apply"). --uaem
+                                     additionally writes a <name>.uaem
+                                     sidecar next to each restored
+                                     entry (protection/datestamp/
+                                     comment, the FS-UAE/Amiberry/
+                                     Copperline host-directory-metadata
+                                     convention implementation-plan.md
+                                     already documents) -- not a
+                                     substitute for applying metadata,
+                                     but real Amiga metadata that
+                                     survives the round trip either
+                                     for a later emulator mount or for
+                                     `AmiSnap ACTION=APPLYUAEM` to
+                                     apply for real on a real Amiga
+                                     (src/cli/main.c)
 """
 import argparse
+import datetime
 import hashlib
 import os
 import struct
@@ -580,6 +595,80 @@ def describe_metadata(entry):
     return "; ".join(bits)
 
 
+# --------------------------------------------------------------------------
+# .uaem sidecars (implementation-plan.md's item 8: the FS-UAE-
+# originated, Amiberry/Copperline-shared host-directory-metadata
+# convention -- documented there from Amiberry's own wiki and confirmed
+# against real Copperline output during that work, not re-derived from
+# scratch here). One line: an 8-character HSPARWED-style protection
+# flag string ('-' for unset), a space, "YYYY-MM-DD HH:MM:SS.CC", then
+# an optional free-form comment to end of line.
+# --------------------------------------------------------------------------
+
+# (bitmask, display char, active_high) in left-to-right display order.
+# HSPA (dos/dos.h FIBB_HOLD.. FIBB_ARCHIVE, bits 7-4) show their letter
+# when SET; rwed (FIBB_READ..FIBB_DELETE, bits 3-0) are the classic
+# active-low permission bits and show their letter when CLEAR (i.e.
+# "allowed") -- confirmed against three real captured Copperline .uaem
+# lines during item 8's own work (e.g. prot=0x11 -- ARCHIVE|DELETE --
+# produced "---arwe-", the trailing dash being the SET delete bit), not
+# assumed from the bit names alone.
+_UAEM_PROT_ORDER = [
+    (0x80, "h", True),
+    (0x40, "s", True),
+    (0x20, "p", True),
+    (0x10, "a", True),
+    (0x08, "r", False),
+    (0x04, "w", False),
+    (0x02, "e", False),
+    (0x01, "d", False),
+]
+
+
+def prot_to_uaem_flags(prot):
+    out = []
+    for mask, letter, active_high in _UAEM_PROT_ORDER:
+        bit_set = bool(prot & mask)
+        show = bit_set if active_high else not bit_set
+        out.append(letter if show else "-")
+    return "".join(out)
+
+
+def datestamp_to_uaem_timestamp(date):
+    """AmigaOS DateStamp -> "YYYY-MM-DD HH:MM:SS.CC". `days` is days
+    since 1978-01-01 (Python's datetime handles the proleptic Gregorian
+    arithmetic correctly for any offset this format can produce, no
+    hand-rolled calendar math needed on the Python side -- unlike the
+    C/Amiga side, which has no datetime library at all).`mins` is
+    minutes past midnight; `ticks` is ticks (1/50s) past the CURRENT
+    MINUTE (confirmed the hard way earlier this project, not assumed:
+    ticks is 0-2999, not 0-49 -- see implementation-plan.md's Phase 2
+    performance-gate item). SS comes from ticks // 50, CC (centiseconds)
+    from (ticks % 50) * 2 -- verified against a real captured sample
+    (mins=123, ticks=7 -> "02:03:00.14": 123 = 2*60+3, 7*2=14)."""
+    d = datetime.date(1978, 1, 1) + datetime.timedelta(days=date["days"])
+    hh, mm = divmod(date["mins"], 60)
+    ss, rem_ticks = divmod(date["ticks"], 50)
+    cc = rem_ticks * 2
+    return "%04d-%02d-%02d %02d:%02d:%02d.%02d" % (d.year, d.month, d.day, hh, mm, ss, cc)
+
+
+def write_uaem_sidecar(dest_path, entry):
+    """Writes <dest_path>.uaem as a sibling of dest_path -- matching
+    real Copperline output exactly (e.g. a restored "Sub" directory's
+    metadata lives in "Sub.uaem" next to it, not inside it). Skipped
+    for the volume root entry by the caller (E_PATH ""): there is no
+    sibling location for the destination root's own sidecar, and real
+    Copperline never wrote one for a mount root either."""
+    flags = prot_to_uaem_flags(entry["prot"])
+    timestamp = datestamp_to_uaem_timestamp(entry["date"])
+    line = "%s %s" % (flags, timestamp)
+    if "comment" in entry:
+        line += " " + entry["comment"].decode("latin-1")
+    with open(dest_path + ".uaem", "w", encoding="latin-1", newline="\n") as f:
+        f.write(line + "\n")
+
+
 def cmd_restore(args):
     read_repo_header(args.repo)
     snapid = resolve_snapid(args.repo, args.snapid)
@@ -621,6 +710,9 @@ def cmd_restore(args):
                     out.write(read_object(args.repo, ref["hash"], ref["size"]))
             files += 1
 
+        if args.uaem and path:  # no sidecar for the root entry -- see write_uaem_sidecar
+            write_uaem_sidecar(dest_path, entry)
+
         print("%s: %s" % (path.decode("latin-1") or "(root)", describe_metadata(entry)))
 
     print("Restored %s: %d dirs, %d files, %d skipped" % (snapid, dirs, files, skipped))
@@ -647,6 +739,8 @@ def main(argv=None):
     p_restore.add_argument("dest")
     p_restore.add_argument("--snapid", default=None)
     p_restore.add_argument("--subtree", default=None)
+    p_restore.add_argument("--uaem", action="store_true",
+                            help="also write a .uaem metadata sidecar next to each restored entry")
     p_restore.set_defaults(func=cmd_restore)
 
     args = p.parse_args(argv)
