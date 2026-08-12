@@ -114,8 +114,15 @@ copperline-fixtures: $(COPPERLINE_FIXTURE_DIR)/stage $(COPPERLINE_FIXTURE_DIR)/r
 # skips cleanly (exit 0 with a SKIP message, not a false pass) when the
 # Kickstart ROM asset (nondistribution/roms/, gitignored) is absent, since
 # CI has no such licensed asset.
+#
+# run-ffs.sh is the real-FFS-floppy complement (implementation-plan.md's
+# item 8 "noted for later" follow-up): same pipeline, but against genuine
+# AmigaDOS floppy filesystems (OFS/FFS/FFS+International, via amitools'
+# xdftool) instead of Copperline's own HOSTFS pass-through. Skips cleanly
+# if xdftool isn't on PATH, same convention as the ROM check.
 test-target: m68k copperline-fixtures
 	sh tests/copperline/run.sh
+	sh tests/copperline/run-ffs.sh
 
 # semgrep installs into a venv rather than the system/user Python, so
 # `make lint` doesn't need pip on PATH (bare `pip` doesn't exist on

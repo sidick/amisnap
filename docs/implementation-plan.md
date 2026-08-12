@@ -805,11 +805,56 @@ Order of work within the phase:
    `Examine()` call and its `IoErr()` value.
    **Item 8 is now complete.**
 
-   **Noted for later, not yet started**: a second on-target harness
-   variant using a real FFS-formatted virtual floppy (rather than
-   Copperline's own custom HOSTFS handler) as a complementary check --
-   would catch any semantic gap between HOSTFS and genuine AmigaDOS
-   filesystem behavior that this harness alone can't see.
+   **Real-FFS floppy variant (2026-08-12): done** --
+   `tests/copperline/run-ffs.sh`, wired into `test-target` alongside
+   `run.sh`. Same pipeline (`stage` -> `SNAPSHOT` -> `LIST` -> `VERIFY
+   FULL` -> `RESTORE` -> `readback`), same binaries, same
+   `Source:`/`Repo:`/`Restored:` volume names -- only the backing volumes
+   move from Copperline's HOSTFS pass-through to genuine 880K AmigaDOS
+   floppy images, one freshly formatted per dostype via amitools' `xdftool`
+   (already pinned in `ghcr.io/sidick/amiga-dev`'s Dockerfile), mounted as
+   `[floppy.df0-2]`; boot/results stay on the existing HOSTFS mounts.
+   Passes for **OFS (DOS0), FFS (DOS1), FFS+International (DOS3)**.
+   Getting there found real, on-record findings, not harness bugs:
+   - `xdftool`'s own `create`+`format` must be two separate invocations --
+     chaining them in one call leaves the boot block's dos_type/checksum
+     unwritten (tested amitools 0.8.1).
+   - Floppy mounts default to `write_protected = true` (unlike
+     `[[filesys]]` HOSTFS mounts); a write to a write-protected real
+     AmigaDOS floppy pops a blocking system requester instead of a clean
+     DOS error, hanging the whole run silently until the benchmark timeout
+     -- `write_protected = false` must be set explicitly per floppy.
+   - **DOS5 (FFS+International+DirCache) is excluded from the default
+     loop, confirmed real via empirical isolation, not assumed**: the boot
+     hangs before Copperline's own HOSTFS handlers even start (no
+     "HOSTFS0: handler started" line, blank screen the whole run) --
+     consistent with Kickstart 3.1's ROM-resident FastFileSystem having no
+     DirCache support, the same "clicking drive" boot hang real hardware
+     shows for a dostype with no matching handler and no `L:` to load one
+     from in a minimal, no-Workbench boot. Worth retrying only if a future
+     phase adds an `L:FastFileSystem` asset to the boot volume.
+   - **A genuine, not-yet-fixed metadata gap this harness exists to catch,
+     found on its first real run**: the `Sub` directory's own protection
+     (archive bit) and datestamp come back wrong after restore on every
+     real FFS dostype tested -- confirmed independently by three separate
+     channels (AmiSnap's own restore report undercounting at 4/5,
+     `readback.c`'s live `Examine()`, and `xdftool unpack`'s own metadata
+     dump), all agreeing `Sub`'s protection reverted to 0 and its
+     datestamp jumped to "now" rather than the staged value, while every
+     *file* (including `Sub`'s own children) round-trips correctly. Root
+     cause not yet confirmed, but the leading theory given `restore.c`'s
+     current per-entry-immediate-callback ordering (`on_entry()` applies a
+     directory's own metadata via `on_entry_restored` right after
+     `mkcol()`, *before* descending into that directory's children) is
+     that real AmigaDOS FFS updates a directory's own datestamp (and
+     evidently something touches its protection too) when an entry is
+     later created inside it -- exactly the kind of real filesystem
+     side effect Copperline's own HOSTFS pass-through (which `run.sh`
+     alone would never catch this on) doesn't reproduce. Not fixed in
+     this pass -- restore.c's directory-metadata application may need to
+     move to *after* a directory's children are restored, not immediately
+     on creation. Tracked as a real, open correctness item, not silently
+     dropped.
 
 Gate: snapshot → wipe → restore on FFS is metadata-bit-perfect in the
 emulator harness; 10k-file unchanged run under a minute on emulated

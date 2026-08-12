@@ -23,6 +23,7 @@ __pycache__/
 /tests/copperline/repo/
 /tests/copperline/restored/
 /tests/copperline/results/
+/tests/copperline/ffs/
 
 # Emulator-generated Workbench/UAE mount metadata when the repo root is
 # mounted as an Amiga volume for on-target testing -- not source.
