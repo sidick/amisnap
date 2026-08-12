@@ -7,16 +7,13 @@
 
 typedef struct {
     amisnap_index *idx;
-    int failed;
 } build_ctx;
 
-static void on_entry_cb(void *user, const amisnap_entry_meta *entry)
+static int on_entry_cb(void *user, const amisnap_entry_meta *entry)
 {
     build_ctx *bc = (build_ctx *)user;
     amisnap_entry_meta copy;
     amisnap_content_ref *refs = NULL;
-
-    if (bc->failed) return;
 
     copy = *entry; /* path/comment/link still borrow into idx->raw, which
                      * outlives this entry -- only .content needs a real
@@ -25,7 +22,7 @@ static void on_entry_cb(void *user, const amisnap_entry_meta *entry)
 
     if (entry->content_count > 0) {
         refs = (amisnap_content_ref *)malloc(entry->content_count * sizeof(*refs));
-        if (!refs) { bc->failed = 1; return; }
+        if (!refs) return AMISNAP_ERR_NOMEM; /* abort decode immediately -- see manifest.h's visitor contract */
         memcpy(refs, entry->content, entry->content_count * sizeof(*refs));
     }
     copy.content = refs;
@@ -34,11 +31,12 @@ static void on_entry_cb(void *user, const amisnap_entry_meta *entry)
         size_t newcap = bc->idx->cap ? bc->idx->cap * 2 : 64;
         amisnap_entry_meta *newarr =
             (amisnap_entry_meta *)realloc(bc->idx->entries, newcap * sizeof(*newarr));
-        if (!newarr) { free(refs); bc->failed = 1; return; }
+        if (!newarr) { free(refs); return AMISNAP_ERR_NOMEM; }
         bc->idx->entries = newarr;
         bc->idx->cap = newcap;
     }
     bc->idx->entries[bc->idx->count++] = copy;
+    return 0;
 }
 
 int amisnap_index_build(const uint8_t *manifest_data, size_t manifest_len, amisnap_index *out)
@@ -53,14 +51,12 @@ int amisnap_index_build(const uint8_t *manifest_data, size_t manifest_len, amisn
     if (rc != AMISNAP_OK) return rc;
 
     bc.idx = out;
-    bc.failed = 0;
     memset(&v, 0, sizeof(v));
     v.user = &bc;
     v.on_entry = on_entry_cb;
 
     rc = amisnap_manifest_decode(out->raw.data, out->raw.len, &v);
     if (rc != AMISNAP_OK) { amisnap_index_free(out); return rc; }
-    if (bc.failed) { amisnap_index_free(out); return AMISNAP_ERR_NOMEM; }
 
     return AMISNAP_OK;
 }

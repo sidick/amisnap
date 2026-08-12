@@ -11,6 +11,8 @@ void run_manifest_tests(void);
 void run_backend_dir_tests(void);
 void run_repo_tests(void);
 void run_index_tests(void);
+void run_restore_tests(void);
+void run_verify_tests(void);
 
 int main(void)
 {
@@ -22,6 +24,8 @@ int main(void)
     run_backend_dir_tests();
     run_repo_tests();
     run_index_tests();
+    run_restore_tests();
+    run_verify_tests();
 
     fprintf(stderr, "passed=%d failed=%d pending=%d\n",
             g_test.passed, g_test.failed, g_test.pending);

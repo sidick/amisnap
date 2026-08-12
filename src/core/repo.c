@@ -5,26 +5,21 @@
 #include "blake2s.h"
 #include "repo.h"
 
-#define OBJECT_KEY_LEN 80   /* "objects/" + 2 + "/" + 64 hex + NUL, generous */
 #define SNAPID_KEY_LEN 32   /* "snapshots/" + 16 + ".mf" + NUL, generous */
 
 static const char HEXD[] = "0123456789abcdef";
 
-static void hash_to_hex(const uint8_t hash[32], char hex[65])
+void amisnap_repo_object_key(const uint8_t hash[32], char out[AMISNAP_OBJECT_KEY_LEN])
 {
+    char hex[65];
     size_t i;
+
     for (i = 0; i < 32; i++) {
         hex[i * 2]     = HEXD[hash[i] >> 4];
         hex[i * 2 + 1] = HEXD[hash[i] & 0x0Fu];
     }
     hex[64] = '\0';
-}
-
-static void object_key(const uint8_t hash[32], char out[OBJECT_KEY_LEN])
-{
-    char hex[65];
-    hash_to_hex(hash, hex);
-    snprintf(out, OBJECT_KEY_LEN, "objects/%c%c/%s", hex[0], hex[1], hex);
+    snprintf(out, AMISNAP_OBJECT_KEY_LEN, "objects/%c%c/%s", hex[0], hex[1], hex);
 }
 
 static void snapid_encode(uint32_t days, uint16_t mins, uint16_t ticks, char out[17])
@@ -77,7 +72,7 @@ int amisnap_repo_writer_file(amisnap_repo_writer *rw, amisnap_entry_meta *entry,
 {
     uint8_t hash[32];
     amisnap_content_ref ref;
-    char key[OBJECT_KEY_LEN];
+    char key[AMISNAP_OBJECT_KEY_LEN];
     int rc;
 
     if (entry->type != AMISNAP_ETYPE_FILE)
@@ -93,7 +88,7 @@ int amisnap_repo_writer_file(amisnap_repo_writer *rw, amisnap_entry_meta *entry,
     }
 
     amisnap_blake2s256(data, len, hash);
-    object_key(hash, key);
+    amisnap_repo_object_key(hash, key);
 
     rc = amisnap_backend_exists(rw->be, key);
     if (rc < 0) return rc;
@@ -190,4 +185,77 @@ int amisnap_repo_list_snapshots(amisnap_backend *be,
     lc.cb = cb;
     lc.user = user;
     return amisnap_backend_list(be, "snapshots", list_trampoline, &lc);
+}
+
+typedef struct {
+    amisnap_backend *repo;
+    int full;
+    amisnap_verify_result *result;
+} verify_ctx;
+
+static int verify_on_entry(void *user, const amisnap_entry_meta *entry)
+{
+    verify_ctx *vc = (verify_ctx *)user;
+    size_t i;
+
+    for (i = 0; i < entry->content_count; i++) {
+        char key[AMISNAP_OBJECT_KEY_LEN];
+        int exists;
+
+        amisnap_repo_object_key(entry->content[i].hash, key);
+        vc->result->objects_checked++;
+
+        if (!vc->full) {
+            exists = amisnap_backend_exists(vc->repo, key);
+            if (exists <= 0) vc->result->objects_missing++;
+            continue;
+        }
+
+        {
+            amisnap_buf obj;
+            uint8_t actual_hash[32];
+            int rc = amisnap_backend_get(vc->repo, key, &obj);
+
+            if (rc == AMISNAP_ERR_NOT_FOUND) {
+                vc->result->objects_missing++;
+                continue;
+            }
+            if (rc != AMISNAP_OK) {
+                /* Treat any other backend error the same as missing --
+                 * verify's job is to report, not to propagate an I/O
+                 * failure mid-scan and abandon the rest of the check. */
+                vc->result->objects_missing++;
+                continue;
+            }
+
+            if (obj.len != entry->content[i].size) {
+                vc->result->objects_corrupt++;
+                amisnap_buf_free(&obj);
+                continue;
+            }
+            amisnap_blake2s256(obj.data, obj.len, actual_hash);
+            if (memcmp(actual_hash, entry->content[i].hash, 32) != 0)
+                vc->result->objects_corrupt++;
+            amisnap_buf_free(&obj);
+        }
+    }
+    return 0; /* verify deliberately never aborts early -- see amisnap_verify_manifest's doc comment */
+}
+
+int amisnap_verify_manifest(amisnap_backend *repo, const uint8_t *manifest_data, size_t manifest_len,
+                             int full, amisnap_verify_result *result)
+{
+    verify_ctx vc;
+    amisnap_manifest_visitor v;
+
+    memset(result, 0, sizeof(*result));
+    vc.repo = repo;
+    vc.full = full;
+    vc.result = result;
+
+    memset(&v, 0, sizeof(v));
+    v.user = &vc;
+    v.on_entry = verify_on_entry;
+
+    return amisnap_manifest_decode(manifest_data, manifest_len, &v);
 }

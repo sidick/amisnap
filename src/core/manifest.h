@@ -104,11 +104,21 @@ int amisnap_manifest_writer_finish(amisnap_manifest_writer *w, amisnap_buf *out)
  * an entry needing more, rather than silently truncating it. */
 #define AMISNAP_MANIFEST_MAX_CONTENT_REFS 4096
 
+/* Each callback returns 0 to keep decoding, or a nonzero value
+ * (conventionally a negative AMISNAP_ERR_* code, though decode never
+ * interprets it -- just propagates it) to abort immediately: decode
+ * stops calling back and amisnap_manifest_decode() returns exactly
+ * that value. Needed for consumers like restore.c, where continuing
+ * to process entries after a fatal error (a corrupt object, an I/O
+ * failure) would just be pointless extra work on data already known
+ * bad -- a callback that never needs to abort (e.g. verify, which
+ * deliberately wants a full report even after finding corruption)
+ * simply always returns 0. */
 typedef struct {
     void *user;
-    void (*on_snap)(void *user, const amisnap_snap_meta *snap);
-    void (*on_volume)(void *user, const amisnap_volume_meta *vol);
-    void (*on_entry)(void *user, const amisnap_entry_meta *entry);
+    int (*on_snap)(void *user, const amisnap_snap_meta *snap);
+    int (*on_volume)(void *user, const amisnap_volume_meta *vol);
+    int (*on_entry)(void *user, const amisnap_entry_meta *entry);
 } amisnap_manifest_visitor;
 
 /* Parses and validates a complete manifest buffer: common header
@@ -121,8 +131,9 @@ typedef struct {
  * are valid only during that callback (E_CONTENT refs point into a
  * reused scratch array -- see AMISNAP_MANIFEST_MAX_CONTENT_REFS).
  *
- * Returns AMISNAP_OK, or: AMISNAP_ERR_TRUNCATED/MALFORMED on a
- * corrupt header or record framing; AMISNAP_ERR_CRITICAL_TAG on an
+ * Returns AMISNAP_OK, a callback's own nonzero abort value (see
+ * amisnap_manifest_visitor above), or: AMISNAP_ERR_TRUNCATED/MALFORMED
+ * on a corrupt header or record framing; AMISNAP_ERR_CRITICAL_TAG on an
  * unrecognised critical record or field tag; AMISNAP_ERR_MISSING_FIELD
  * if REC_SNAP is absent/not first, or REC_END is absent (a manifest
  * without a valid REC_END is not a snapshot -- format.md); AMISNAP_

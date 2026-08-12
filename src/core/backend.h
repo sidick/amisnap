@@ -56,6 +56,19 @@ typedef struct {
     /* Returns AMISNAP_OK or AMISNAP_ERR_NOT_FOUND/other error. */
     int (*remove)(amisnap_backend *be, const char *key);
 
+    /* Ensures `key` exists as an addressable "container" -- restore's
+     * only use for this (implementation-plan.md Phase 1 item 5): an
+     * empty directory entry has no file content to `put`, so nothing
+     * else would ever cause it to exist at the destination. Named
+     * after WebDAV's MKCOL, which is the one real-directory backend
+     * among the three tiers (S3 has no directories at all -- a
+     * concept that doesn't exist to create -- so an S3 backend's
+     * mkcol is a harmless no-op; a directory backend does a real
+     * mkdir). Idempotent: succeeds whether or not the container
+     * already existed. Returns AMISNAP_OK or a negative AMISNAP_ERR_*
+     * code. */
+    int (*mkcol)(amisnap_backend *be, const char *key);
+
     void (*close)(amisnap_backend *be);
 } amisnap_backend_ops;
 
@@ -89,6 +102,11 @@ static inline int amisnap_backend_list(amisnap_backend *be, const char *prefix,
 static inline int amisnap_backend_remove(amisnap_backend *be, const char *key)
 {
     return be->ops->remove(be, key);
+}
+
+static inline int amisnap_backend_mkcol(amisnap_backend *be, const char *key)
+{
+    return be->ops->mkcol(be, key);
 }
 
 static inline void amisnap_backend_close(amisnap_backend *be)

@@ -355,14 +355,20 @@ int amisnap_manifest_decode(const uint8_t *data, size_t len, const amisnap_manif
             rc = decode_snap(val, vlen, &snap);
             if (rc != AMISNAP_OK) goto out;
             seen_snap = 1;
-            if (visitor->on_snap) visitor->on_snap(visitor->user, &snap);
+            if (visitor->on_snap) {
+                rc = visitor->on_snap(visitor->user, &snap);
+                if (rc != 0) goto out;
+            }
             break;
         }
         case REC_VOLUME_TAG: {
             amisnap_volume_meta vol;
             rc = decode_volume(val, vlen, &vol);
             if (rc != AMISNAP_OK) goto out;
-            if (visitor->on_volume) visitor->on_volume(visitor->user, &vol);
+            if (visitor->on_volume) {
+                rc = visitor->on_volume(visitor->user, &vol);
+                if (rc != 0) goto out;
+            }
             break;
         }
         case AMISNAP_REC_ENTRY_TAG: {
@@ -370,7 +376,10 @@ int amisnap_manifest_decode(const uint8_t *data, size_t len, const amisnap_manif
             rc = amisnap_meta_decode_entry(val, vlen, &entry, scratch, AMISNAP_MANIFEST_MAX_CONTENT_REFS);
             if (rc != AMISNAP_OK) goto out;
             entry_count++;
-            if (visitor->on_entry) visitor->on_entry(visitor->user, &entry);
+            if (visitor->on_entry) {
+                rc = visitor->on_entry(visitor->user, &entry);
+                if (rc != 0) goto out;
+            }
             break;
         }
         case REC_END_TAG: {

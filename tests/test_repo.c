@@ -25,18 +25,20 @@ typedef struct {
     amisnap_content_ref content_copy[8][2];
 } collected;
 
-static void on_snap(void *user, const amisnap_snap_meta *snap)
+static int on_snap(void *user, const amisnap_snap_meta *snap)
 {
     ((collected *)user)->snap_seen = 1;
     (void)snap;
+    return 0;
 }
 
-static void on_volume(void *user, const amisnap_volume_meta *vol)
+static int on_volume(void *user, const amisnap_volume_meta *vol)
 {
     (void)user; (void)vol;
+    return 0;
 }
 
-static void on_entry(void *user, const amisnap_entry_meta *entry)
+static int on_entry(void *user, const amisnap_entry_meta *entry)
 {
     collected *c = (collected *)user;
     if (c->entry_count < 8) {
@@ -47,6 +49,7 @@ static void on_entry(void *user, const amisnap_entry_meta *entry)
             c->content_copy[i][k] = entry->content[k];
         c->entries[i].content = c->content_copy[i];
     }
+    return 0;
 }
 
 static void count_cb(void *user, const char *name)

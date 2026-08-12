@@ -196,12 +196,26 @@ src/core/           portable engine (host CI runs all of it)
                       the archive-bit skip rule
                       (amisnap_index_unchanged)                [done]
   repo.[ch]           repository layout + operations over a backend:
-                      write path done (content-addressed objects with
+                      write path (content-addressed objects with
                       exists()-gated dedup, snapshot commit atomic
-                      last, snapid collision handling); verify/prune
-                      land in phase 2                [write path done]
+                      last, snapid collision handling), list_snapshots,
+                      and verify (structural + FULL re-hash, checks
+                      every content-ref occurrence, never aborts
+                      early) all done; prune lands in phase 2
+                                                    [write+list+verify done]
+  restore.[ch]        portable content-restore: reconstructs files/
+                      dirs from a manifest into a destination backend,
+                      verifying every object against its declared hash
+                      before writing (aborts immediately on mismatch/
+                      missing -- principle 1); subtree selection
+                      (component-boundary correct, preserves full
+                      relative paths, no flattening); an optional
+                      per-entry callback hook for metadata application
+                      (Amiga-only, item 6). Links counted as an honest,
+                      explicit gap (no backend.h link concept yet), not
+                      silently dropped                          [done]
   backend.h           the backend API: put/get/exists/list/remove/
-                      close, one vtable + opaque ctx        [done]
+                      mkcol/close, one vtable + opaque ctx      [done]
   backend_dir.c       portable directory backend — on Amiga this IS
                       Tier 1 (any mounted volume); on the host it is
                       the CI test backend. Built on stdio/mkdir/
@@ -319,13 +333,42 @@ Order of work within the phase:
    not treated as corruption).
 5. `restore` (full/subtree, alternate path, metadata-last) + `verify`
    (structural; `FULL` re-hashes) against the directory backend.
-   Restore's report includes a long-path advisory: entries whose full
-   restored path exceeds ~255 bytes are restored anyway (AmigaDOS
-   creates/traverses component-wise, so it works) but flagged, since
-   stock shells/utilities with ~255-byte and BSTR-limited buffers may
-   misbehave on them. Advisory only, never a refusal — and the exact
-   threshold gets verified against the autodocs before the message is
-   written, not taken from folklore.
+   **Content-restore/verify done** (`src/core/restore.[ch]`,
+   `amisnap_verify_manifest` in `repo.[ch]`); metadata application is
+   Amiga-only and lands with item 6 below. Subtree selection preserves
+   full relative paths under the destination rather than flattening
+   (restoring "Work/Projects" into an alternate root produces
+   ".../Work/Projects/...", matching restic/borg-style tools and
+   avoiding a family of path-stripping edge cases) — a deliberate
+   interpretation of the proposal's "full or subtree" wording, recorded
+   here since the proposal itself doesn't specify it. Every content
+   object is verified against its declared BLAKE2s-256 before being
+   written out and restore aborts immediately on a hash mismatch or
+   missing object (principle 1: silently writing unverified content is
+   exactly the fatal case that principle exists to prevent) — this
+   required extending `manifest.h`'s visitor callbacks to be abort-
+   capable (return 0 to continue, nonzero to stop decode and propagate
+   that value), since the original void-returning callbacks had no way
+   to stop decode from processing further entries after a fatal error.
+   `verify`, by contrast, deliberately never aborts early (its whole
+   point is a complete report even after finding corruption).
+   `backend.h` gained `mkcol` (idempotent "ensure this container
+   exists") so an empty directory entry — no file content to `put`,
+   nothing else would ever create it — still gets restored; documented
+   as a real no-op for a future S3 backend (no directory concept) and a
+   real WebDAV MKCOL for that tier. Soft/hard link restoration is an
+   explicit, counted gap (`links_skipped`) — `backend.h` has no link
+   concept and real link creation is Amiga-only (`MakeLink()`); not
+   silently dropped, not attempted as a plain file.
+   Restore's eventual CLI-level report should include a long-path
+   advisory: entries whose full restored path exceeds ~255 bytes are
+   restored anyway (AmigaDOS creates/traverses component-wise, so it
+   works) but flagged, since stock shells/utilities with ~255-byte and
+   BSTR-limited buffers may misbehave on them. Advisory only, never a
+   refusal — the exact threshold gets verified against the autodocs
+   before the message is written, not taken from folklore. Not yet
+   implemented (no CLI exists yet to report anything to) — tracked here
+   so it isn't forgotten when item 6's CLI wiring lands.
 6. Amiga side: `stackswap.c` first (see "Stack management" above --
    every module below runs on top of it, not the other way round),
    then `scan.c`, `restore_meta.c`, `dosio.c`, capability probe; CLI

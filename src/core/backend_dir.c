@@ -221,6 +221,27 @@ static int dir_remove(amisnap_backend *be, const char *key)
     return AMISNAP_OK;
 }
 
+static int dir_mkcol(amisnap_backend *be, const char *key)
+{
+    dir_ctx *ctx = (dir_ctx *)be->ctx;
+    char path[AMISNAP_BACKEND_DIR_MAX_PATH];
+    size_t plen;
+    int rc = join_path(ctx, key, path, sizeof(path));
+
+    if (rc != AMISNAP_OK) return rc;
+
+    /* An empty key (mkcol("") -- the repository/destination root
+     * itself, format.md E_PATH's "empty = the root") joins to
+     * "<root>/" with a trailing separator; strip it so mkdir_p sees a
+     * clean path rather than relying on platform-specific trailing-
+     * slash mkdir() behavior. */
+    plen = strlen(path);
+    if (plen > 0 && path[plen - 1] == '/')
+        path[plen - 1] = '\0';
+
+    return mkdir_p(path);
+}
+
 static void dir_close(amisnap_backend *be)
 {
     dir_ctx *ctx = (dir_ctx *)be->ctx;
@@ -233,7 +254,7 @@ static void dir_close(amisnap_backend *be)
 }
 
 static const amisnap_backend_ops dir_ops = {
-    dir_put, dir_get, dir_exists, dir_list, dir_remove, dir_close
+    dir_put, dir_get, dir_exists, dir_list, dir_remove, dir_mkcol, dir_close
 };
 
 int amisnap_backend_dir_open(const char *root, amisnap_backend *out)

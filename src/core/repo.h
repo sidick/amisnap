@@ -20,10 +20,19 @@
 #ifndef AMISNAP_REPO_H
 #define AMISNAP_REPO_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "backend.h"
 #include "manifest.h"
+
+/* "objects/" + 2 fan-out chars + "/" + 64 hex + NUL, generous. */
+#define AMISNAP_OBJECT_KEY_LEN 80
+
+/* format.md "Content objects": objects/<hh>/<hex64>, the fan-out
+ * bucket being the first two hex characters. Shared by the writer,
+ * restore.c, and verify -- implemented exactly once. */
+void amisnap_repo_object_key(const uint8_t hash[32], char out[AMISNAP_OBJECT_KEY_LEN]);
 
 typedef struct {
     amisnap_backend *be;
@@ -89,5 +98,35 @@ int amisnap_repo_writer_finish(amisnap_repo_writer *rw, char snapid_out[17]);
  * AMISNAP_ERR_* code from the backend. */
 int amisnap_repo_list_snapshots(amisnap_backend *be,
                                  void (*cb)(void *user, const char *snapid), void *user);
+
+typedef struct {
+    size_t objects_checked;   /* one count per E_CONTENT ref occurrence, not
+                                * per unique object -- see amisnap_verify_manifest's
+                                * own doc comment on why that's not a bug */
+    size_t objects_missing;
+    size_t objects_corrupt;   /* FULL mode only: content read but hash mismatched */
+} amisnap_verify_result;
+
+/* format.md "Operations (v1)" verify: structural always (every
+ * E_CONTENT ref's object exists in `repo`, size matches, checked via
+ * amisnap_backend_exists() -- no content read), `full` additionally
+ * re-reads and re-hashes every object's actual bytes against its
+ * declared BLAKE2s-256 (catching bit-rot/corruption that mere
+ * presence can't). The manifest itself is decoded via
+ * amisnap_manifest_decode(), whose own END_HASH self-check already
+ * covers the manifest file's own structural integrity -- a manifest
+ * that doesn't decode fails this call outright (its own AMISNAP_ERR_*
+ * code is returned) rather than reporting a partial result.
+ *
+ * Every content-ref *occurrence* is checked, not every unique object
+ * once -- a file referenced by dedup from ten entries is checked ten
+ * times. This is correct (never gives a false pass) but not maximally
+ * efficient; a unique-object-set optimisation is deferred to land
+ * alongside prune's own object enumeration (phase 2), not promised
+ * here. Returns AMISNAP_OK once verification has run to completion
+ * (check *result for the actual findings) or a manifest-decode error
+ * if the manifest itself never validated. */
+int amisnap_verify_manifest(amisnap_backend *repo, const uint8_t *manifest_data, size_t manifest_len,
+                             int full, amisnap_verify_result *result);
 
 #endif /* AMISNAP_REPO_H */

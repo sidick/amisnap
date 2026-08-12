@@ -25,21 +25,23 @@ typedef struct {
     amisnap_content_ref entry_content_copy[8][4];
 } collected;
 
-static void on_snap(void *user, const amisnap_snap_meta *snap)
+static int on_snap(void *user, const amisnap_snap_meta *snap)
 {
     collected *c = (collected *)user;
     c->snap_seen = 1;
     c->snap = *snap;
+    return 0;
 }
 
-static void on_volume(void *user, const amisnap_volume_meta *vol)
+static int on_volume(void *user, const amisnap_volume_meta *vol)
 {
     collected *c = (collected *)user;
     if (c->volume_count < 4)
         c->volumes[c->volume_count++] = *vol;
+    return 0;
 }
 
-static void on_entry(void *user, const amisnap_entry_meta *entry)
+static int on_entry(void *user, const amisnap_entry_meta *entry)
 {
     collected *c = (collected *)user;
     if (c->entry_count < 8) {
@@ -49,6 +51,7 @@ static void on_entry(void *user, const amisnap_entry_meta *entry)
             c->entry_content_copy[i][k] = entry->content[k];
         c->entries[i].content = c->entry_content_copy[i]; /* re-point past the reused scratch */
     }
+    return 0;
 }
 
 static void build_sample(amisnap_manifest_writer *w)
