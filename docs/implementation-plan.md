@@ -144,9 +144,13 @@ src/core/           portable engine (host CI runs all of it)
                       streaming writer, visitor-based reader enforcing
                       record order, END_COUNT, and the END_HASH
                       self-check                            [done]
-  index.[ch]          local snapshot index: streamed compare of an
-                      ExAll-shaped walk against the last snapshot;
-                      the skip rule lives here            [phase 1]
+  index.[ch]          local snapshot index: builds a lookup from a
+                      decoded manifest (amisnap_index_build/lookup,
+                      O(n) linear scan for now -- flagged as the
+                      candidate to optimise if the 50k-file benchmark
+                      needs it, not assumed in advance) and implements
+                      the archive-bit skip rule
+                      (amisnap_index_unchanged)                [done]
   repo.[ch]           repository layout + operations over a backend:
                       write path done (content-addressed objects with
                       exists()-gated dedup, snapshot commit atomic
@@ -257,7 +261,18 @@ Order of work within the phase:
    this gate needed it, since repo.c assumes CIPHER=0 -- lands with
    whichever later item first needs to read it back.
 4. `index` + change detection implementing the archive-bit policy
-   above; `list`.
+   above; `list`. **Done.** `amisnap_index_build()` decodes a manifest
+   into an owned, path-lookupable array (each entry's own content-ref
+   copy preserved, not just borrowed -- future snapshot writes can
+   reuse an unchanged file's content ref without re-reading it);
+   `amisnap_index_unchanged()` implements the policy exactly (archive
+   bit masked out of the protection-equality check, then required SET
+   on the live side as an independent condition -- confirmed by test
+   that a stored record already having the bit set changes nothing,
+   and that clearing it on the live side forces "examine" even with
+   every other field identical). `amisnap_repo_list_snapshots()`
+   enumerates `snapshots/` leniently (non-conforming names skipped,
+   not treated as corruption).
 5. `restore` (full/subtree, alternate path, metadata-last) + `verify`
    (structural; `FULL` re-hashes) against the directory backend.
    Restore's report includes a long-path advisory: entries whose full

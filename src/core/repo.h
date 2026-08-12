@@ -74,4 +74,20 @@ int amisnap_repo_writer_entry(amisnap_repo_writer *rw, const amisnap_entry_meta 
  * writer/backend error. */
 int amisnap_repo_writer_finish(amisnap_repo_writer *rw, char snapid_out[17]);
 
+/* Enumerates every successfully-committed snapshot in the repository
+ * (format.md "Snapshot commit protocol": nothing partially written is
+ * ever visible under snapshots/, so this never sees a half-written
+ * manifest), calling cb(user, snapid) once per snapshot with a 16-hex-
+ * character, NUL-terminated id (valid only during that call). Order
+ * matches whatever the backend's list() returns (a directory backend
+ * is not necessarily sorted) -- format.md's snapid design makes a
+ * caller-side lexicographic sort equivalent to chronological order if
+ * that's wanted. A listed name not shaped like "<16 hex>.mf" (a stray
+ * tmp/ leftover, a foreign file) is silently skipped -- this is a
+ * best-effort listing, not a repository integrity check. Returns
+ * AMISNAP_OK (including when there are zero snapshots) or a negative
+ * AMISNAP_ERR_* code from the backend. */
+int amisnap_repo_list_snapshots(amisnap_backend *be,
+                                 void (*cb)(void *user, const char *snapid), void *user);
+
 #endif /* AMISNAP_REPO_H */

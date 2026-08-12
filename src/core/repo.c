@@ -163,3 +163,31 @@ int amisnap_repo_writer_finish(amisnap_repo_writer *rw, char snapid_out[17])
     memcpy(snapid_out, snapid, 17);
     return AMISNAP_OK;
 }
+
+typedef struct {
+    void (*cb)(void *user, const char *snapid);
+    void *user;
+} list_ctx;
+
+static void list_trampoline(void *user, const char *name)
+{
+    list_ctx *lc = (list_ctx *)user;
+    size_t len = strlen(name);
+    char snapid[17];
+
+    if (len != 19 || strcmp(name + 16, ".mf") != 0)
+        return; /* not "<16 hex>.mf" -- skip, per the documented lenient policy */
+
+    memcpy(snapid, name, 16);
+    snapid[16] = '\0';
+    lc->cb(lc->user, snapid);
+}
+
+int amisnap_repo_list_snapshots(amisnap_backend *be,
+                                 void (*cb)(void *user, const char *snapid), void *user)
+{
+    list_ctx lc;
+    lc.cb = cb;
+    lc.user = user;
+    return amisnap_backend_list(be, "snapshots", list_trampoline, &lc);
+}

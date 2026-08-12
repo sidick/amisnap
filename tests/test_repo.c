@@ -55,6 +55,22 @@ static void count_cb(void *user, const char *name)
     (*(int *)user)++;
 }
 
+typedef struct {
+    char (*seen)[17];
+    int *n;
+    int cap;
+} list_collect_ctx;
+
+static void list_collect_cb(void *user, const char *snapid)
+{
+    list_collect_ctx *ctx = (list_collect_ctx *)user;
+    if (*ctx->n < ctx->cap) {
+        strncpy(ctx->seen[*ctx->n], snapid, 16);
+        ctx->seen[*ctx->n][16] = '\0';
+        (*ctx->n)++;
+    }
+}
+
 static void object_key_for(const uint8_t hash[32], char key[80])
 {
     static const char hexd[] = "0123456789abcdef";
@@ -201,6 +217,21 @@ void run_repo_tests(void)
          * ticks specifically, not derived an unrelated id. */
         TEST_CHECK(memcmp(snapid, snapid2, 12) == 0);
         TEST_CHECK(memcmp(snapid + 12, snapid2 + 12, 4) != 0);
+
+        /* --- list_snapshots sees both committed snapshots, and
+         * nothing else (tmp/ leftovers, if any, must not appear). --- */
+        {
+            char seen[4][17];
+            int n = 0;
+            list_collect_ctx ctx;
+            ctx.seen = seen;
+            ctx.n = &n;
+            ctx.cap = 4;
+            TEST_CHECK(amisnap_repo_list_snapshots(&be, list_collect_cb, &ctx) == AMISNAP_OK);
+            TEST_CHECK(n == 2);
+            TEST_CHECK((strcmp(seen[0], snapid) == 0 && strcmp(seen[1], snapid2) == 0) ||
+                       (strcmp(seen[0], snapid2) == 0 && strcmp(seen[1], snapid) == 0));
+        }
     }
 
     amisnap_backend_close(&be);
