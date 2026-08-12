@@ -79,9 +79,20 @@ test-host: test
 test-target: m68k
 	sh tests/copperline/run.sh
 
-lint:
-	pip install --quiet semgrep
-	semgrep --config auto --error \
+# semgrep installs into a venv rather than the system/user Python, so
+# `make lint` doesn't need pip on PATH (bare `pip` doesn't exist on
+# every host -- see e.g. macOS with only `pip3`) and doesn't touch
+# whatever else is installed globally. Reused across runs via the
+# venv's own semgrep binary as the target file.
+VENV := $(BUILD)/venv
+
+$(VENV)/bin/semgrep: | $(BUILD)/.dir
+	python3 -m venv $(VENV)
+	$(VENV)/bin/pip install --quiet --upgrade pip
+	$(VENV)/bin/pip install --quiet semgrep
+
+lint: $(VENV)/bin/semgrep
+	$(VENV)/bin/semgrep --config auto --error \
 	  --include='*.c' --include='*.h' \
 	  src/ tests/
 
