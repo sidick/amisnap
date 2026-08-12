@@ -19,6 +19,7 @@ __pycache__/
 /tests/copperline/boot/C/AmiSnap
 /tests/copperline/boot/C/stage
 /tests/copperline/boot/C/readback
+/tests/copperline/boot/C/modify
 /tests/copperline/source/
 /tests/copperline/repo/
 /tests/copperline/restored/

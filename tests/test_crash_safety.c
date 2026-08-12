@@ -16,7 +16,15 @@
  * proof that the underlying write-to-tmp-then-atomic-rename mechanism
  * every backend_dir_put() call already goes through actually survives
  * a real interruption, not just that the code reads as if it should.
- */
+ *
+ * _POSIX_C_SOURCE must be defined before any system header is pulled
+ * in (glibc gates fork()/kill()/waitpid()'s prototypes behind it under
+ * strict -std=c99 -- confirmed the hard way: this built silently on
+ * macOS's libc, which doesn't gate the same way, and only failed loud
+ * in CI's Linux container with "implicit declaration of function
+ * 'kill'", -Werror turning that into a real build failure). */
+#define _POSIX_C_SOURCE 200809L
+
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>

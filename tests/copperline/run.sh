@@ -5,13 +5,18 @@
 # Boots a minimal (no-Workbench) A1200/68020 from ./boot (a host
 # directory Copperline mounts live -- see machine.toml). The boot
 # script (boot/S/Startup-Sequence) runs: C:stage (creates a small
-# source tree with deliberately non-default metadata), AmiSnap
-# SNAPSHOT/LIST/VERIFY/RESTORE (each via LOG=<path> to its own file on
-# the Results: mount, not Shell redirection), then C:readback
-# (Examine()s the restored tree, an independent verification channel
-# from AmiSnap's own reporting). Every host-mounted directory is
-# staged before launch and read back after -- implementation-plan.md's
-# item 8 scope.
+# source tree with deliberately non-default metadata), two AmiSnap
+# SNAPSHOTs back to back over the *unchanged* tree (exercising the
+# archive-bit incremental fast path -- implementation-plan.md's "The
+# archive bit is corroboration, never sole evidence" policy), C:modify
+# (overwrites one file, both changing its content and clearing its
+# archive bit), a third SNAPSHOT (must re-read exactly that one file
+# while everything else stays recognized as unchanged), then AmiSnap
+# LIST/VERIFY/RESTORE (each via LOG=<path> to its own file on the
+# Results: mount, not Shell redirection) and C:readback (Examine()s the
+# restored tree, an independent verification channel from AmiSnap's own
+# reporting). Every host-mounted directory is staged before launch and
+# read back after -- implementation-plan.md's item 8 scope.
 #
 # Prereqs:
 #   - copperline on PATH (brew install copperline)
@@ -33,6 +38,7 @@ BENCH=${BENCH:-60}
 AMISNAP_BIN="$ROOT/build/AmiSnap"
 STAGE_BIN="$ROOT/build/copperline-fixtures/stage"
 READBACK_BIN="$ROOT/build/copperline-fixtures/readback"
+MODIFY_BIN="$ROOT/build/copperline-fixtures/modify"
 
 if [ ! -e "$KICK" ]; then
     echo "SKIP: no Kickstart ROM at $KICK (see nondistribution/README.md) -- not an asset CI has"
@@ -42,6 +48,7 @@ command -v "$COPPERLINE" >/dev/null || { echo "FAIL: $COPPERLINE not found" >&2;
 [ -e "$AMISNAP_BIN" ] || { echo "FAIL: missing $AMISNAP_BIN (run: make m68k)" >&2; exit 2; }
 [ -e "$STAGE_BIN" ] || { echo "FAIL: missing $STAGE_BIN (run: make copperline-fixtures)" >&2; exit 2; }
 [ -e "$READBACK_BIN" ] || { echo "FAIL: missing $READBACK_BIN (run: make copperline-fixtures)" >&2; exit 2; }
+[ -e "$MODIFY_BIN" ] || { echo "FAIL: missing $MODIFY_BIN (run: make copperline-fixtures)" >&2; exit 2; }
 
 echo "ROM: $KICK"
 
@@ -56,6 +63,7 @@ mkdir -p "$HERE/boot/C" "$HERE/boot/S"
 cp "$AMISNAP_BIN" "$HERE/boot/C/AmiSnap"
 cp "$STAGE_BIN" "$HERE/boot/C/stage"
 cp "$READBACK_BIN" "$HERE/boot/C/readback"
+cp "$MODIFY_BIN" "$HERE/boot/C/modify"
 
 # --- boot windowless; --benchmark-until runs with no window until the
 # given emulated time, then exits (amiauth/copperline-bridgeboard-plugin's
@@ -97,16 +105,27 @@ check_log() {
 }
 
 check_log stage.log "^stage: done$"
-check_log snapshot.log "^Snapshot "
+check_log snapshot.log "^Snapshot .*(0 unchanged, 0 failed)"
+# --- archive-bit incremental fast path: an immediate second snapshot
+# over the untouched tree must recognize every file as unchanged. ----
+check_log snapshot2.log "^Snapshot .*(3 unchanged, 0 failed)"
+# --- ...but after modify.c touches exactly one file, only that one
+# must be re-read; the other two must still be recognized unchanged. --
+check_log snapshot3.log "^Snapshot .*(2 unchanged, 0 failed)"
 check_log list.log " entries"
 check_log verify.log "^Verify .*0 missing, 0 corrupt$"
 check_log restore.log "^Restored "
 check_log readback.log "^readback: end$"
 
-# --- content fidelity: the restored files must match what stage.c wrote ----
+# --- content fidelity: RESTORE defaults to the latest snapshot
+# (snapshot3, taken after modify.c ran), so root.txt must reflect the
+# CHANGE, while a file reused via the fast path must still be exactly
+# what stage.c originally wrote -- proving reused content refs are as
+# trustworthy as freshly-read-and-hashed ones, not just that the count
+# in snapshot3.log looked right. ----
 if [ -f "$HERE/restored/root.txt" ]; then
-    if ! grep -q "^root file content$" "$HERE/restored/root.txt"; then
-        echo "FAIL: restored/root.txt content mismatch"
+    if ! grep -q "^CHANGED content$" "$HERE/restored/root.txt"; then
+        echo "FAIL: restored/root.txt content mismatch (expected modify.c's change)"
         fail=1
     fi
 else

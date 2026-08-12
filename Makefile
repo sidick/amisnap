@@ -113,8 +113,12 @@ $(COPPERLINE_FIXTURE_DIR)/timeit: tests/copperline/fixture/timeit.c | $(BUILD)/.
 	@mkdir -p $(COPPERLINE_FIXTURE_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) $< -o $@
 
+$(COPPERLINE_FIXTURE_DIR)/modify: tests/copperline/fixture/modify.c | $(BUILD)/.dir
+	@mkdir -p $(COPPERLINE_FIXTURE_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) $< -o $@
+
 copperline-fixtures: $(COPPERLINE_FIXTURE_DIR)/stage $(COPPERLINE_FIXTURE_DIR)/readback \
-	$(COPPERLINE_FIXTURE_DIR)/bulkstage $(COPPERLINE_FIXTURE_DIR)/timeit
+	$(COPPERLINE_FIXTURE_DIR)/bulkstage $(COPPERLINE_FIXTURE_DIR)/timeit $(COPPERLINE_FIXTURE_DIR)/modify
 
 # Copperline on-target harness (docs/proposal.md "Toolchain and testing",
 # implementation-plan.md Phase 1 item 8): boots a minimal A1200/68020 from

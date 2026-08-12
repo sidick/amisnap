@@ -44,12 +44,14 @@ int amisnap_index_build(const uint8_t *manifest_data, size_t manifest_len, amisn
 
 void amisnap_index_free(amisnap_index *idx);
 
-/* O(n) linear scan over idx->count entries. Fine for the ~50k-file
- * target at Phase 1's correctness-first stage; implementation-plan.md
- * flags this as a candidate for a sorted/hashed lookup if a real
- * incremental-run benchmark (Phase 1's own gate) shows it's the
- * bottleneck -- not assumed in advance. Returns NULL if no entry with
- * this exact path exists. */
+/* Binary search over amisnap_index_build()'s own path-sorted order --
+ * originally an O(n) linear scan "fine for the ~50k-file target...
+ * flagged as a candidate to optimise if a real incremental-run
+ * benchmark shows it's the bottleneck, not assumed in advance." It
+ * was: confirmed empirically that the linear scan, called once per
+ * scanned file against an index of the same size, made a real 10k-file
+ * "nothing changed" snapshot slower than not having this fast path at
+ * all. Returns NULL if no entry with this exact path exists. */
 const amisnap_entry_meta *amisnap_index_lookup(const amisnap_index *idx,
                                                  const uint8_t *path, size_t path_len);
 

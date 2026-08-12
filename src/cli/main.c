@@ -176,8 +176,30 @@ static int caps_only_on_entry(void *user, const amisnap_entry_meta *entry)
 typedef struct {
     amisnap_repo_writer *rw;
     const char *source_root;
-    size_t files_ok, files_failed;
+    const amisnap_index *prev_index; /* NULL on a first-ever backup (no previous snapshot) */
+    size_t files_ok, files_failed, files_unchanged;
 } snapshot_ctx;
+
+/* Sets the archive bit on the just-backed-up source file (best-effort,
+ * failure silently ignored -- see below) so a later snapshot can
+ * recognize it as provably unchanged via amisnap_index_unchanged().
+ * implementation-plan.md's "Decisions since the proposal": "the
+ * filesystem clears the bit when a file is written; backup software
+ * sets it" -- AmiSnap is that backup software, and nothing else in
+ * this codebase ever sets this bit, so without this call the fast path
+ * below could never fire on a second run.
+ *
+ * Best-effort because a failure here (write-protected media, a
+ * filesystem that doesn't support protection bits) doesn't lose or
+ * corrupt anything already safely written to the repository -- it
+ * only means the NEXT run won't get the fast-path speed-up for this
+ * one file and will fall back to a full read+hash, which is always
+ * correct, just slower. Not worth failing an otherwise-successful
+ * backup over. */
+static void mark_backed_up(const char *path, uint32_t prot)
+{
+    SetProtection((STRPTR)path, (LONG)(prot | AMISNAP_FIBF_ARCHIVE));
+}
 
 static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
 {
@@ -198,6 +220,7 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
         struct FileInfoBlock fib;
         LONG size;
         uint8_t *data = NULL;
+        const amisnap_entry_meta *prev;
 
         rc = amisnap_join_amiga_path(ctx->source_root, entry->path, entry->path_len, path, sizeof(path));
         if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
@@ -210,6 +233,31 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
         }
         size = fib.fib_Size;
         UnLock(lock);
+
+        /* scan.c deliberately never sets has_size/size (it's a
+         * metadata-only walk) -- this is the one place that does, and
+         * it must happen before the amisnap_index_unchanged() check
+         * below, which compares it. */
+        e.has_size = 1;
+        e.size = (uint64_t)size;
+
+        prev = ctx->prev_index ? amisnap_index_lookup(ctx->prev_index, entry->path, entry->path_len) : NULL;
+        if (prev && amisnap_index_unchanged(prev, &e)) {
+            /* Metadata-first fast path (implementation-plan.md's
+             * archive-bit policy): every field index_unchanged()
+             * checks already proves this file's bytes are identical to
+             * what the previous snapshot already has safely stored, so
+             * reuse its content refs verbatim instead of re-reading
+             * and re-hashing bytes that provably haven't changed. */
+            e.content = prev->content;
+            e.content_count = prev->content_count;
+            rc = amisnap_repo_writer_entry(ctx->rw, &e);
+            if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
+            ctx->files_ok++;
+            ctx->files_unchanged++;
+            mark_backed_up(path, e.prot);
+            return 0;
+        }
 
         if (size > 0) {
             LONG got = 0;
@@ -231,6 +279,7 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
         free(data);
         if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
         ctx->files_ok++;
+        mark_backed_up(path, e.prot);
         return 0;
     }
 }
@@ -323,6 +372,8 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     snapshot_ctx ctx;
     struct DateStamp now;
     char snapid[17];
+    amisnap_index prev_index;
+    int have_prev_index = 0;
     int rc;
 
     if (!source || !repo) {
@@ -397,13 +448,49 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
         return RETURN_FAIL;
     }
 
+    /* Incremental fast path (implementation-plan.md's archive-bit
+     * policy, wired in here for the first time): if a previous
+     * snapshot exists, load its manifest into a lookup index so
+     * snapshot_on_entry() can recognize provably-unchanged files and
+     * skip re-reading/re-hashing their content. AMISNAP_ERR_NOT_FOUND
+     * (no previous snapshot at all) is the normal first-ever-backup
+     * case, not an error -- silently falls through to a full scan, as
+     * always. A previous manifest that fails to read or decode also
+     * degrades to a full scan rather than aborting this snapshot over
+     * it -- losing the speed-up is not the same class of problem as
+     * losing data (principle 1 is about the latter). */
+    {
+        char prev_snapid[17];
+        int prc = resolve_snapid(&be, NULL, prev_snapid);
+        if (prc == AMISNAP_OK) {
+            amisnap_buf prev_mf;
+            prc = fetch_manifest(&be, prev_snapid, &prev_mf);
+            if (prc == AMISNAP_OK) {
+                prc = amisnap_index_build(prev_mf.data, prev_mf.len, &prev_index);
+                amisnap_buf_free(&prev_mf);
+                if (prc == AMISNAP_OK) {
+                    have_prev_index = 1;
+                } else {
+                    amilog_err("AmiSnap: previous snapshot's manifest didn't decode (error %d) "
+                                    "-- doing a full scan instead of an incremental one\n", prc);
+                }
+            } else {
+                amilog_err("AmiSnap: could not read previous manifest (error %d) "
+                                "-- doing a full scan instead of an incremental one\n", prc);
+            }
+        }
+    }
+
     ctx.rw = &rw;
     ctx.source_root = source;
+    ctx.prev_index = have_prev_index ? &prev_index : NULL;
     ctx.files_ok = 0;
     ctx.files_failed = 0;
+    ctx.files_unchanged = 0;
     real_visitor.user = &ctx;
     real_visitor.on_entry = snapshot_on_entry;
     rc = amisnap_scan_volume(source, &real_visitor, &caps, &real_result);
+    if (have_prev_index) amisnap_index_free(&prev_index);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: scan failed partway through (error %d)\n", rc);
         amisnap_repo_writer_free(&rw);
@@ -419,9 +506,10 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
         return RETURN_FAIL;
     }
 
-    amilog("Snapshot %s: %lu dirs, %lu files (%lu failed), %lu links skipped\n",
+    amilog("Snapshot %s: %lu dirs, %lu files (%lu unchanged, %lu failed), %lu links skipped\n",
            snapid, (unsigned long)real_result.dirs_seen, (unsigned long)ctx.files_ok,
-           (unsigned long)ctx.files_failed, (unsigned long)real_result.links_skipped);
+           (unsigned long)ctx.files_unchanged, (unsigned long)ctx.files_failed,
+           (unsigned long)real_result.links_skipped);
 
     if (ctx.files_failed > 0 || real_result.links_skipped > 0)
         return RETURN_WARN;

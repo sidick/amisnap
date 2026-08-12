@@ -39,6 +39,23 @@ static int on_entry_cb(void *user, const amisnap_entry_meta *entry)
     return 0;
 }
 
+static int path_cmp(const uint8_t *a, size_t alen, const uint8_t *b, size_t blen)
+{
+    size_t minlen = alen < blen ? alen : blen;
+    int c = minlen ? memcmp(a, b, minlen) : 0;
+    if (c != 0) return c;
+    if (alen < blen) return -1;
+    if (alen > blen) return 1;
+    return 0;
+}
+
+static int entry_path_cmp_qsort(const void *a, const void *b)
+{
+    const amisnap_entry_meta *ea = (const amisnap_entry_meta *)a;
+    const amisnap_entry_meta *eb = (const amisnap_entry_meta *)b;
+    return path_cmp(ea->path, ea->path_len, eb->path, eb->path_len);
+}
+
 int amisnap_index_build(const uint8_t *manifest_data, size_t manifest_len, amisnap_index *out)
 {
     build_ctx bc;
@@ -58,6 +75,13 @@ int amisnap_index_build(const uint8_t *manifest_data, size_t manifest_len, amisn
     rc = amisnap_manifest_decode(out->raw.data, out->raw.len, &v);
     if (rc != AMISNAP_OK) { amisnap_index_free(out); return rc; }
 
+    /* Sorted by path so amisnap_index_lookup() can binary-search --
+     * see that function's own comment for why this replaced a linear
+     * scan (a real, measured problem, not a preemptive optimisation).
+     * Every entry moves as a whole struct (its .content pointer moves
+     * with it), so this doesn't disturb ownership at all. */
+    qsort(out->entries, out->count, sizeof(*out->entries), entry_path_cmp_qsort);
+
     return AMISNAP_OK;
 }
 
@@ -76,12 +100,21 @@ void amisnap_index_free(amisnap_index *idx)
 const amisnap_entry_meta *amisnap_index_lookup(const amisnap_index *idx,
                                                  const uint8_t *path, size_t path_len)
 {
-    size_t i;
+    size_t lo = 0, hi = idx->count;
 
-    for (i = 0; i < idx->count; i++) {
-        if (idx->entries[i].path_len == path_len &&
-            memcmp(idx->entries[i].path, path, path_len) == 0)
-            return &idx->entries[i];
+    /* Binary search over amisnap_index_build()'s own sorted order.
+     * Confirmed empirically (implementation-plan.md's real-FFS-era
+     * archive-bit-wiring follow-up) that the previous O(n) linear scan
+     * genuinely mattered at only 10k files: called once per scanned
+     * file against an index of the same size, it made a "nothing
+     * changed" snapshot slower than not having the fast path at all
+     * (O(n^2) beats a real 10k-file --benchmark-until gate). */
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int c = path_cmp(idx->entries[mid].path, idx->entries[mid].path_len, path, path_len);
+        if (c == 0) return &idx->entries[mid];
+        if (c < 0) lo = mid + 1;
+        else hi = mid;
     }
     return NULL;
 }

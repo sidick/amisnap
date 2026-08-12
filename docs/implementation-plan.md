@@ -1009,7 +1009,77 @@ snapshot's full tree+metadata with the C code uninvolved.
    this is a real proof of the guarantee on the actual code path, not a
    host-only approximation of it.
 
-3. **Deferred design note: a backup exclude list.** Raised in
+3. Wire the archive-bit change-detection policy into `cmd_snapshot`
+   itself. **Done (2026-08-12) -- a real gap closed, not originally its
+   own numbered item.** `index.c`'s change-detection module and policy
+   have been "done" since item 4 of Phase 1's own work order, but
+   nothing in `src/cli/main.c` ever actually called it -- every real
+   `SNAPSHOT` run, including the Phase 1 performance gate's own
+   "unchanged" measurement, always fully re-read and re-hashed every
+   file regardless of whether it had changed. Discovered while
+   answering "what's next" and re-examining that gate's own result.
+   Now: `cmd_snapshot` loads the previous snapshot's manifest into an
+   `amisnap_index` (gracefully degrading to a full scan, not aborting,
+   if there is no previous snapshot or its manifest fails to read/
+   decode -- losing the speed-up isn't the class of problem principle 1
+   is about), and `snapshot_on_entry()` looks up each scanned file
+   there: if `amisnap_index_unchanged()` says it's provably identical,
+   it reuses the previous entry's content refs verbatim instead of
+   reading and re-hashing bytes that haven't changed, and sets the
+   source file's own archive bit afterward (`mark_backed_up()`) so a
+   later run can recognize it the same way -- nothing else in the
+   codebase ever set that bit before this. Confirmed live on
+   Copperline: an immediate second `SNAPSHOT` over an untouched tree
+   reports every file unchanged; after a `modify.c` fixture rewrites
+   exactly one file (both changing its bytes and clearing its archive
+   bit, real AmigaDOS FFS behaviour), a third `SNAPSHOT` re-reads only
+   that one file and `RESTORE` afterward reflects the change correctly
+   while the untouched files' reused content is still exactly what was
+   originally staged -- now a permanent regression in `run.sh` itself
+   (three `SNAPSHOT`s, `(0 unchanged...)` / `(3 unchanged...)` /
+   `(2 unchanged...)` asserted on each), not a one-off manual check.
+
+   **Found and fixed a real O(n^2) performance bug in the same pass**:
+   wiring this in made `run-perf.sh`'s own 10k-file "unchanged" gate
+   measurement *worse* at first -- 109s (over the 60s budget) versus
+   the no-fast-path baseline's 33.6s, the opposite of the intended
+   effect. Root cause: `amisnap_index_lookup()`'s linear scan (already
+   flagged in its own header comment as "a candidate to optimise... not
+   assumed in advance") really did matter at exactly this scale --
+   called once per scanned file against an index of the same size, 10k
+   files means 10,000 x 10,000 = 100,000,000 comparisons. Fixed by
+   sorting `amisnap_index_build()`'s entries by path (`qsort`) and
+   making `amisnap_index_lookup()` a binary search -- no other API
+   change, existing callers unaffected. Re-measured: 26.06s, stable
+   across three consecutive runs, comfortably under the 60s gate and a
+   real improvement over the original 33.6s no-fast-path baseline, not
+   just a recovery back to it. `run-perf.sh`'s own `machine-perf.toml`
+   also needed its fast RAM raised 4M -> 8M once the fast path started
+   actually engaging -- confirmed empirically (a real `AMISNAP_ERR_NOMEM`
+   building a 10k-entry index in 4M, not guessed) that `amisnap_index`'s
+   current memory footprint (a doubling-growth entries array, each
+   entry's content refs individually malloc'd, plus a full owned copy
+   of the raw manifest bytes) is genuinely large at this scale --
+   plausible on a real accelerated 68030 setup, but a real, documented
+   memory-efficiency concern worth a future look if a much larger
+   (50k+ file) target ever needs it, not silently absorbed into a
+   bigger test-only RAM number and forgotten.
+
+   **Also discovered and fixed while landing this**: `tests/
+   test_crash_safety.c` (the previous item's SIGKILL proof) built and
+   passed locally on macOS but failed CI's Linux container outright --
+   `error: implicit declaration of function 'kill'` under `-std=c99`
+   with `-Werror`. glibc gates `fork()`/`kill()`/`waitpid()`'s
+   prototypes behind `_POSIX_C_SOURCE` under strict C99 in a way
+   macOS's libc doesn't; macOS's own toolchain never surfaced this.
+   Fixed with an explicit `#define _POSIX_C_SOURCE 200809L` before any
+   system header, and reproduced/confirmed the exact CI failure and fix
+   locally by running `make test-host` inside `ghcr.io/sidick/amiga-
+   dev`'s own container (it has a real Linux host `cc` too, not just
+   the m68k cross-compiler) rather than trusting a green local macOS
+   build alone.
+
+4. **Deferred design note: a backup exclude list.** Raised in
    discussion (2026-08-12), not scheduled to a phase yet: a plain-text
    file (per-source-directory, or one global list, TBD) naming files/
    directories the user never wants backed up, read by `scan.c` before

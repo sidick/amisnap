@@ -36,8 +36,14 @@ clock_mhz = 50.0
 
 [memory]
 chip = "1M"
-fast = "4M"   # headroom for 10k ExAll entries + scan.c's per-directory
-              # buffers alongside bulkstage/timeit/AmiSnap all resident
+fast = "8M"   # headroom for 10k ExAll entries + scan.c's per-directory
+              # buffers alongside bulkstage/timeit/AmiSnap all resident,
+              # AND (since the archive-bit fast path landed) a full
+              # amisnap_index_build() of a 10k-entry manifest -- 4M
+              # genuinely wasn't enough (confirmed empirically: AMISNAP_
+              # ERR_NOMEM, not guessed) once that started happening on
+              # every SNAPSHOT with a previous manifest to compare
+              # against. See implementation-plan.md's own note on this.
 
 [floppy]
 drives = 1    # DF0 wired but left empty -- Copperline requires at
