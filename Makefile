@@ -16,9 +16,11 @@
 # (ExAll metadata capture, DOS I/O backend, ReadArgs front-end) lives in
 # src/amiga/ and only enters the m68k build.
 #
-# Target floor: 68020, AmigaOS 3.0 (V39) -- the audience for network
+# Target floor: 68020, AmigaOS 2.04 (V37) -- the audience for network
 # backup skews accelerated/emulated (docs/proposal.md "Toolchain and
-# testing"), and V39 gives SetOwner() for restore.
+# testing"). Newer APIs (e.g. V39's SetOwner()) are used opportunistically
+# and MUST be runtime version-gated, never called bare -- see
+# docs/implementation-plan.md "OS floor is V37, not V39".
 
 BUILD := build
 

@@ -3,7 +3,7 @@ Author:       simond@irrelevant.org (Simon Dick)
 Uploader:     simond@irrelevant.org (Simon Dick)
 Type:         disk/bakup
 Version:      0.1
-Architecture: m68k-amigaos >= 3.0
+Architecture: m68k-amigaos >= 2.04
 Distribution: Aminet
 
 AmiSnap is a snapshot-based backup tool for classic AmigaOS that backs
@@ -29,7 +29,8 @@ Snapshots are recoverable on a PC even if the Amiga is dead: the
 repository format is documented and versioned, with a host-side
 reference reader.
 
-Requirements: AmigaOS 3.0+, 68020+.
+Requirements: AmigaOS 2.04+, 68020+ (some features, such as restoring
+file ownership, need AmigaOS 3.0+ and degrade gracefully without it).
 
 This is an early development version - not yet a working backup tool.
 

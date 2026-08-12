@@ -79,12 +79,56 @@ runs are pure metadata-compare — that alone must meet the 10k-files/
 under-a-minute success criterion, and the Phase 1 benchmark verifies it
 without relying on the bit.
 
+### OS floor is V37, not V39 — later APIs are runtime-gated (2026-08-12)
+
+The CPU floor (68020) and the OS floor are separate decisions; the
+original 68020+V39 bundling in "Minimum requirements" set the OS floor
+higher than anything actually in use requires. AmigaOS 2.04 (V37) is
+the real floor now, matched opportunistically at runtime with anything
+newer that a given system provides — the same pattern this project
+already uses for AmiSSL (soft-loaded, absent = plaintext fallback, not
+a hard dependency) and per-volume filesystem capability probing
+(`VOL_CAPS`, "observed" not assumed from `DosType`), just applied to
+the OS version axis too.
+
+**Why this is safe to do, and why it's not just "call it and see":**
+Amiga library calls resolve through a jump table sized to what that
+copy of the library actually implements. Calling an offset a V39+-only
+function occupies, against a V37 library, is not a clean "function not
+found" — it is a call into whatever happens to sit past the end of the
+real table on that system. So every call to a function newer than V37
+**must** be preceded by an explicit runtime version check (e.g.
+`((struct Library *)DOSBase)->lib_Version >= 39`), never a bare call
+guarded only by a compile-time `#if` or a hopeful try. This is the
+house rule for any such call, present or future — the checklist to run
+through when adding one: (1) confirm the real minimum version against
+the NDK autodocs (house rule 6: verify, don't assume) rather than a
+version number half-remembered from documentation prose; (2) gate the
+call behind a runtime check of the *specific* library's version, not a
+global "is this a modern Kickstart" guess; (3) define and honor an
+explicit fallback for the V37 case — normally the same "capability not
+supported, report it, don't fail the operation" pattern restore
+already commits to for cross-filesystem degradation.
+
+**Currently known instance:** `SetOwner()` (restore-side ownership
+application) is V39+; on V37 it is simply unavailable, and restore's
+already-planned "owner applied where supported, reported as skipped
+where not" behavior covers this for free once the version check
+exists — no new degradation path needed, just gating the call.
+**Open, to verify when `scan.c` is actually written (not assumed
+now):** whether `ExAll()`'s `ED_OWNER` tag (the *read* side, capturing
+ownership into a snapshot) is available on V37, or is itself gated
+later — the NDK autodocs are the source of truth here, not this
+document's memory of them.
+
 ## Minimum requirements
 
-- **68020, AmigaOS 3.0 (V39), no FPU** (`-m68020 -msoft-float
-  -noixemul`). V39 supplies `SetOwner()`; the network-backup audience
-  skews accelerated/emulated. Check the NDK autodocs before using
-  anything newer than V39, and gate it at runtime if used.
+- **68020, AmigaOS 2.04 (V37), no FPU** (`-m68020 -msoft-float
+  -noixemul`). CPU floor: the network-backup audience skews
+  accelerated/emulated. OS floor: V37, with newer APIs (e.g. V39's
+  `SetOwner()`) used opportunistically and runtime-gated per the
+  decision above — check the NDK autodocs before using anything newer
+  than V37, and never call it without a version guard.
 - RAM target: comfortable on 4MB fast for ~50k files (index streamed/
   windowed, never fully resident); the encrypted/TLS cloud tier may
   document 8MB+.

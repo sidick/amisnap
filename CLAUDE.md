@@ -56,10 +56,15 @@ CI verb contract (`sidick/amiga-workflows/build-test.yml`, invoked from
 `lint` / `dist` -- CI depends on those exact Makefile target names, don't
 rename them.
 
-Target floor: **68020, AmigaOS 3.0 (V39)**, no FPU (`-m68020
+Target floor: **68020, AmigaOS 2.04 (V37)**, no FPU (`-m68020
 -msoft-float -noixemul`). The audience for network backup skews
-accelerated/emulated (proposal, "Toolchain and testing"); V39 gives
-`SetOwner()` for restore. Check before using anything newer than V39.
+accelerated/emulated (proposal, "Toolchain and testing"). Newer APIs
+(e.g. V39's `SetOwner()`) are used opportunistically but **must** be
+gated by an explicit runtime library-version check before every call
+-- calling a function newer than what a library actually implements
+hits whatever is past the end of its real jump table, not a clean
+failure. See implementation-plan.md "OS floor is V37, not V39" for the
+full policy and checklist before adding any such call.
 
 ## Design rules that bind the code
 
