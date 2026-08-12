@@ -398,9 +398,65 @@ src/amiga/          m68k build only
   socket.c            bsdsocket glue for webdav/s3         [phase 3]
   tls.c               soft-loaded AmiSSL, per-destination  [phase 3]
 
-src/cli/            AmiSnap front-end: ReadArgs templates per command,
-                    RC codes, logging (summary line + optional verbose
-                    file)                                  [phase 1]
+src/cli/            AmiSnap front-end: one ReadArgs template
+                    ("ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,
+                    SUBTREE/K,COMMENT/K,FULL/S") with ACTION as the one
+                    positional field and everything else keyword-only
+                    -- deliberately not per-verb templates (would need
+                    a second ReadArgs pass over a CSource-wrapped
+                    remainder), since a single shared template makes a
+                    field's position not verb-aware; each verb
+                    validates its own required fields manually since
+                    ReadArgs' /A can't be conditional on ACTION.
+                    RETURN_OK/WARN/ERROR/FAIL used per dos/dos.h,
+                    confirmed via the NDK (WARN = completed with some
+                    entries degraded, never used for a usage error).
+                    SNAPSHOT does two directory walks (a caps-only pass
+                    to get complete VOL_CAPS before any REC_ENTRY can
+                    be written -- format.md's required record order
+                    means VOL_CAPS can't be patched in afterward -- then
+                    the real content-reading pass); a documented
+                    efficiency trade-off (extra ExAll traffic, not
+                    extra file-content reads), not silently accepted.
+                    RESTORE/VERIFY resolve an omitted SNAPID to the
+                    lexicographically-latest (= chronologically latest,
+                    per format.md's snapid design) snapshot, capped at
+                    1024 listed snapshots -- a real, documented limit
+                    pending phase 2's prune.
+                    Verification: cross-build clean. Real execution
+                    under `vamos -C 020`: argument dispatch/validation
+                    confirmed for real (bad args, unknown ACTION,
+                    missing required fields all produce the right
+                    stderr message and RC). A single-process combined
+                    test (build a repo with real repo_writer calls,
+                    fetch its manifest via real backend_get, call the
+                    real amisnap_verify_manifest and
+                    amisnap_restore_manifest, read the restored file
+                    back) confirmed the full content pipeline for real
+                    on m68k: verify found 0 missing/corrupt, restore
+                    wrote the right byte count, and the restored
+                    file's content read back byte-for-byte correct --
+                    genuine end-to-end proof, not just unit tests.
+                    restore_meta's SetOwner correctly failed and was
+                    correctly recorded as failed (vamos's V37-style
+                    stub, exactly as designed).
+                    **New, distinct vamos gap found while testing
+                    this:** libnix's own opendir()/readdir() are
+                    themselves implemented via ExAll() internally
+                    (visible in vamos's own call trace) -- so
+                    backend_dir.c's list() inherits the same ExAll
+                    gap scan.c already has, meaning LIST and any
+                    SNAPID-omitted RESTORE/VERIFY cannot be verified
+                    under vamos at all, only with an explicit SNAPID
+                    (which sidesteps listing). Also could not test the
+                    actual AmiSnap binary across a build-then-read
+                    sequence at all: vamos does not persist RAM: state
+                    between separate process launches, only within one
+                    process's lifetime -- a test-methodology limit
+                    (hence the single-process combined test above),
+                    not a code issue. Full CLI verification, including
+                    LIST and multi-invocation workflows, needs item 8's
+                    Copperline/Amiberry harness.                [done]
 
 tools/
   amisnap_reader.py   host-side reference reader — parses manifests/
@@ -538,10 +594,14 @@ Order of work within the phase:
    **`restore_meta.c` done** (see its own module-map entry for the
    verified version floors -- SetOwner's genuinely useful "safe to call
    unconditionally, returns FALSE pre-V39" nuance in particular -- and
-   what real vamos execution did and didn't confirm). Remaining in this
-   item: capability-probe refinement (the scan.c root-owner gap) is
-   deferred, not blocking; CLI wiring with ReadArgs templates and RC
-   codes is the one piece of item 6 not yet started.
+   what real vamos execution did and didn't confirm).
+   **CLI wiring done** (see src/cli/'s own module-map entry above for
+   the template design, RC conventions, and what real vamos execution
+   confirmed -- including a new, distinct vamos gap it surfaced:
+   libnix's opendir()/readdir() are themselves ExAll()-based, so
+   backend_dir.c's list() has the same coverage gap as scan.c).
+   **Item 6 is now complete.** The one deferred, non-blocking item:
+   capability-probe refinement (the scan.c root-owner gap).
 7. vamos regression test (`test-host`) covering `stackswap.c`'s own
    mechanism against a deep (but safely bounded -- see "Stack
    management" above on why deliberately triggering a real overflow is
