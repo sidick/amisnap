@@ -13,6 +13,17 @@ __pycache__/
 # Machine-specific Copperline config (absolute local paths)
 /tests/copperline/*.local.toml
 
+# Copperline on-target harness: run.sh-staged/generated per run, not
+# source (binaries copied into boot/C/, plus the source/repo/restored/
+# results host mounts it creates, wipes, and writes into each time).
+/tests/copperline/boot/C/AmiSnap
+/tests/copperline/boot/C/stage
+/tests/copperline/boot/C/readback
+/tests/copperline/source/
+/tests/copperline/repo/
+/tests/copperline/restored/
+/tests/copperline/results/
+
 # Emulator-generated Workbench/UAE mount metadata when the repo root is
 # mounted as an Amiga volume for on-target testing -- not source.
 /Disk.info

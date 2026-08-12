@@ -1,0 +1,67 @@
+# Copperline machine profile for AmiSnap's headless on-target smoke test
+# (implementation-plan.md Phase 1 item 8).
+#
+# A minimal boot -- no Workbench at all, following sibling AmiAuth's own
+# tests/copperline/machine.toml pattern exactly: dos.library/exec.library
+# are ROM-resident, and nothing this phase touches needs anything more
+# (no ReAction, no AmiSSL, no Workbench-resident library). [cpu] model is
+# 68020 explicitly -- our real floor -- not the higher-level --model flag,
+# sidestepping the EC020/Zorro-autoconfig-crowding gotcha AmiPilot's own
+# README documents for that flag's default.
+#
+# ROM is passed as a positional CLI arg by run.sh (nondistribution/roms/,
+# gitignored, staged locally -- see that directory's own README), so this
+# file stays portable and needs no machine-specific absolute path.
+
+[cpu]
+model = "68020"
+
+[memory]
+chip = "1M"
+fast = "2M"   # headroom for scan.c's per-directory ExAll buffers, file
+              # content buffers, and stackswap.c's 32KB swapped stack
+
+[floppy]
+drives = 1    # DF0 wired but left empty; we boot from a host directory
+              # (Copperline requires at least one drive configured)
+
+# The minimal boot volume: just the three binaries under C/ and
+# S/Startup-Sequence. run.sh stages the freshly cross-built AmiSnap/
+# stage/readback binaries into boot/C/ before each run.
+[[filesys]]
+path = "boot"
+volume = "AmiSnapBoot"
+bootpri = 10
+
+# Pre-staged (by run.sh, before Copperline starts) test source tree gets
+# created fresh here by C:stage during the boot script -- this mount
+# starts empty each run, not committed content.
+[[filesys]]
+path = "source"
+volume = "Source"
+bootpri = -128
+
+# Backup destination (AmiSnap ACTION=SNAPSHOT's REPO=).
+[[filesys]]
+path = "repo"
+volume = "Repo"
+bootpri = -128
+
+# Restore destination (AmiSnap ACTION=RESTORE's DEST=).
+[[filesys]]
+path = "restored"
+volume = "Restored"
+bootpri = -128
+
+# Every command's LOG= output, plus stage/readback's own result files.
+# Read back from the host side after the run -- implementation-plan.md's
+# item 8 scope: "host-based directories... set up before launch, read
+# results... easily afterwards."
+[[filesys]]
+path = "results"
+volume = "Results"
+bootpri = -128
+
+[emulation]
+power_on = true
+warp_speed = "max"   # boot + run as fast as the host allows; a batch test

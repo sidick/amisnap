@@ -31,13 +31,28 @@ static int join_path(const dir_ctx *ctx, const char *key, char *buf, size_t bufs
 {
     size_t rootlen = strlen(ctx->root);
     size_t keylen = strlen(key);
+    /* A root ending in ':' is an AmigaDOS bare volume/assign
+     * ("Repo:") -- ':' already IS the separator there, same role '/'
+     * plays after a directory name; joining "Repo:" + "/" + "tmp/x"
+     * produces "Repo:/tmp/x", which real AmigaDOS/Copperline rejects
+     * (confirmed live, item 8's on-target harness, 2026-08-12: Lock()
+     * fails with IoErr 209) -- only "Repo:tmp/x" (no extra slash)
+     * resolves. Harmless on host: no host root ever ends in ':', so
+     * this never changes host behavior (backend_dir.c stays portable,
+     * host CI exercises the same code path either way). ctx->root
+     * never ends in '/' either (stripped in amisnap_backend_dir_open),
+     * so the two cases are mutually exclusive in practice, but both
+     * are checked for robustness. */
+    int has_sep = rootlen > 0 && (ctx->root[rootlen - 1] == ':' || ctx->root[rootlen - 1] == '/');
+    size_t seplen = has_sep ? 0 : 1;
 
-    if (rootlen + 1 + keylen + 1 > bufsize)
+    if (rootlen + seplen + keylen + 1 > bufsize)
         return AMISNAP_ERR_MALFORMED;
 
     memcpy(buf, ctx->root, rootlen);
-    buf[rootlen] = '/';
-    memcpy(buf + rootlen + 1, key, keylen + 1); /* + trailing NUL */
+    if (!has_sep)
+        buf[rootlen] = '/';
+    memcpy(buf + rootlen + seplen, key, keylen + 1); /* + trailing NUL */
     return AMISNAP_OK;
 }
 
@@ -107,8 +122,8 @@ static int dir_put(amisnap_backend *be, const char *key, const void *data, size_
     base = strrchr(key, '/');
     base = base ? base + 1 : key;
 
-    if (snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", ctx->root) >= (int)sizeof(tmp_dir))
-        return AMISNAP_ERR_MALFORMED;
+    rc = join_path(ctx, "tmp", tmp_dir, sizeof(tmp_dir));
+    if (rc != AMISNAP_OK) return rc;
     if (snprintf(tmp_path, sizeof(tmp_path), "%s/%s", tmp_dir, base) >= (int)sizeof(tmp_path))
         return AMISNAP_ERR_MALFORMED;
 

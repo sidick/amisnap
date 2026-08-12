@@ -1,0 +1,6 @@
+stage
+AmiSnap ACTION=SNAPSHOT SOURCE=Source: REPO=Repo: LOG=Results:snapshot.log
+AmiSnap ACTION=LIST REPO=Repo: LOG=Results:list.log
+AmiSnap ACTION=VERIFY REPO=Repo: FULL LOG=Results:verify.log
+AmiSnap ACTION=RESTORE REPO=Repo: DEST=Restored: LOG=Results:restore.log
+readback

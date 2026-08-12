@@ -766,6 +766,51 @@ Order of work within the phase:
      no-op -- always stage files before Copperline starts, never
      mid-session.
 
+   **Result (2026-08-12): full pipeline passes end to end on real
+   Copperline** (`sh tests/copperline/run.sh`, `a1200-kick31-40.68.rom`,
+   68020) -- `stage` → `SNAPSHOT` → `LIST` → `VERIFY FULL` → `RESTORE` →
+   `readback` all succeed, both `readback.log` and the `.uaem` sidecars
+   independently confirm restored protection/comment/date match the
+   staged tree (owner is the one expected 0/4 -- no multiuser.library in
+   a minimal boot, `restore_meta.c` already treats it as best-effort).
+   Getting there found two real bugs neither host tests nor vamos could
+   ever have caught, both genuine path-joining defects, not vamos/
+   Copperline artifacts:
+   - **Relative, not absolute, child-directory `Lock()`.** `scan.c`'s
+     recursive descent locked the manifest-relative path directly (e.g.
+     `"Sub"`) instead of resolving it against the volume being scanned,
+     so it resolved against the process's own current directory instead
+     -- failed with `IoErr 209`. Fixed by threading the real root path
+     through `scan_dir()`/`process_entry()`.
+   - **A root ending in `:` must not get an extra `/` inserted before
+     the next path component.** `"Source:/Sub"` is rejected by real
+     AmigaDOS/Copperline (`Lock()` fails, `IoErr 209`) -- only
+     `"Source:Sub"` resolves; a bare volume/assign's trailing `:` already
+     *is* the separator, the same role `/` plays after a directory name.
+     This exact wrong assumption (never previously verified against real
+     AmigaDOS, only assumed) was duplicated in four places: `scan.c`'s
+     child-lock path, `main.c`'s own join helper, `restore_meta.c`'s
+     inline join, and `backend_dir.c`'s `join_path()` (plus a second,
+     separate copy of the same bug in `dir_put()`'s `tmp_dir`
+     construction). Fixed once for the three Amiga-side call sites via a
+     new shared `src/amiga/amipath.c` (`amisnap_join_amiga_path()`), and
+     directly inside `backend_dir.c`'s own `join_path()` (checking for a
+     trailing `:` or `/` before inserting a separator -- harmless on
+     host, since no host root ever ends in `:`).
+   Debugging method: plain `printf`/`fprintf(stderr,...)` produces no
+   visible output at all in a minimal, no-Workbench, no-console boot --
+   temporary `fopen("Results:...", "a")` diagnostics at each candidate
+   failure point (added, rebuilt, rerun, then removed once understood)
+   were what actually localized both bugs to a specific `Lock()`/
+   `Examine()` call and its `IoErr()` value.
+   **Item 8 is now complete.**
+
+   **Noted for later, not yet started**: a second on-target harness
+   variant using a real FFS-formatted virtual floppy (rather than
+   Copperline's own custom HOSTFS handler) as a complementary check --
+   would catch any semantic gap between HOSTFS and genuine AmigaDOS
+   filesystem behavior that this harness alone can't see.
+
 Gate: snapshot → wipe → restore on FFS is metadata-bit-perfect in the
 emulator harness; 10k-file unchanged run under a minute on emulated
 68030 without archive-bit help.

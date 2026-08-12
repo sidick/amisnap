@@ -19,6 +19,27 @@
  *                  call" behavior, and that ED_OWNER support is
  *                  negotiated once (BAD_NUMBER means retry the WHOLE
  *                  call with ED_COMMENT), not probed per entry
+ *
+ * Two real bugs found live under Copperline (item 8's on-target
+ * harness, 2026-08-12), both invisible under vamos because that code
+ * path needs ExAll -- which vamos can't run at all, so recursion was
+ * never reached there: (1) recursing into a child directory Lock()ed
+ * the manifest-RELATIVE path directly (e.g. "Sub"), which resolves
+ * relative to the calling process's own current directory, not the
+ * volume being scanned -- failed with IoErr 209 the moment a source
+ * tree had any subdirectory at all; fixed by threading the volume
+ * root path down through scan_dir()/process_entry() so Lock() gets a
+ * real absolute path (amisnap_join_amiga_path(), src/amiga/amipath.h),
+ * while path_buf stays purely the relative path used for REC_ENTRY.
+ * (2) That join itself was wrong too: an unverified assumption (three
+ * places in the codebase, all saying "unconditional '/' separator is
+ * harmless even after a trailing ':'") turned out false --
+ * "Source:/Sub" also fails to Lock() with IoErr 209; only "Source:Sub"
+ * (no slash) works. amipath.h's shared helper fixes this once instead
+ * of patching three call sites independently. A single-directory (no
+ * subdirectories) source tree would never have exercised either bug
+ * -- worth remembering when deciding how "smoke" a smoke test needs
+ * to be.
  */
 #include <string.h>
 
@@ -29,6 +50,7 @@
 #include <proto/dos.h>
 #include <proto/exec.h>
 
+#include "amipath.h"
 #include "scan.h"
 
 /* Heap-allocated per directory level (not stack-local): a recursive
@@ -79,11 +101,12 @@ static int path_push(char *buf, size_t cap, size_t base_len, const char *name,
     return AMISNAP_OK;
 }
 
-static int scan_dir(BPTR lock, char *path_buf, size_t path_len, LONG type,
+static int scan_dir(const char *root_path, BPTR lock, char *path_buf, size_t path_len, LONG type,
                      const amisnap_scan_visitor *visitor,
                      amisnap_scan_caps *caps, amisnap_scan_result *result);
 
-static int process_entry(struct ExAllData *ead, LONG type, char *path_buf, size_t base_len,
+static int process_entry(const char *root_path, struct ExAllData *ead, LONG type,
+                          char *path_buf, size_t base_len,
                           const amisnap_scan_visitor *visitor,
                           amisnap_scan_caps *caps, amisnap_scan_result *result)
 {
@@ -139,17 +162,23 @@ static int process_entry(struct ExAllData *ead, LONG type, char *path_buf, size_
     if (entry.type == AMISNAP_ETYPE_DIR) {
         BPTR child_lock;
         int abort_rc;
+        char lock_path[AMISNAP_SCAN_PATH_BUF_LEN + 256];
 
         result->dirs_seen++;
         rc = visitor->on_entry(visitor->user, &entry);
         if (rc != 0)
             return rc;
 
-        child_lock = Lock((STRPTR)path_buf, ACCESS_READ);
+        rc = amisnap_join_amiga_path(root_path, (const uint8_t *)path_buf, strlen(path_buf),
+                                      lock_path, sizeof(lock_path));
+        if (rc != AMISNAP_OK)
+            return rc;
+
+        child_lock = Lock((STRPTR)lock_path, ACCESS_READ);
         if (!child_lock)
             return AMISNAP_ERR_IO;
 
-        abort_rc = scan_dir(child_lock, path_buf, child_len, type, visitor, caps, result);
+        abort_rc = scan_dir(root_path, child_lock, path_buf, child_len, type, visitor, caps, result);
         UnLock(child_lock);
         return abort_rc;
     }
@@ -164,7 +193,7 @@ static int process_entry(struct ExAllData *ead, LONG type, char *path_buf, size_
     return visitor->on_entry(visitor->user, &entry);
 }
 
-static int scan_dir(BPTR lock, char *path_buf, size_t path_len, LONG type,
+static int scan_dir(const char *root_path, BPTR lock, char *path_buf, size_t path_len, LONG type,
                      const amisnap_scan_visitor *visitor,
                      amisnap_scan_caps *caps, amisnap_scan_result *result)
 {
@@ -209,7 +238,7 @@ static int scan_dir(BPTR lock, char *path_buf, size_t path_len, LONG type,
         if (eac->eac_Entries > 0) {
             struct ExAllData *ead = buffer;
             do {
-                rc = process_entry(ead, type, path_buf, path_len, visitor, caps, result);
+                rc = process_entry(root_path, ead, type, path_buf, path_len, visitor, caps, result);
                 if (rc != AMISNAP_OK)
                     goto done;
                 ead = ead->ed_Next;
@@ -295,7 +324,7 @@ int amisnap_scan_volume(const char *root_path, const amisnap_scan_visitor *visit
     {
         char path_buf[AMISNAP_SCAN_PATH_BUF_LEN];
         path_buf[0] = '\0';
-        rc = scan_dir(root_lock, path_buf, 0, ED_OWNER, visitor, caps, result);
+        rc = scan_dir(root_path, root_lock, path_buf, 0, ED_OWNER, visitor, caps, result);
     }
 
     UnLock(root_lock);

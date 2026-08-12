@@ -27,6 +27,7 @@
  * operation could not run at all (repository unreachable, out of
  * memory, a corrupt/missing manifest).
  */
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +36,7 @@
 #include <dos/rdargs.h>
 #include <proto/dos.h>
 
+#include "amipath.h"
 #include "backend_dir.h"
 #include "index.h"
 #include "repo.h"
@@ -59,38 +61,34 @@
 static const char verstring[] =
     "$VER: AmiSnap " XSTR(VERSION) "." XSTR(REVISION) " (12.08.2026)";
 
-/* --- shared helpers --------------------------------------------------- */
+/* --- logging ------------------------------------------------------------
+ * LOG=<path> (implementation-plan.md's item 8 scope, decided over
+ * relying on untested Startup-Sequence '>' file redirection in a
+ * minimal, no-Workbench boot): when given, AmiSnap opens the file
+ * itself via fopen() and both normal output (amilog) and error output
+ * (amilog_err) go there instead of stdout/stderr -- one combined log
+ * a host-mounted directory can read back after the run, no Shell
+ * redirection semantics depended on. Without LOG=, behaves exactly as
+ * before (stdout/stderr). */
+static FILE *g_log = NULL;
 
-/* Joins `root` (an AmigaDOS path, e.g. "Work:" or "Backups:Restored")
- * with a manifest-relative `relpath`/`rellen` (format.md's '/'-
- * separated E_PATH, empty = the root itself) into a real AmigaDOS
- * path. Always inserts '/' between them when relpath is non-empty,
- * even if root already ends in ':' -- "Volume:/subpath" resolves
- * identically to "Volume:subpath" (the leading-'/'-means-parent-
- * directory special case only applies to a RELATIVE path with no
- * preceding "Volume:" at all, which this never produces), so the
- * unconditional separator is harmless and keeps this helper simple.
- * Returns AMISNAP_ERR_TOO_LONG (buf left unmodified) rather than
- * overflowing if it doesn't fit. */
-static int join_amiga_path(const char *root, const uint8_t *relpath, size_t rellen,
-                            char *buf, size_t bufsize)
+static void amilog(const char *fmt, ...)
 {
-    size_t root_len = strlen(root);
-    size_t needed = root_len + (rellen > 0 ? 1 + rellen : 0) + 1;
-
-    if (needed > bufsize)
-        return AMISNAP_ERR_TOO_LONG;
-
-    if (rellen == 0) {
-        memcpy(buf, root, root_len + 1);
-    } else {
-        memcpy(buf, root, root_len);
-        buf[root_len] = '/';
-        memcpy(buf + root_len + 1, relpath, rellen);
-        buf[root_len + 1 + rellen] = '\0';
-    }
-    return AMISNAP_OK;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_log ? g_log : stdout, fmt, ap);
+    va_end(ap);
 }
+
+static void amilog_err(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_log ? g_log : stderr, fmt, ap);
+    va_end(ap);
+}
+
+/* --- shared helpers --------------------------------------------------- */
 
 #define MAX_SNAPSHOTS 1024
 
@@ -200,7 +198,7 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
         LONG size;
         uint8_t *data = NULL;
 
-        rc = join_amiga_path(ctx->source_root, entry->path, entry->path_len, path, sizeof(path));
+        rc = amisnap_join_amiga_path(ctx->source_root, entry->path, entry->path_len, path, sizeof(path));
         if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
 
         lock = Lock((STRPTR)path, ACCESS_READ);
@@ -251,13 +249,13 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     int rc;
 
     if (!source || !repo) {
-        fprintf(stderr, "AmiSnap: SNAPSHOT needs SOURCE=<path> and REPO=<path>\n");
+        amilog_err("AmiSnap: SNAPSHOT needs SOURCE=<path> and REPO=<path>\n");
         return RETURN_ERROR;
     }
 
     rc = amisnap_backend_dir_open(repo, &be);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
         return RETURN_FAIL;
     }
 
@@ -273,7 +271,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     caps_visitor.on_entry = caps_only_on_entry;
     rc = amisnap_scan_volume(source, &caps_visitor, &caps, &caps_pass_result);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: cannot scan \"%s\" (error %d)\n", source, rc);
+        amilog_err("AmiSnap: cannot scan \"%s\" (error %d)\n", source, rc);
         amisnap_backend_close(&be);
         return RETURN_FAIL;
     }
@@ -292,7 +290,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     }
     rc = amisnap_repo_writer_snap(&rw, &snap);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: cannot start snapshot (error %d)\n", rc);
+        amilog_err("AmiSnap: cannot start snapshot (error %d)\n", rc);
         amisnap_repo_writer_free(&rw);
         amisnap_backend_close(&be);
         return RETURN_FAIL;
@@ -308,7 +306,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     vol.caps_flags = caps.owner_supported ? AMISNAP_VOLCAP_OWNER : 0;
     rc = amisnap_repo_writer_volume(&rw, &vol);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: cannot record volume info (error %d)\n", rc);
+        amilog_err("AmiSnap: cannot record volume info (error %d)\n", rc);
         amisnap_repo_writer_free(&rw);
         amisnap_backend_close(&be);
         return RETURN_FAIL;
@@ -322,7 +320,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     real_visitor.on_entry = snapshot_on_entry;
     rc = amisnap_scan_volume(source, &real_visitor, &caps, &real_result);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: scan failed partway through (error %d)\n", rc);
+        amilog_err("AmiSnap: scan failed partway through (error %d)\n", rc);
         amisnap_repo_writer_free(&rw);
         amisnap_backend_close(&be);
         return RETURN_FAIL;
@@ -332,11 +330,11 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     amisnap_repo_writer_free(&rw);
     amisnap_backend_close(&be);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: could not commit snapshot (error %d)\n", rc);
+        amilog_err("AmiSnap: could not commit snapshot (error %d)\n", rc);
         return RETURN_FAIL;
     }
 
-    printf("Snapshot %s: %lu dirs, %lu files (%lu failed), %lu links skipped\n",
+    amilog("Snapshot %s: %lu dirs, %lu files (%lu failed), %lu links skipped\n",
            snapid, (unsigned long)real_result.dirs_seen, (unsigned long)ctx.files_ok,
            (unsigned long)ctx.files_failed, (unsigned long)real_result.links_skipped);
 
@@ -376,25 +374,25 @@ static LONG cmd_list(const char *repo)
     int rc, i;
 
     if (!repo) {
-        fprintf(stderr, "AmiSnap: LIST needs REPO=<path>\n");
+        amilog_err("AmiSnap: LIST needs REPO=<path>\n");
         return RETURN_ERROR;
     }
 
     rc = amisnap_backend_dir_open(repo, &be);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
         return RETURN_FAIL;
     }
 
     rc = list_all_snapshots(&be, &list);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: cannot list snapshots (error %d)\n", rc);
+        amilog_err("AmiSnap: cannot list snapshots (error %d)\n", rc);
         amisnap_backend_close(&be);
         return RETURN_FAIL;
     }
 
     if (list.count == 0)
-        printf("No snapshots in \"%s\"\n", repo);
+        amilog("No snapshots in \"%s\"\n", repo);
 
     for (i = 0; i < list.count; i++) {
         amisnap_buf mf;
@@ -403,7 +401,7 @@ static LONG cmd_list(const char *repo)
 
         rc = fetch_manifest(&be, list.ids[i], &mf);
         if (rc != AMISNAP_OK) {
-            printf("%s  (manifest unreadable, error %d)\n", list.ids[i], rc);
+            amilog("%s  (manifest unreadable, error %d)\n", list.ids[i], rc);
             continue;
         }
 
@@ -416,14 +414,14 @@ static LONG cmd_list(const char *repo)
         amisnap_buf_free(&mf);
 
         if (rc != AMISNAP_OK || !ctx.seen) {
-            printf("%s  (manifest invalid, error %d)\n", list.ids[i], rc);
+            amilog("%s  (manifest invalid, error %d)\n", list.ids[i], rc);
             continue;
         }
 
-        printf("%s  %lu entries", list.ids[i], (unsigned long)ctx.entry_count);
+        amilog("%s  %lu entries", list.ids[i], (unsigned long)ctx.entry_count);
         if (ctx.snap.has_comment)
-            printf("  \"%.*s\"", (int)ctx.snap.comment_len, (const char *)ctx.snap.comment);
-        printf("\n");
+            amilog("  \"%.*s\"", (int)ctx.snap.comment_len, (const char *)ctx.snap.comment);
+        amilog("\n");
     }
 
     amisnap_backend_close(&be);
@@ -441,26 +439,26 @@ static LONG cmd_verify(const char *repo, const char *snapid_arg, int full)
     int rc;
 
     if (!repo) {
-        fprintf(stderr, "AmiSnap: VERIFY needs REPO=<path>\n");
+        amilog_err("AmiSnap: VERIFY needs REPO=<path>\n");
         return RETURN_ERROR;
     }
 
     rc = amisnap_backend_dir_open(repo, &be);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
         return RETURN_FAIL;
     }
 
     rc = resolve_snapid(&be, snapid_arg, snapid);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: no snapshot to verify (error %d)\n", rc);
+        amilog_err("AmiSnap: no snapshot to verify (error %d)\n", rc);
         amisnap_backend_close(&be);
         return RETURN_FAIL;
     }
 
     rc = fetch_manifest(&be, snapid, &mf);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: cannot read manifest %s (error %d)\n", snapid, rc);
+        amilog_err("AmiSnap: cannot read manifest %s (error %d)\n", snapid, rc);
         amisnap_backend_close(&be);
         return RETURN_FAIL;
     }
@@ -469,11 +467,11 @@ static LONG cmd_verify(const char *repo, const char *snapid_arg, int full)
     amisnap_buf_free(&mf);
     amisnap_backend_close(&be);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: manifest %s failed to decode (error %d)\n", snapid, rc);
+        amilog_err("AmiSnap: manifest %s failed to decode (error %d)\n", snapid, rc);
         return RETURN_FAIL;
     }
 
-    printf("Verify %s (%s): %lu objects checked, %lu missing, %lu corrupt\n",
+    amilog("Verify %s (%s): %lu objects checked, %lu missing, %lu corrupt\n",
            snapid, full ? "FULL" : "structural",
            (unsigned long)result.objects_checked, (unsigned long)result.objects_missing,
            (unsigned long)result.objects_corrupt);
@@ -497,25 +495,25 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
     int rc;
 
     if (!repo || !dest) {
-        fprintf(stderr, "AmiSnap: RESTORE needs REPO=<path> and DEST=<path>\n");
+        amilog_err("AmiSnap: RESTORE needs REPO=<path> and DEST=<path>\n");
         return RETURN_ERROR;
     }
 
     rc = amisnap_backend_dir_open(repo, &repo_be);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
         return RETURN_FAIL;
     }
     rc = amisnap_backend_dir_open(dest, &dest_be);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: cannot open destination \"%s\" (error %d)\n", dest, rc);
+        amilog_err("AmiSnap: cannot open destination \"%s\" (error %d)\n", dest, rc);
         amisnap_backend_close(&repo_be);
         return RETURN_FAIL;
     }
 
     rc = resolve_snapid(&repo_be, snapid_arg, snapid);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: no snapshot to restore (error %d)\n", rc);
+        amilog_err("AmiSnap: no snapshot to restore (error %d)\n", rc);
         amisnap_backend_close(&repo_be);
         amisnap_backend_close(&dest_be);
         return RETURN_FAIL;
@@ -523,7 +521,7 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
 
     rc = fetch_manifest(&repo_be, snapid, &mf);
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: cannot read manifest %s (error %d)\n", snapid, rc);
+        amilog_err("AmiSnap: cannot read manifest %s (error %d)\n", snapid, rc);
         amisnap_backend_close(&repo_be);
         amisnap_backend_close(&dest_be);
         return RETURN_FAIL;
@@ -546,18 +544,18 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
     amisnap_backend_close(&dest_be);
 
     if (rc != AMISNAP_OK) {
-        fprintf(stderr, "AmiSnap: restore of %s aborted (error %d) -- %lu dirs, %lu files "
+        amilog_err("AmiSnap: restore of %s aborted (error %d) -- %lu dirs, %lu files "
                         "written before the failure\n",
                 snapid, rc, (unsigned long)result.dirs_created, (unsigned long)result.files_written);
         return RETURN_FAIL;
     }
 
-    printf("Restored %s: %lu dirs, %lu files (%lu bytes), %lu links skipped, %lu entries "
+    amilog("Restored %s: %lu dirs, %lu files (%lu bytes), %lu links skipped, %lu entries "
            "outside the subtree filter\n",
            snapid, (unsigned long)result.dirs_created, (unsigned long)result.files_written,
            (unsigned long)result.bytes_written, (unsigned long)result.links_skipped,
            (unsigned long)result.entries_skipped);
-    printf("Metadata: protection %lu/%lu, comment %lu/%lu, date %lu/%lu, owner %lu/%lu ok\n",
+    amilog("Metadata: protection %lu/%lu, comment %lu/%lu, date %lu/%lu, owner %lu/%lu ok\n",
            (unsigned long)meta_ctx.totals.prot_ok,
            (unsigned long)(meta_ctx.totals.prot_ok + meta_ctx.totals.prot_failed),
            (unsigned long)meta_ctx.totals.comment_ok,
@@ -587,8 +585,8 @@ static int str_ieq(const char *a, const char *b)
     return *a == '\0' && *b == '\0';
 }
 
-#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S"
-enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_COUNT };
+#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K"
+enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_LOG, ARG_COUNT };
 
 static int real_main(void *arg)
 {
@@ -596,12 +594,14 @@ static int real_main(void *arg)
     LONG args[ARG_COUNT];
     LONG rc;
     const char *action;
+    const char *logpath;
 
     (void)arg;
 
     /* Reference verstring so the compiler never discards it -- the
      * $VER cookie must survive into the binary for `version` and
-     * `make dist`'s own grep. */
+     * `make dist`'s own grep. Always on plain stderr: LOG= isn't known
+     * until after ReadArgs succeeds, so this banner can't respect it. */
     fprintf(stderr, "%s\n", verstring + 6);
 
     memset(args, 0, sizeof(args));
@@ -609,6 +609,16 @@ static int real_main(void *arg)
     if (!rdargs) {
         fprintf(stderr, "AmiSnap: bad arguments. Template: %s\n", TEMPLATE);
         return RETURN_ERROR;
+    }
+
+    logpath = (const char *)args[ARG_LOG];
+    if (logpath) {
+        g_log = fopen(logpath, "w");
+        if (!g_log) {
+            fprintf(stderr, "AmiSnap: cannot open LOG=\"%s\" for writing\n", logpath);
+            FreeArgs(rdargs);
+            return RETURN_FAIL;
+        }
     }
 
     action = (const char *)args[ARG_ACTION];
@@ -625,11 +635,15 @@ static int real_main(void *arg)
         rc = cmd_verify((const char *)args[ARG_REPO], (const char *)args[ARG_SNAPID],
                          args[ARG_FULL] != 0);
     } else {
-        fprintf(stderr, "AmiSnap: unknown ACTION \"%s\" -- expected SNAPSHOT, RESTORE, LIST, or VERIFY\n",
-                action ? action : "");
+        amilog_err("AmiSnap: unknown ACTION \"%s\" -- expected SNAPSHOT, RESTORE, LIST, or VERIFY\n",
+                   action ? action : "");
         rc = RETURN_ERROR;
     }
 
+    if (g_log) {
+        fclose(g_log);
+        g_log = NULL;
+    }
     FreeArgs(rdargs);
     return (int)rc;
 }

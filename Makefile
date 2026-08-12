@@ -62,7 +62,7 @@ AMIGA_GCC_IMAGE ?= ghcr.io/sidick/amiga-dev:1
 # for real in sibling AmiAuth's release rehearsal).
 DOCKER_USER     := --user "$(shell id -u):$(shell id -g)"
 
-.PHONY: all test m68k m68k-docker clean build test-host stackswap-vamos-test test-target lint dist version
+.PHONY: all test m68k m68k-docker clean build test-host stackswap-vamos-test copperline-fixtures test-target lint dist version
 
 all: test
 
@@ -92,11 +92,29 @@ $(STACKSWAP_TEST_BIN): $(STACKSWAP_TEST_SRC) src/amiga/stackswap.c src/amiga/sta
 stackswap-vamos-test: $(STACKSWAP_TEST_BIN)
 	vamos -C 020 $(STACKSWAP_TEST_BIN)
 
-# Nothing else runs on-target yet -- Phase 1's engine is host-tested first,
-# and the Copperline metadata round-trip harness (docs/proposal.md
-# "Toolchain and testing") lands with the Amiga-side capture code. run.sh
-# skips cleanly (exit 0 with a SKIP message, not a false pass).
-test-target: m68k
+# --- copperline-fixtures: test-only stage/readback helpers (Phase 1 item 8) -
+# Never shipped -- same convention as AmiPilot's own fixtures/. Kept out of
+# `m68k`/`build` for the same reason: not a real deliverable.
+COPPERLINE_FIXTURE_DIR := $(BUILD)/copperline-fixtures
+
+$(COPPERLINE_FIXTURE_DIR)/stage: tests/copperline/fixture/stage.c | $(BUILD)/.dir
+	@mkdir -p $(COPPERLINE_FIXTURE_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) $< -o $@
+
+$(COPPERLINE_FIXTURE_DIR)/readback: tests/copperline/fixture/readback.c | $(BUILD)/.dir
+	@mkdir -p $(COPPERLINE_FIXTURE_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) $< -o $@
+
+copperline-fixtures: $(COPPERLINE_FIXTURE_DIR)/stage $(COPPERLINE_FIXTURE_DIR)/readback
+
+# Copperline on-target harness (docs/proposal.md "Toolchain and testing",
+# implementation-plan.md Phase 1 item 8): boots a minimal A1200/68020 from
+# tests/copperline/boot/, runs stage -> AmiSnap SNAPSHOT/LIST/VERIFY/RESTORE
+# -> readback, then asserts against the host-mounted result files. run.sh
+# skips cleanly (exit 0 with a SKIP message, not a false pass) when the
+# Kickstart ROM asset (nondistribution/roms/, gitignored) is absent, since
+# CI has no such licensed asset.
+test-target: m68k copperline-fixtures
 	sh tests/copperline/run.sh
 
 # semgrep installs into a venv rather than the system/user Python, so

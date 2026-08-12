@@ -4,6 +4,7 @@
 #include <dos/dos.h>
 #include <proto/dos.h>
 
+#include "amipath.h"
 #include "restore_meta.h"
 
 /* SetComment()'s own autodoc: "a pointer to a null-terminated string
@@ -91,19 +92,20 @@ void amisnap_restore_meta_apply(const char *path, const amisnap_entry_meta *entr
     apply_protection(path, entry, result); /* last -- see restore_meta.h */
 }
 
-/* dest_root + '/' + entry path -- generous, matching scan.c/restore.c's
- * own fixed-path-buffer convention; not shared with either (this
- * module has no reason to depend on scan.h just for one constant). */
+/* dest_root + entry path -- generous, matching scan.c/restore.c's own
+ * fixed-path-buffer convention; not shared with either (this module
+ * has no reason to depend on scan.h just for one constant). */
 #define RESTORE_META_PATH_BUF_LEN 2304
 
 void amisnap_restore_meta_on_entry(void *user, const amisnap_entry_meta *entry)
 {
     amisnap_restore_meta_ctx *ctx = (amisnap_restore_meta_ctx *)user;
     char path[RESTORE_META_PATH_BUF_LEN];
-    size_t root_len = strlen(ctx->dest_root);
-    size_t needed = root_len + (entry->path_len > 0 ? 1 + entry->path_len : 0) + 1;
+    int rc;
 
-    if (needed > sizeof(path)) {
+    rc = amisnap_join_amiga_path(ctx->dest_root, entry->path, entry->path_len,
+                                  path, sizeof(path));
+    if (rc != AMISNAP_OK) {
         /* Astronomically unlikely (format.md's own Limits section:
          * paths anywhere near this size are unreachable from a real
          * filesystem) but must degrade explicitly, not overflow the
@@ -117,16 +119,6 @@ void amisnap_restore_meta_on_entry(void *user, const amisnap_entry_meta *entry)
         ctx->totals.date_failed++;
         if (entry->has_owner) ctx->totals.owner_failed++;
         return;
-    }
-
-    if (entry->path_len == 0) {
-        /* format.md: empty E_PATH is the root itself. */
-        memcpy(path, ctx->dest_root, root_len + 1);
-    } else {
-        memcpy(path, ctx->dest_root, root_len);
-        path[root_len] = '/';
-        memcpy(path + root_len + 1, entry->path, entry->path_len);
-        path[root_len + 1 + entry->path_len] = '\0';
     }
 
     amisnap_restore_meta_apply(path, entry, &ctx->totals);
