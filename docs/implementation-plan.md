@@ -141,7 +141,9 @@ src/core/           portable engine (host CI runs all of it)
                       random round-trip property test      [done]
   manifest.[ch]       snapshot manifest: REC_SNAP/REC_VOLUME/REC_END +
                       the REC_ENTRY sequence meta.c encodes/decodes;
-                      serialize/parse a whole manifest      [phase 1]
+                      streaming writer, visitor-based reader enforcing
+                      record order, END_COUNT, and the END_HASH
+                      self-check                            [done]
   index.[ch]          local snapshot index: streamed compare of an
                       ExAll-shaped walk against the last snapshot;
                       the skip rule lives here            [phase 1]

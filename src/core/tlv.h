@@ -25,6 +25,7 @@
 #define AMISNAP_ERR_TOO_LONG        -4  /* a string exceeds 65535 bytes (format.md "Limits") */
 #define AMISNAP_ERR_MISSING_FIELD   -5  /* a critical field required by the record was absent */
 #define AMISNAP_ERR_NOMEM           -6
+#define AMISNAP_ERR_HASH_MISMATCH   -7  /* END_HASH doesn't match the manifest bytes it covers */
 
 /* A tag's high bit (0x8000) marks it critical -- format.md "TLV encoding". */
 #define AMISNAP_TAG_CRITICAL 0x8000u
@@ -69,6 +70,25 @@ int amisnap_buf_field_u64(amisnap_buf *b, uint16_t tag, uint64_t v);
  * bytes -- format.md "Conventions"). Returns AMISNAP_ERR_TOO_LONG
  * without modifying b if len > 65535. */
 int amisnap_buf_field_string(amisnap_buf *b, uint16_t tag, const void *p, size_t len);
+
+/* --- Common file header (format.md "Common file header") ---
+ * magic(4="ASNP") + ftype(u8) + version(u8) + flags(u16) = 8 bytes,
+ * shared by every structured repository file (the manifest today; the
+ * repository header once repo.c lands). */
+#define AMISNAP_FORMAT_VERSION 1u
+#define AMISNAP_FTYPE_REPO     1u
+#define AMISNAP_FTYPE_MANIFEST 2u
+
+int amisnap_write_header(amisnap_buf *b, uint8_t ftype, uint16_t flags);
+
+/* Validates magic, `ftype` (must equal expect_ftype), and version
+ * (must equal AMISNAP_FORMAT_VERSION -- format.md: "A reader MUST
+ * refuse a file whose version it does not implement"). On success,
+ * *flags_out and *body_start (always 8) are set. Returns
+ * AMISNAP_ERR_TRUNCATED if len < 8, AMISNAP_ERR_MALFORMED on a magic/
+ * ftype/version mismatch. */
+int amisnap_read_header(const uint8_t *data, size_t len, uint8_t expect_ftype,
+                         uint16_t *flags_out, size_t *body_start);
 
 /* --- Read cursor over a borrowed byte range --- */
 typedef struct {

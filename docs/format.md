@@ -127,6 +127,7 @@ Common header (`ftype`=1), then records:
 | 0x0012 | CHUNK_SIZE  | u32: fixed chunk split threshold/size in bytes (default 8388608); informational — refs are self-describing |
 | 0x8013 | KDF         | present iff CIPHER != 0: `kdfid:u8` (1 = PBKDF2-HMAC-SHA256) `iters:u32` `salt: string` |
 | 0x8014 | WRAPPED_KEY | present iff CIPHER != 0: the 32-byte repository key encrypted with the KDF-derived key (layout per Encryption section) |
+| 0x0015 | FORMAT_APP  | string, e.g. `"AmiSnap"`: stamped once at repository init, purely for self-identification — someone who finds a stray `amisnap.repo` with no other context and runs `strings` on it (magic `"ASNP"` plus this) learns what wrote it without needing a parser. Informational only; a reader MUST NOT branch on its value (that's what `ftype`/`version`/`CIPHER` are for) — it names the tool, not a contract. |
 
 A reader that does not implement the stated CIPHER MUST refuse the
 repository (critical tags make this automatic for future ciphers).

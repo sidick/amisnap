@@ -215,3 +215,32 @@ int amisnap_decode_u64(const uint8_t *value, size_t valuelen, uint64_t *out)
     *out = amisnap_get_be64(value);
     return AMISNAP_OK;
 }
+
+int amisnap_write_header(amisnap_buf *b, uint8_t ftype, uint16_t flags)
+{
+    uint8_t hdr[8];
+
+    hdr[0] = 'A'; hdr[1] = 'S'; hdr[2] = 'N'; hdr[3] = 'P';
+    hdr[4] = ftype;
+    hdr[5] = (uint8_t)AMISNAP_FORMAT_VERSION;
+    amisnap_put_be16(hdr + 6, flags);
+
+    return amisnap_buf_bytes(b, hdr, sizeof(hdr));
+}
+
+int amisnap_read_header(const uint8_t *data, size_t len, uint8_t expect_ftype,
+                         uint16_t *flags_out, size_t *body_start)
+{
+    if (len < 8)
+        return AMISNAP_ERR_TRUNCATED;
+    if (data[0] != 'A' || data[1] != 'S' || data[2] != 'N' || data[3] != 'P')
+        return AMISNAP_ERR_MALFORMED;
+    if (data[4] != expect_ftype)
+        return AMISNAP_ERR_MALFORMED;
+    if (data[5] != AMISNAP_FORMAT_VERSION)
+        return AMISNAP_ERR_MALFORMED;
+
+    *flags_out = amisnap_get_be16(data + 6);
+    *body_start = 8;
+    return AMISNAP_OK;
+}
