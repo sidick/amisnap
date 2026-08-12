@@ -396,8 +396,11 @@ src/amiga/          m68k build only
                       and is now on record for item 7's own vamos
                       regression test to reuse.               [done]
   socket.c            bsdsocket glue for webdav/s3, cross-build-
-                      verified only (see Phase 3 item 2 for why -- no
-                      vamos/Copperline coverage exists yet)   [done]
+                      verified only so far -- real on-target coverage
+                      is unblocked (Copperline 0.15+ --hostsocket-net
+                      host, confirmed via sibling amirfb), just not
+                      wired into a harness until item 3 needs it
+                      (see Phase 3 item 2)                    [done]
   tls.c               soft-loaded AmiSSL, per-destination  [phase 3]
 
 src/cli/            AmiSnap front-end: one ReadArgs template
@@ -1384,13 +1387,27 @@ protocol code against a local WebDAV container.
    the full `AmiSnap` binary under `m68k-amigaos-gcc -noixemul` (a real
    check -- the inline LVO stubs still have to resolve at link time).
    Unlike this codebase's other Amiga-side modules, there is no
-   cross-build-then-vamos-then-Copperline staged story here yet: vamos
+   cross-build-then-vamos-then-Copperline staged story here *yet*: vamos
    has no bsdsocket.library emulation at all (confirmed absent from its
    own skill reference material, unlike its partial dos.library
-   coverage), and Copperline's own network-emulation capability is
-   unconfirmed. Genuine on-target verification is deferred to item 3
-   (something real to connect to) and item 5 (clarifying what's
-   actually testable where).
+   coverage). Genuine on-target verification is deferred to item 3
+   (something real to connect to), but **the path to it is now
+   confirmed, not open**: sibling project amirfb already validated
+   Copperline 0.15+'s `--hostsocket-net host` flag (confirmed locally
+   installed: `copperline 0.15.0`) -- a "HostSocket bsdsocket.library
+   board" that intercepts the guest's bsdsocket.library calls
+   (connect/send/recv/bind/listen/accept) and passes them straight
+   through to real host OS sockets, bypassing the emulated network
+   stack entirely. No SANA-II driver, no AmiTCP/Miami stack, no
+   bridge/NAT setup, no root privileges needed on the guest OR host
+   side -- distinct from the separate `--a2065-net` flag (a real A2065
+   Ethernet board emulation for guest SANA-II drivers, which none of
+   this needs). It's a CLI flag, not a `machine.toml` field (`--help`
+   shows no `[net]`/`[hostsocket]` config-file section) -- item 3's own
+   Copperline harness will add `--hostsocket-net host` to the
+   `copperline` invocation the same way `run-perf.sh` already adds
+   `--cpu`/`--model` flags alongside its own toml, not by extending
+   `machine.toml` itself.
 3. `webdav.c` -- an `amisnap_backend_ops` implementation over
    items 1+2 (PUT/GET/MKCOL/PROPFIND mapped onto `backend.h`'s
    put/get/mkcol/exists/list/remove, plus the streaming
