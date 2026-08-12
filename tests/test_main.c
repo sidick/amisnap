@@ -4,10 +4,12 @@
 test_ctx g_test = { 0, 0, 0 };
 
 void run_xxhash32_tests(void);
+void run_blake2s_tests(void);
 
 int main(void)
 {
     run_xxhash32_tests();
+    run_blake2s_tests();
 
     fprintf(stderr, "passed=%d failed=%d pending=%d\n",
             g_test.passed, g_test.failed, g_test.pending);
