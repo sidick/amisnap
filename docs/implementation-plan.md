@@ -983,7 +983,33 @@ snapshot's full tree+metadata with the C code uninvolved.
    used rather than hand-rolled leap-year logic -- scoped as its own
    item, not bundled into this one.
 
-2. **Deferred design note: a backup exclude list.** Raised in
+2. Interrupted-run recovery gate ("kill -9 mid-snapshot at any point
+   leaves a repository `verify` passes on"). **Done (2026-08-12) --
+   and, on inspection, already true of the existing commit protocol
+   rather than new mechanism this item had to add.** `backend_dir.c`'s
+   `dir_put()` (every object AND the manifest itself go through it) was
+   already write-to-`tmp/`-then-atomic-`rename()` from Phase 1; content
+   objects are already dedup-checked by hash before writing; the
+   manifest is already renamed into `snapshots/` last, after every
+   object. Together these already imply exactly the gate's guarantee --
+   this item turned out to be about *proving* that empirically rather
+   than building something new, matching house rule 6.
+   `tests/test_crash_safety.c` does that proof for real: forks a child
+   that starts writing a second snapshot into a repository that already
+   has one committed, sends the child a real `SIGKILL` (deterministic
+   on file count, not a timing-based `sleep()` -- doesn't flake under a
+   loaded CI runner) partway through, then from the parent confirms the
+   prior snapshot still lists and verifies clean, the partial one is
+   invisible to `list_snapshots` (its manifest was never renamed), a
+   no-op `PRUNE` sweeps whatever `tmp/` litter the kill left behind
+   without touching anything real, and the repository is still
+   perfectly usable for a brand new snapshot afterward. Confirmed
+   stable across five consecutive runs and clean under ASan/UBSan.
+   `backend_dir.c` is the same portable code AmigaOS itself uses, so
+   this is a real proof of the guarantee on the actual code path, not a
+   host-only approximation of it.
+
+3. **Deferred design note: a backup exclude list.** Raised in
    discussion (2026-08-12), not scheduled to a phase yet: a plain-text
    file (per-source-directory, or one global list, TBD) naming files/
    directories the user never wants backed up, read by `scan.c` before
