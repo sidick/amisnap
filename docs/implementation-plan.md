@@ -608,13 +608,47 @@ Order of work within the phase:
    unsafe to test) recursive operation that doesn't depend on
    `ExAll()`, since vamos can't run that. `scan.c`'s own real recursion
    depth is verified on-target instead (item 8), not under vamos.
-8. On-target harness: Copperline job snapshots a guest tree, host
-   asserts metadata fidelity via `.uaem` sidecars; Amiberry smoke test
-   against a Samba share for the real-NAS path. This is also where
-   `scan.c`'s actual directory-walk logic (`ExAll`/`Info`/
-   `AllocDosObject(DOS_EXALLCONTROL)`, none exercisable under vamos)
-   and `backend_dir.c`'s real filesystem I/O get their first genuine
-   execution confirmation, not just a cross-build.
+   **Done.** `tests/vamos/stackswap_test.c`: recurses 40 levels with a
+   256-byte touched buffer per frame (~10KB, comfortably inside the
+   32KB swapped stack, nowhere near overflowing it) inside
+   `amisnap_stackswap_run()`, capturing the deepest stack pointer
+   reached; compares it against the caller's own stack pointer
+   captured before the swap. `AllocMem()`'s returned block has no
+   proximity guarantee to the task's own stack region, so a large gap
+   (threshold 4096 bytes; observed in practice ~39KB) is a reliable,
+   always-safe positive signal -- never an attempt to trigger or
+   detect a real overflow. Confirmed this isn't a tautology by running
+   the *identical* recursion without the swap, live: it genuinely
+   crashed vamos's CPU emulation with an invalid memory access (a real
+   stack overflow, not a clean assertion failure) -- concrete proof
+   both that the danger this mechanism guards against is real, and
+   exactly why deliberately provoking it in an automated test would be
+   unsafe rather than a valid test technique. Wired into `make
+   test-host` (`stackswap-vamos-test`, depends on both
+   `m68k-amigaos-gcc` and `vamos` being on PATH together, same
+   assumption sibling AmiAuth's own vamos-based test-host step makes)
+   and confirmed running end to end inside the real CI container image
+   after clearing a stale build/ directory left over from local,
+   wrong-architecture host builds (a testing-workflow gotcha, not a
+   Makefile bug: never reuse one `build/` directory across a host
+   build and a containerized one without `make clean` between them).
+8. On-target harness: **Copperline, not Amiberry** -- decided
+   explicitly (2026-08-12): easier to automate (its own JSON-RPC
+   control protocol vs. Amiberry's more interactive MCP surface),
+   matching how this plan already treats Copperline as the primary
+   harness elsewhere and Amiberry as the interactive fallback.
+   Copperline job snapshots a guest tree, host asserts metadata
+   fidelity via `.uaem` sidecars. This is where `scan.c`'s actual
+   directory-walk logic (`ExAll`/`Info`/`AllocDosObject
+   (DOS_EXALLCONTROL)`, none exercisable under vamos -- confirmed
+   scan.c *and* backend_dir.c's `list()`, which turned out to depend
+   on `ExAll` too via libnix's opendir/readdir) and `backend_dir.c`'s
+   real filesystem I/O get their first genuine execution confirmation,
+   not just a cross-build. Kickstart ROMs for this are staged locally
+   in `nondistribution/roms/` (gitignored, never committed -- see its
+   own README). Amiberry smoke test against a real Samba share (the
+   actual Tier-1 NAS scenario) stays a secondary, interactive check,
+   not the primary automated path.
 
 Gate: snapshot → wipe → restore on FFS is metadata-bit-perfect in the
 emulator harness; 10k-file unchanged run under a minute on emulated

@@ -62,7 +62,7 @@ AMIGA_GCC_IMAGE ?= ghcr.io/sidick/amiga-dev:1
 # for real in sibling AmiAuth's release rehearsal).
 DOCKER_USER     := --user "$(shell id -u):$(shell id -g)"
 
-.PHONY: all test m68k m68k-docker clean build test-host test-target lint dist version
+.PHONY: all test m68k m68k-docker clean build test-host stackswap-vamos-test test-target lint dist version
 
 all: test
 
@@ -72,9 +72,27 @@ all: test
 # own build steps rather than assuming a prior job ran.
 build: m68k
 
-test-host: test
+test-host: test stackswap-vamos-test
 
-# Nothing runs on-target yet -- Phase 1's engine is host-tested first,
+# --- stackswap-vamos-test: Phase 1 item 7's vamos regression test ---------
+# Confirms amisnap_stackswap_run() genuinely swaps to a new stack -- see
+# tests/vamos/stackswap_test.c's own header for the safe (never
+# deliberately-overflow-triggering) test design, and
+# docs/implementation-plan.md's "Stack management" section for why.
+# Runs directly (no docker wrapping): like sibling AmiAuth's own vamos
+# asm-crypto-tests, this assumes it's running inside the amiga-dev image,
+# which has m68k-amigaos-gcc and vamos on PATH together -- the CI
+# test-host job's actual environment, not a bare host.
+STACKSWAP_TEST_SRC := tests/vamos/stackswap_test.c
+STACKSWAP_TEST_BIN := $(BUILD)/stackswap-test
+
+$(STACKSWAP_TEST_BIN): $(STACKSWAP_TEST_SRC) src/amiga/stackswap.c src/amiga/stackswap.h | $(BUILD)/.dir
+	$(M68K_CC) $(M68K_CFLAGS) $(STACKSWAP_TEST_SRC) src/amiga/stackswap.c -o $@
+
+stackswap-vamos-test: $(STACKSWAP_TEST_BIN)
+	vamos -C 020 $(STACKSWAP_TEST_BIN)
+
+# Nothing else runs on-target yet -- Phase 1's engine is host-tested first,
 # and the Copperline metadata round-trip harness (docs/proposal.md
 # "Toolchain and testing") lands with the Amiga-side capture code. run.sh
 # skips cleanly (exit 0 with a SKIP message, not a false pass).
