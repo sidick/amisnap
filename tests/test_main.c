@@ -8,6 +8,8 @@ void run_blake2s_tests(void);
 void run_tlv_tests(void);
 void run_meta_tests(void);
 void run_manifest_tests(void);
+void run_backend_dir_tests(void);
+void run_repo_tests(void);
 
 int main(void)
 {
@@ -16,6 +18,8 @@ int main(void)
     run_tlv_tests();
     run_meta_tests();
     run_manifest_tests();
+    run_backend_dir_tests();
+    run_repo_tests();
 
     fprintf(stderr, "passed=%d failed=%d pending=%d\n",
             g_test.passed, g_test.failed, g_test.pending);

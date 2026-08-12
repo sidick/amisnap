@@ -148,13 +148,25 @@ src/core/           portable engine (host CI runs all of it)
                       ExAll-shaped walk against the last snapshot;
                       the skip rule lives here            [phase 1]
   repo.[ch]           repository layout + operations over a backend:
-                      content-addressed objects, snapshot commit
-                      (atomic last), verify, prune        [phase 1-2]
-  backend.h           the backend API: open/put/get/list/delete/close
-                                                          [phase 1]
+                      write path done (content-addressed objects with
+                      exists()-gated dedup, snapshot commit atomic
+                      last, snapid collision handling); verify/prune
+                      land in phase 2                [write path done]
+  backend.h           the backend API: put/get/exists/list/remove/
+                      close, one vtable + opaque ctx        [done]
   backend_dir.c       portable directory backend — on Amiga this IS
                       Tier 1 (any mounted volume); on the host it is
-                      the CI test backend                 [phase 1]
+                      the CI test backend. Built on stdio/mkdir/
+                      opendir/readdir/rename, no #ifdefs; confirmed
+                      compiling AND linking clean under m68k-amigaos-
+                      gcc -noixemul (libnix genuinely provides these,
+                      not just headers) -- the module map's "portable
+                      core, not src/amiga/" assumption held. Real
+                      on-target *execution* of it is still unverified
+                      (no CLI wiring yet to exercise it on real
+                      hardware) -- confirm when item 6/7 lands; if it
+                      turns out wrong, dosio.c's src/amiga/ split is
+                      the documented fallback              [done]
   chunk.[ch]          fixed-size split for files > threshold (8MB
                       default)                            [phase 2]
   chacha20/pbkdf2/hmac  vendored from AmiAuth v1.0        [phase 4]
@@ -236,6 +248,14 @@ Order of work within the phase:
    bit-for-bit; host CI).
 3. `manifest` + `backend.h` + portable `backend_dir` + `repo` write
    path: `snapshot` against a host directory tree works under CI.
+   **Done.** Independently-verified round trip (writer's output read
+   back via a fresh backend_get + manifest_decode, not the writer's
+   own state), dedup confirmed to actually skip the second write (not
+   just overwrite-with-identical-bytes), snapid collision handling
+   exercised. amisnap.repo/REC_REPO (repository-level metadata: REPO_ID,
+   CIPHER, CHUNK_SIZE, FORMAT_APP) deliberately deferred -- nothing in
+   this gate needed it, since repo.c assumes CIPHER=0 -- lands with
+   whichever later item first needs to read it back.
 4. `index` + change detection implementing the archive-bit policy
    above; `list`.
 5. `restore` (full/subtree, alternate path, metadata-last) + `verify`

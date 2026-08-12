@@ -26,6 +26,8 @@
 #define AMISNAP_ERR_MISSING_FIELD   -5  /* a critical field required by the record was absent */
 #define AMISNAP_ERR_NOMEM           -6
 #define AMISNAP_ERR_HASH_MISMATCH   -7  /* END_HASH doesn't match the manifest bytes it covers */
+#define AMISNAP_ERR_IO              -8  /* a backend I/O primitive (open/write/rename/mkdir/...) failed */
+#define AMISNAP_ERR_NOT_FOUND       -9  /* a backend get/remove target does not exist */
 
 /* A tag's high bit (0x8000) marks it critical -- format.md "TLV encoding". */
 #define AMISNAP_TAG_CRITICAL 0x8000u
