@@ -58,6 +58,28 @@ Rules:
 - Integers inside a value use the smallest declared width; a field's
   layout is fixed by its tag definition below, not self-describing.
 
+## Limits (explicit, not implied)
+
+The format's only structural limits are inherited from the encoding
+primitives; they are stated here so writers can enforce them loudly
+rather than anyone discovering them by truncation:
+
+- **Any single string: 65,535 bytes** (u16 byte count). Real
+  filesystem ceilings — 107-byte filenames on long-name FFS/SFS/PFS3,
+  79-byte FileNotes on FFS — sit far below this; no string a classic
+  filesystem can produce comes near it.
+- **A full E_PATH: 65,535 bytes total**, since it is one string. This
+  is the format's one real ceiling: a path ~600 maximum-length
+  components deep would exceed it. **A writer encountering a path that
+  does not fit MUST fail that entry with a logged error — never
+  truncate, never silently skip** (the "degrades explicitly" rule).
+  The snapshot as a whole may continue and MUST report the failure in
+  its summary and RC.
+- Non-limits, for the record: directory *depth* is unconstrained
+  except through the path total (entries are a flat list, nothing
+  compounds); TLV values are u32-length (4GB); entries per manifest
+  u32 (~4.3 billion); file sizes u64.
+
 ## Common file header
 
 Every structured repository file (repository header, manifest — not
@@ -163,10 +185,10 @@ volume (proposal, "Repository format"):
 |--------|------------|-------|
 | 0x8040 | E_PATH     | string: path relative to VOL_ROOT, components joined with `/` (illegal in Amiga filenames, so unambiguous). Empty = the root itself (carries the root dir's metadata). |
 | 0x8041 | E_TYPE     | u8: 1 file, 2 directory, 3 softlink, 4 hardlink |
-| 0x8042 | E_PROT     | u32: the **full 32-bit protection mask, verbatim** (`fib_Protection` semantics: low nibble RWED active-low, HSPA, group/other RWED bits for muFS) |
+| 0x8042 | E_PROT     | u32: the **full 32-bit protection mask, verbatim** (`fib_Protection` semantics: low nibble RWED active-low, HSPA). Verbatim means field-blind: the MultiUser (muFS) group/other RWED bits, its setuid bit, and any bit a future filesystem defines all round-trip untouched, because the mask is never re-encoded field by field. |
 | 0x8043 | E_DATE     | DateStamp (3×u32), ticks precision |
 | 0x0044 | E_COMMENT  | string: the FileNote, byte-exact; absent = no comment (readers MUST distinguish absent from empty) |
-| 0x0045 | E_OWNER    | `uid:u16` `gid:u16` (ExAll ED_OWNER); absent = filesystem had none |
+| 0x0045 | E_OWNER    | `uid:u16` `gid:u16` (ExAll ED_OWNER — what muFS exposes); absent = filesystem had none. **Numeric IDs verbatim**: the muFS passwd database (name↔ID mapping) is deliberately not stored — restoring onto a system whose user database assigns the IDs differently applies the numbers as-is, an honest documented limit, and restore reports owner application skipped where the target has no owner support at all. |
 | 0x8046 | E_SIZE     | u64: file byte size. Required for E_TYPE 1; absent otherwise. (u64, not u32: the format outlives 4GB even if OS 3.x sources can't produce it) |
 | 0x8047 | E_CONTENT  | repeatable, ordered: one per content ref, `hash:32 bytes` `size:u64`. Concatenation of refs in record order reconstructs the file; ref sizes MUST sum to E_SIZE. One ref = whole file; several = fixed-size chunks. Required for E_TYPE 1 with E_SIZE > 0. |
 | 0x8048 | E_LINK     | string, required for E_TYPE 3/4: link target. Softlink: target path verbatim as stored by the filesystem. Hardlink: the E_PATH of the entry (same volume section, earlier in the manifest) this links to. |
