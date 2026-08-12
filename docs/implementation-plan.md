@@ -920,6 +920,20 @@ findings, not guesswork:
   real-time/vsync pacing -- confirmed by running the harness four times
   back to back and getting the identical 1682-tick result every time.
 
+**Self-backup guard (2026-08-12, done, not gated -- landed opportunistically
+alongside the performance gate work above).** `cmd_snapshot` now refuses a
+SNAPSHOT whose `REPO=` is the same object as, nested inside, or an ancestor
+of `SOURCE=` (`main.c`'s `snapshot_source_repo_overlap`/`lock_is_ancestor_
+or_self`, checked both directions via `Lock()`/`SameLock()`/`ParentDir()`
+walks, not string-prefix path comparison -- assigns/soft-links can alias
+the same volume two different ways a naive string check would miss).
+Without this, writing new repository objects into a directory that's also
+being scanned would feed the scan its own output on any later run, silently
+corrupting or endlessly growing the backup -- exactly principle 1's "must
+never happen quietly." Confirmed live on Copperline: `SOURCE=Source: REPO=
+Source:Sub` and the reverse both refuse with a clear `RETURN_ERROR`
+message; unrelated volumes (`SOURCE=Source: REPO=Repo:`) proceed normally.
+
 **Phase 2 — Prune + hardening + reference reader.**
 Retention pruning (`keep last N/daily/weekly/monthly`, mark-and-sweep),
 interrupted-run recovery (resumable writes, atomic manifest commit),
@@ -928,6 +942,33 @@ chunking for large files, `tools/amisnap_reader.py` + the CI
 cross-implementation check. Gate: kill -9 mid-snapshot at any point
 leaves a repository `verify` passes on; Python reader restores a
 snapshot's full tree+metadata with the C code uninvolved.
+
+**Deferred design note: media-spanning + parity (2026-08-12, not
+scheduled to a phase yet).** Two related, separable features raised in
+discussion, worth designing for but not building yet:
+
+- **Snapshot spanning/splitting across fixed-capacity destinations**
+  (CD/DVD/USB media smaller than the source volume). The repository
+  format is already a natural fit -- many small content-addressed
+  objects rather than one blob -- so a "span across N volumes, prompt
+  for the next one" mode is a fairly natural extension of `repo.c`'s
+  existing write path (greedily assign objects to the current volume by
+  remaining capacity, roll to the next when full) rather than a new
+  format. Without it today, a destination that's too small just fails
+  mid-write with a raw backend I/O error -- honest, per principle 1, but
+  poor UX for exactly the CD/USB case users will ask about.
+- **Parity/redundancy for removable media** (PAR2-style recovery data
+  generated after a spanned write). A genuinely separate, more optional
+  feature from spanning itself -- most users backing up to CD/USB care
+  more about "fits and restores" than bit-rot protection on the media,
+  so this shouldn't block or gate spanning.
+
+Recommended sequencing: after Phase 3 (WebDAV) and ideally Phase 5 (S3)
+are far enough along that the design accounts for both *unbounded*
+destinations (network/object storage, no spanning ever needed) and
+*fixed-capacity* ones (local media) from the start, rather than bolting
+capacity-awareness onto the backend abstraction retroactively. Revisit
+scheduling this properly once Phase 3 lands.
 
 **Phase 3 — WebDAV.** HTTP/1.1 client (PUT/GET/MKCOL/PROPFIND,
 keep-alive, resumable) over `src/amiga/socket.c`; per-destination

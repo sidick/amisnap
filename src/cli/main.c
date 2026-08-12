@@ -234,6 +234,82 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
     }
 }
 
+/* Returns 1 if `descendant` is the same object as `ancestor`, or is
+ * nested anywhere underneath it (walking ParentDir() up from
+ * `descendant` until either a SameLock() match or the top of the
+ * logical volume tree, which ParentDir()'s own autodoc says returns a
+ * NULL lock rather than looping). Returns 0 if it reaches the top
+ * without a match. `descendant` is borrowed (never UnLock()'d here);
+ * every intermediate lock this function itself creates via ParentDir()
+ * is UnLock()'d before returning.
+ *
+ * SameLock()'s own autodoc warns LOCK_SAME_VOLUME ("same volume,
+ * different object") shouldn't be treated as an alias -- e.g. sibling
+ * directories DH0:Work and DH0:Backups are on the same volume but
+ * don't overlap -- so only an exact LOCK_SAME counts as a match here,
+ * checked at every level on the way up, not just at the two starting
+ * points. */
+static int lock_is_ancestor_or_self(BPTR ancestor, BPTR descendant)
+{
+    BPTR cur = descendant;
+    BPTR next;
+    int owns_cur = 0;
+
+    for (;;) {
+        if (SameLock(ancestor, cur) == LOCK_SAME) {
+            if (owns_cur) UnLock(cur);
+            return 1;
+        }
+        next = ParentDir(cur);
+        if (owns_cur) UnLock(cur);
+        if (!next) return 0;
+        cur = next;
+        owns_cur = 1;
+    }
+}
+
+/* Refuses a SNAPSHOT whose REPO= is the same object as, nested inside,
+ * or an ancestor of SOURCE= -- backing up a volume onto itself. Without
+ * this, writing new repository objects into a directory that's also
+ * being scanned would feed the scan its own just-written output on any
+ * later run (or even mid-run, depending on scan/write interleaving),
+ * silently corrupting or endlessly growing the backup -- exactly the
+ * "data-losing bug" implementation-plan.md's principle 1 says must
+ * never happen quietly. Checked both directions: REPO under SOURCE is
+ * the dangerous, likely-accidental case ("SOURCE=DH0: REPO=DH0:
+ * Backups"), but SOURCE under REPO is also a real misconfiguration
+ * worth refusing rather than silently backing up the repository's own
+ * previous output as if it were user data.
+ *
+ * Lock() failures here are deliberately non-fatal to this check alone
+ * -- if either path can't be locked, the normal scan/backend-open path
+ * a few lines below reports that failure with its own clear message;
+ * this guard only needs to fire when both locks are real and it can
+ * prove an overlap. */
+static int snapshot_source_repo_overlap(const char *source, const char *repo)
+{
+    BPTR source_lock, repo_lock;
+    int overlap = 0;
+
+    source_lock = Lock((STRPTR)source, ACCESS_READ);
+    if (!source_lock)
+        return 0;
+
+    repo_lock = Lock((STRPTR)repo, ACCESS_READ);
+    if (!repo_lock) {
+        UnLock(source_lock);
+        return 0;
+    }
+
+    if (lock_is_ancestor_or_self(source_lock, repo_lock) ||
+        lock_is_ancestor_or_self(repo_lock, source_lock))
+        overlap = 1;
+
+    UnLock(repo_lock);
+    UnLock(source_lock);
+    return overlap;
+}
+
 static LONG cmd_snapshot(const char *source, const char *repo, const char *comment)
 {
     amisnap_backend be;
@@ -257,6 +333,14 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
         return RETURN_FAIL;
+    }
+
+    if (snapshot_source_repo_overlap(source, repo)) {
+        amilog_err("AmiSnap: REPO=\"%s\" is the same as, inside, or an ancestor of "
+                        "SOURCE=\"%s\" -- refusing to back a volume up onto itself\n",
+                repo, source);
+        amisnap_backend_close(&be);
+        return RETURN_ERROR;
     }
 
     /* Pass 1: caps-only walk (dostype/maxnamelen/owner_supported) so
