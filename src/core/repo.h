@@ -66,6 +66,57 @@ int amisnap_repo_writer_volume(amisnap_repo_writer *rw, const amisnap_volume_met
 int amisnap_repo_writer_file(amisnap_repo_writer *rw, amisnap_entry_meta *entry,
                               const void *data, size_t len);
 
+/* Files at or under this size go through amisnap_repo_writer_file()
+ * (one object, read whole into memory); files over it use
+ * amisnap_repo_writer_file_chunked() below instead, which never needs
+ * more than one chunk's worth of memory at a time regardless of the
+ * file's total size.
+ *
+ * 256 KiB, not format.md's own originally-documented 8 MiB default --
+ * corrected after real testing, not by inspection: an 8 MiB chunk
+ * buffer failed to allocate even at 8 MiB of fast RAM (Zorro II's own
+ * ceiling) under Copperline, confirmed via AMISNAP_ERR_NOMEM, not
+ * merely suspected. Whatever else is resident (AmiSnap itself, the
+ * OS, ExAll buffers, the growable content-ref array) needs headroom
+ * too, and the whole point of chunking is bounding memory for the
+ * *common*, resource-constrained case -- a well-equipped 68020+
+ * system with real 32-bit fast RAM can supply far more than this if
+ * it ever needs to, but the default has to work on a modest one
+ * first. format.md's own CHUNK_SIZE field stays "informational; refs
+ * are self-describing" either way -- this is a real, not merely
+ * documented, corrected default. */
+#define AMISNAP_DEFAULT_CHUNK_SIZE (256u * 1024u)
+
+/* Streaming counterpart to amisnap_repo_writer_file(), for files too
+ * large to read into memory whole -- a real constraint on a real
+ * Amiga's RAM budget, not just a future optimisation. The caller
+ * supplies `total_size` up front and a `read_fn` callback this
+ * function calls repeatedly, each time asking for up to `chunk_size`
+ * bytes at once (into a `chunk_size`-byte buffer this function
+ * allocates and frees itself, never the whole file): `read_fn(ctx,
+ * buf, want, *got)` must fill `buf` with exactly `want` bytes unless
+ * it's the final read, when returning fewer bytes (via *got) signals
+ * EOF; a negative AMISNAP_ERR_* return from `read_fn` aborts the whole
+ * call with that error. Each chunk becomes its own independently
+ * content-addressed, independently deduped object (format.md
+ * E_CONTENT: "several = fixed-size chunks") -- concatenating them in
+ * order reconstructs the file, exactly like restore.c already expects
+ * for any entry with more than one content ref.
+ *
+ * E_XHASH is computed via xxhash32.h's streaming API across every
+ * chunk read as it's read, covering the whole logical file with one
+ * value, not per chunk, per format.md's own definition of that field.
+ *
+ * entry->has_size/size/content/content_count/has_xhash/xhash are all
+ * overwritten by this call, same contract as amisnap_repo_writer_
+ * file(). Returns AMISNAP_OK or a negative AMISNAP_ERR_* code (from
+ * the backend, `read_fn`, or AMISNAP_ERR_NOMEM if the chunk buffer or
+ * the growable ref array can't be allocated). */
+int amisnap_repo_writer_file_chunked(amisnap_repo_writer *rw, amisnap_entry_meta *entry,
+                                      uint64_t total_size, size_t chunk_size,
+                                      int (*read_fn)(void *ctx, void *buf, size_t want, size_t *got),
+                                      void *ctx);
+
 /* For directories and links, which carry no content -- forwards
  * directly to the manifest writer. */
 int amisnap_repo_writer_entry(amisnap_repo_writer *rw, const amisnap_entry_meta *entry);

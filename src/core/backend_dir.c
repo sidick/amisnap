@@ -152,6 +152,92 @@ static int dir_put(amisnap_backend *be, const char *key, const void *data, size_
     return AMISNAP_OK;
 }
 
+typedef struct {
+    FILE *f;
+    char tmp_path[AMISNAP_BACKEND_DIR_MAX_PATH];
+    char final_path[AMISNAP_BACKEND_DIR_MAX_PATH];
+} dir_put_handle;
+
+static int dir_put_begin(amisnap_backend *be, const char *key, void **handle_out)
+{
+    dir_ctx *ctx = (dir_ctx *)be->ctx;
+    dir_put_handle *h;
+    char tmp_dir[AMISNAP_BACKEND_DIR_MAX_PATH];
+    const char *base;
+    int rc;
+
+    h = (dir_put_handle *)malloc(sizeof(*h));
+    if (!h) return AMISNAP_ERR_NOMEM;
+
+    rc = join_path(ctx, key, h->final_path, sizeof(h->final_path));
+    if (rc != AMISNAP_OK) { free(h); return rc; }
+
+    base = strrchr(key, '/');
+    base = base ? base + 1 : key;
+
+    rc = join_path(ctx, "tmp", tmp_dir, sizeof(tmp_dir));
+    if (rc != AMISNAP_OK) { free(h); return rc; }
+    if (snprintf(h->tmp_path, sizeof(h->tmp_path), "%s/%s", tmp_dir, base) >= (int)sizeof(h->tmp_path)) {
+        free(h);
+        return AMISNAP_ERR_MALFORMED;
+    }
+
+    rc = mkdir_p(tmp_dir);
+    if (rc != AMISNAP_OK) { free(h); return rc; }
+
+    h->f = fopen(h->tmp_path, "wb");
+    if (!h->f) { free(h); return AMISNAP_ERR_IO; }
+
+    *handle_out = h;
+    return AMISNAP_OK;
+}
+
+static int dir_put_append(amisnap_backend *be, void *handle, const void *data, size_t len)
+{
+    dir_put_handle *h = (dir_put_handle *)handle;
+    (void)be;
+
+    if (len > 0 && fwrite(data, 1, len, h->f) != len)
+        return AMISNAP_ERR_IO;
+    return AMISNAP_OK;
+}
+
+static int dir_put_finish(amisnap_backend *be, void *handle)
+{
+    dir_put_handle *h = (dir_put_handle *)handle;
+    int rc;
+    (void)be;
+
+    if (fclose(h->f) != 0) {
+        remove(h->tmp_path);
+        free(h);
+        return AMISNAP_ERR_IO;
+    }
+
+    rc = ensure_parent_dir(h->final_path);
+    if (rc != AMISNAP_OK) { remove(h->tmp_path); free(h); return rc; }
+
+    if (rename(h->tmp_path, h->final_path) != 0) {
+        remove(h->tmp_path);
+        free(h);
+        return AMISNAP_ERR_IO;
+    }
+    free(h);
+    return AMISNAP_OK;
+}
+
+static void dir_put_abort(amisnap_backend *be, void *handle)
+{
+    dir_put_handle *h = (dir_put_handle *)handle;
+    (void)be;
+
+    if (h) {
+        fclose(h->f);
+        remove(h->tmp_path);
+        free(h);
+    }
+}
+
 static int dir_get(amisnap_backend *be, const char *key, amisnap_buf *out)
 {
     dir_ctx *ctx = (dir_ctx *)be->ctx;
@@ -269,7 +355,9 @@ static void dir_close(amisnap_backend *be)
 }
 
 static const amisnap_backend_ops dir_ops = {
-    dir_put, dir_get, dir_exists, dir_list, dir_remove, dir_mkcol, dir_close
+    dir_put, dir_get, dir_exists, dir_list, dir_remove, dir_mkcol,
+    dir_put_begin, dir_put_append, dir_put_finish, dir_put_abort,
+    dir_close
 };
 
 int amisnap_backend_dir_open(const char *root, amisnap_backend *out)

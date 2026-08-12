@@ -39,6 +39,9 @@ __pycache__/
 # the checked-in boot/ tree the way run.sh/run-ffs.sh do.
 /tests/copperline/uaem-work/
 
+# run-bigfile.sh -- same story, its own self-contained work directory.
+/tests/copperline/bigfile-work/
+
 # Emulator-generated Workbench/UAE mount metadata when the repo root is
 # mounted as an Amiga volume for on-target testing -- not source.
 /Disk.info

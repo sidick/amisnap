@@ -1,5 +1,6 @@
 /* repo.c -- see repo.h. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "blake2s.h"
@@ -68,12 +69,41 @@ int amisnap_repo_writer_volume(amisnap_repo_writer *rw, const amisnap_volume_met
     return amisnap_manifest_writer_volume(&rw->mw, vol);
 }
 
+/* Shared by both amisnap_repo_writer_file() and the chunked writer
+ * below: hashes, dedup-checks, and (if genuinely new) writes one
+ * content object, filling in its content_ref. Never touches the
+ * manifest -- callers assemble the entry's own E_CONTENT list from
+ * however many of these they need (one whole-file object, or several
+ * chunks). */
+static int write_object(amisnap_backend *be, const void *data, size_t len,
+                         amisnap_content_ref *ref_out)
+{
+    uint8_t hash[32];
+    char key[AMISNAP_OBJECT_KEY_LEN];
+    int rc;
+
+    amisnap_blake2s256(data, len, hash);
+    amisnap_repo_object_key(hash, key);
+
+    rc = amisnap_backend_exists(be, key);
+    if (rc < 0) return rc;
+    if (rc == 0) {
+        /* Object genuinely new: write it. rc == 1 (already present)
+         * skips this entirely -- format.md "Objects already present
+         * are never rewritten." */
+        rc = amisnap_backend_put(be, key, data, len);
+        if (rc != AMISNAP_OK) return rc;
+    }
+
+    memcpy(ref_out->hash, hash, 32);
+    ref_out->size = len;
+    return AMISNAP_OK;
+}
+
 int amisnap_repo_writer_file(amisnap_repo_writer *rw, amisnap_entry_meta *entry,
                               const void *data, size_t len)
 {
-    uint8_t hash[32];
     amisnap_content_ref ref;
-    char key[AMISNAP_OBJECT_KEY_LEN];
     int rc;
 
     if (entry->type != AMISNAP_ETYPE_FILE)
@@ -98,25 +128,76 @@ int amisnap_repo_writer_file(amisnap_repo_writer *rw, amisnap_entry_meta *entry,
         return amisnap_manifest_writer_entry(&rw->mw, entry);
     }
 
-    amisnap_blake2s256(data, len, hash);
-    amisnap_repo_object_key(hash, key);
+    rc = write_object(rw->be, data, len, &ref);
+    if (rc != AMISNAP_OK) return rc;
 
-    rc = amisnap_backend_exists(rw->be, key);
-    if (rc < 0) return rc;
-    if (rc == 0) {
-        /* Object genuinely new: write it. rc == 1 (already present)
-         * skips this entirely -- format.md "Objects already present
-         * are never rewritten." */
-        rc = amisnap_backend_put(rw->be, key, data, len);
-        if (rc != AMISNAP_OK) return rc;
-    }
-
-    memcpy(ref.hash, hash, 32);
-    ref.size = len;
     entry->content = &ref;
     entry->content_count = 1;
 
     return amisnap_manifest_writer_entry(&rw->mw, entry);
+}
+
+int amisnap_repo_writer_file_chunked(amisnap_repo_writer *rw, amisnap_entry_meta *entry,
+                                      uint64_t total_size, size_t chunk_size,
+                                      int (*read_fn)(void *ctx, void *buf, size_t want, size_t *got),
+                                      void *ctx)
+{
+    uint8_t *buf;
+    amisnap_content_ref *refs = NULL;
+    size_t ref_count = 0, ref_cap = 0;
+    amisnap_xxh32_state xh;
+    uint64_t remaining;
+    int rc = AMISNAP_OK;
+
+    if (entry->type != AMISNAP_ETYPE_FILE) return AMISNAP_ERR_MALFORMED;
+    if (chunk_size == 0) return AMISNAP_ERR_MALFORMED;
+
+    buf = (uint8_t *)malloc(chunk_size);
+    if (!buf) return AMISNAP_ERR_NOMEM;
+
+    amisnap_xxh32_init(&xh, 0);
+    remaining = total_size;
+
+    while (remaining > 0) {
+        size_t want = (remaining < (uint64_t)chunk_size) ? (size_t)remaining : chunk_size;
+        size_t got = 0;
+        amisnap_content_ref *newarr;
+
+        rc = read_fn(ctx, buf, want, &got);
+        if (rc != AMISNAP_OK) goto out;
+        if (got == 0) break; /* early EOF -- total_size was optimistic; not an error here */
+
+        amisnap_xxh32_update(&xh, buf, got);
+
+        if (ref_count == ref_cap) {
+            size_t newcap = ref_cap ? ref_cap * 2 : 4;
+            newarr = (amisnap_content_ref *)realloc(refs, newcap * sizeof(*newarr));
+            if (!newarr) { rc = AMISNAP_ERR_NOMEM; goto out; }
+            refs = newarr;
+            ref_cap = newcap;
+        }
+
+        rc = write_object(rw->be, buf, got, &refs[ref_count]);
+        if (rc != AMISNAP_OK) goto out;
+        ref_count++;
+
+        remaining -= got;
+        if (got < want) break; /* short read == EOF, same as got==0 above */
+    }
+
+    entry->has_size = 1;
+    entry->size = total_size - remaining;
+    entry->has_xhash = 1;
+    entry->xhash = amisnap_xxh32_digest(&xh);
+    entry->content = refs;
+    entry->content_count = ref_count;
+
+    rc = amisnap_manifest_writer_entry(&rw->mw, entry);
+
+out:
+    free(buf);
+    free(refs);
+    return rc;
 }
 
 int amisnap_repo_writer_entry(amisnap_repo_writer *rw, const amisnap_entry_meta *entry)

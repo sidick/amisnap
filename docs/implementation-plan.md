@@ -1218,7 +1218,71 @@ Amiga-specific metadata field rather than literally applying it.
    onto a real FFS floppy via `xdftool`, runs `ApplyUAEM`, and asserts
    the `Examine()` output exactly.
 
-7. **Deferred design note: a backup exclude list.** Raised in
+7. Fixed-size chunking for large files. **Done (2026-08-12).**
+   `amisnap_repo_writer_file_chunked()` (`src/core/repo.c`/`repo.h`)
+   streams a file through a caller-supplied `read_fn` pull callback,
+   allocating exactly one chunk-size buffer regardless of the file's
+   total size, hashing/deduping/writing each chunk as its own
+   independently content-addressed object (format.md E_CONTENT: "several
+   = fixed-size chunks", already designed for this since phase 1 -- the
+   read side needed no format changes, only a memory-bounded producer).
+   `E_XHASH` is computed via a new streaming XXH32 API
+   (`xxhash32.[ch]`: `amisnap_xxh32_init/update/digest`), independently
+   implemented (not layered on the one-shot function) and cross-checked
+   against it at several `update()` split points. Wired into
+   `cmd_snapshot` (`src/cli/main.c`): files over
+   `AMISNAP_DEFAULT_CHUNK_SIZE` go through the chunked path via a
+   `Read()`-backed callback; files at or under it keep using the
+   existing whole-file `amisnap_repo_writer_file()`. PARANOID mode
+   (item 4) is deliberately skipped for chunked files -- re-reading the
+   whole file to paranoid-check it would defeat chunking's own purpose.
+
+   **The documented 8 MiB default (format.md's original CHUNK_SIZE
+   value) was wrong, found by real testing, not inspection**: an 8 MiB
+   single-buffer allocation failed with `AMISNAP_ERR_NOMEM` even at
+   Copperline's own Zorro II 8 MiB fast-RAM ceiling (the emulator
+   itself refuses to configure more than that for a Zorro II board),
+   once the OS, AmiSnap's own binary, and other buffers are accounted
+   for -- confirmed live before being merely suspected. Corrected to
+   256 KiB (`AMISNAP_DEFAULT_CHUNK_SIZE`, `repo.h`), matching explicit
+   user feedback during this same work that 8 MiB is "a little extreme
+   for a backup utility for resource constrained systems like the
+   Amiga" -- the *default* has to work on a modest 68020/8 MiB machine;
+   a well-equipped system with real 32-bit fast RAM can always be given
+   a larger explicit chunk size later if that's ever exposed as an
+   option. `docs/format.md`'s own CHUNK_SIZE documentation was updated
+   to match (262144), keeping the format doc normative per the project's
+   own stated policy.
+
+   **A second, deeper gap surfaced once the write side worked**: with
+   the corrected chunk size, `SNAPSHOT` and `VERIFY FULL` both
+   succeeded on a real 8.7 MB test file (34 chunks), but `RESTORE`
+   still failed with the identical `AMISNAP_ERR_NOMEM` -- `restore.c`'s
+   `restore_file()` was accumulating every retrieved chunk into one
+   growable buffer before a single final write, so chunking's memory
+   bound was never actually extended to the read/restore path. Fixed by
+   adding a genuine streaming write primitive to the backend
+   abstraction itself (`backend.h`: `put_begin`/`put_append`/
+   `put_finish`/`put_abort`, implemented for the directory backend in
+   `backend_dir.c` via an open temp-file handle, finalized with the
+   same rename-into-place atomicity `put()` already used) rather than a
+   restore.c-local workaround -- WebDAV (phase 3) and S3 (phase 5) will
+   need the same treatment when they land, so the vtable is the right
+   place for it. `restore_file()` now streams each verified chunk
+   straight through via `put_append()`, never holding more than one
+   chunk's bytes at a time on either side of the copy.
+
+   Host-tested (`tests/test_chunked.c`: cross-file dedup, short-read/
+   early-EOF honesty, `read_fn`-failure propagation, full restore+verify
+   round trip). Now a permanent regression,
+   `tests/copperline/run-bigfile.sh` (wired into `test-target`): a
+   dedicated `bigfile` fixture writes a real 8.7 MB file with
+   deterministic per-block content at a constrained 2 MB fast-RAM
+   Copperline config, then SNAPSHOT/VERIFY FULL/RESTORE run for real,
+   with the restored file's content checked byte-for-byte (not just
+   size/count) against the fixture's own generation pattern.
+
+8. **Deferred design note: a backup exclude list.** Raised in
    discussion (2026-08-12), not scheduled to a phase yet: a plain-text
    file (per-source-directory, or one global list, TBD) naming files/
    directories the user never wants backed up, read by `scan.c` before

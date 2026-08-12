@@ -15,6 +15,7 @@ void run_restore_tests(void);
 void run_verify_tests(void);
 void run_prune_tests(void);
 void run_crash_safety_tests(void);
+void run_chunked_tests(void);
 
 int main(void)
 {
@@ -30,6 +31,7 @@ int main(void)
     run_verify_tests();
     run_prune_tests();
     run_crash_safety_tests();
+    run_chunked_tests();
 
     fprintf(stderr, "passed=%d failed=%d pending=%d\n",
             g_test.passed, g_test.failed, g_test.pending);

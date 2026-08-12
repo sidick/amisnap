@@ -69,6 +69,27 @@ typedef struct {
      * code. */
     int (*mkcol)(amisnap_backend *be, const char *key);
 
+    /* Streaming counterpart to `put`, for callers reassembling a large
+     * object (restore.c, from a chunked entry's multiple E_CONTENT
+     * refs) without ever holding the whole thing in memory at once --
+     * put()'s own single-buffer contract is exactly what
+     * amisnap_repo_writer_file_chunked() was written to avoid on the
+     * write side, and restore needs the same treatment on the read
+     * side. Same atomic-on-success guarantee as `put`: nothing
+     * observable at `key` until put_finish() succeeds.
+     *
+     * put_begin() opens `key` for writing and returns an opaque handle
+     * via *handle_out. put_append() may be called any number of times;
+     * each call's bytes are appended in call order. put_finish()
+     * commits and frees the handle. put_abort() discards whatever was
+     * written and frees the handle -- callers must call exactly one of
+     * finish/abort per successful begin(), never both, and never use
+     * the handle again afterward. */
+    int (*put_begin)(amisnap_backend *be, const char *key, void **handle_out);
+    int (*put_append)(amisnap_backend *be, void *handle, const void *data, size_t len);
+    int (*put_finish)(amisnap_backend *be, void *handle);
+    void (*put_abort)(amisnap_backend *be, void *handle);
+
     void (*close)(amisnap_backend *be);
 } amisnap_backend_ops;
 
@@ -113,6 +134,27 @@ static inline void amisnap_backend_close(amisnap_backend *be)
 {
     if (be->ops->close)
         be->ops->close(be);
+}
+
+static inline int amisnap_backend_put_begin(amisnap_backend *be, const char *key, void **handle_out)
+{
+    return be->ops->put_begin(be, key, handle_out);
+}
+
+static inline int amisnap_backend_put_append(amisnap_backend *be, void *handle,
+                                              const void *data, size_t len)
+{
+    return be->ops->put_append(be, handle, data, len);
+}
+
+static inline int amisnap_backend_put_finish(amisnap_backend *be, void *handle)
+{
+    return be->ops->put_finish(be, handle);
+}
+
+static inline void amisnap_backend_put_abort(amisnap_backend *be, void *handle)
+{
+    be->ops->put_abort(be, handle);
 }
 
 #endif /* AMISNAP_BACKEND_H */

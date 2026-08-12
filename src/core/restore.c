@@ -47,13 +47,31 @@ static int path_to_key(const uint8_t *path, size_t path_len, char out[RESTORE_PA
     return AMISNAP_OK;
 }
 
+/* Streams each content object straight to the destination via
+ * backend.h's put_begin/put_append/put_finish rather than accumulating
+ * the whole reconstructed file into one buffer first -- for a file
+ * chunked by amisnap_repo_writer_file_chunked() (repo.h), that
+ * accumulation would defeat the entire point of chunking on the write
+ * side: the destination-side buffer would still need to hold the full
+ * file at once. Each amisnap_backend_get() below only ever needs to
+ * hold one content object (at most AMISNAP_DEFAULT_CHUNK_SIZE bytes for
+ * a chunked entry) in memory at a time. */
 static int restore_file(restore_ctx *rc, const amisnap_entry_meta *entry, const char *key)
 {
-    amisnap_buf content;
+    void *handle;
+    uint64_t total = 0;
     size_t i;
     int status;
 
-    amisnap_buf_init(&content);
+    if (entry->content_count == 0) {
+        status = amisnap_backend_put(rc->dest, key, NULL, 0);
+        if (status == AMISNAP_OK)
+            rc->result->files_written++;
+        return status;
+    }
+
+    status = amisnap_backend_put_begin(rc->dest, key, &handle);
+    if (status != AMISNAP_OK) return status;
 
     for (i = 0; i < entry->content_count; i++) {
         char objkey[AMISNAP_OBJECT_KEY_LEN];
@@ -63,11 +81,11 @@ static int restore_file(restore_ctx *rc, const amisnap_entry_meta *entry, const 
         amisnap_repo_object_key(entry->content[i].hash, objkey);
 
         status = amisnap_backend_get(rc->repo, objkey, &obj);
-        if (status != AMISNAP_OK) { amisnap_buf_free(&content); return status; }
+        if (status != AMISNAP_OK) { amisnap_backend_put_abort(rc->dest, handle); return status; }
 
         if (obj.len != entry->content[i].size) {
             amisnap_buf_free(&obj);
-            amisnap_buf_free(&content);
+            amisnap_backend_put_abort(rc->dest, handle);
             return AMISNAP_ERR_MALFORMED;
         }
 
@@ -77,21 +95,21 @@ static int restore_file(restore_ctx *rc, const amisnap_entry_meta *entry, const 
         amisnap_blake2s256(obj.data, obj.len, actual_hash);
         if (memcmp(actual_hash, entry->content[i].hash, 32) != 0) {
             amisnap_buf_free(&obj);
-            amisnap_buf_free(&content);
+            amisnap_backend_put_abort(rc->dest, handle);
             return AMISNAP_ERR_HASH_MISMATCH;
         }
 
-        status = amisnap_buf_bytes(&content, obj.data, obj.len);
+        status = amisnap_backend_put_append(rc->dest, handle, obj.data, obj.len);
+        total += obj.len;
         amisnap_buf_free(&obj);
-        if (status != AMISNAP_OK) { amisnap_buf_free(&content); return status; }
+        if (status != AMISNAP_OK) { amisnap_backend_put_abort(rc->dest, handle); return status; }
     }
 
-    status = amisnap_backend_put(rc->dest, key, content.data, content.len);
+    status = amisnap_backend_put_finish(rc->dest, handle);
     if (status == AMISNAP_OK) {
         rc->result->files_written++;
-        rc->result->bytes_written += content.len;
+        rc->result->bytes_written += total;
     }
-    amisnap_buf_free(&content);
     return status;
 }
 

@@ -204,6 +204,24 @@ static void mark_backed_up(const char *path, uint32_t prot)
     SetProtection((STRPTR)path, (LONG)(prot | AMISNAP_FIBF_ARCHIVE));
 }
 
+typedef struct {
+    BPTR fh;
+} amiga_chunk_read_ctx;
+
+/* repo.h's amisnap_repo_writer_file_chunked()'s own read_fn contract:
+ * fill buf with up to `want` bytes, fewer only at real EOF. Read()'s
+ * own autodoc: negative return is a real I/O error, 0 is a clean EOF
+ * (which repo.c's own loop already treats as "got=0, stop" via this
+ * function's normal *got=0 return -- no special case needed here). */
+static int amiga_chunk_read(void *ctx_v, void *buf, size_t want, size_t *got)
+{
+    amiga_chunk_read_ctx *ctx = (amiga_chunk_read_ctx *)ctx_v;
+    LONG n = Read(ctx->fh, buf, (LONG)want);
+    if (n < 0) return AMISNAP_ERR_IO;
+    *got = (size_t)n;
+    return AMISNAP_OK;
+}
+
 static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
 {
     snapshot_ctx *ctx = (snapshot_ctx *)user;
@@ -264,10 +282,48 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
             return 0;
         }
 
-        /* Everything else needs the actual bytes: a genuine change, OR
-         * paranoid mode re-checking a metadata match before trusting
-         * it (docs/proposal.md: "Optional paranoid mode adds xxHash32
-         * verification of allegedly-unchanged files"). */
+        /* Files over the chunk threshold never get malloc'd whole --
+         * a real Amiga's RAM budget can't always afford it -- so they
+         * split into repo.c's own streaming chunked writer instead.
+         * PARANOID mode's byte-for-byte re-check (below, for small
+         * files) is deliberately skipped here even when `unchanged`:
+         * reading the whole file just to verify a metadata match
+         * would defeat the entire point of chunking in the first
+         * place. A known, honest scope limit -- large files still get
+         * the ordinary metadata-trust fast path even under PARANOID;
+         * only small files get the full re-check. */
+        if ((uint64_t)size > AMISNAP_DEFAULT_CHUNK_SIZE) {
+            if (unchanged) {
+                e.content = prev->content;
+                e.content_count = prev->content_count;
+                rc = amisnap_repo_writer_entry(ctx->rw, &e);
+                if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
+                ctx->files_ok++;
+                ctx->files_unchanged++;
+                mark_backed_up(path, e.prot);
+                return 0;
+            }
+
+            {
+                amiga_chunk_read_ctx cctx;
+                cctx.fh = Open((STRPTR)path, MODE_OLDFILE);
+                if (!cctx.fh) { ctx->files_failed++; return 0; }
+                rc = amisnap_repo_writer_file_chunked(ctx->rw, &e, (uint64_t)size,
+                                                       AMISNAP_DEFAULT_CHUNK_SIZE,
+                                                       amiga_chunk_read, &cctx);
+                Close(cctx.fh);
+            }
+            if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
+            ctx->files_ok++;
+            mark_backed_up(path, e.prot);
+            return 0;
+        }
+
+        /* Everything else (a file at or under the chunk threshold)
+         * needs the actual bytes, read whole into memory: a genuine
+         * change, OR paranoid mode re-checking a metadata match before
+         * trusting it (docs/proposal.md: "Optional paranoid mode adds
+         * xxHash32 verification of allegedly-unchanged files"). */
         if (size > 0) {
             LONG got = 0;
             data = (uint8_t *)malloc((size_t)size);

@@ -140,9 +140,13 @@ $(COPPERLINE_FIXTURE_DIR)/checkuaem: tests/copperline/fixture/checkuaem.c | $(BU
 	@mkdir -p $(COPPERLINE_FIXTURE_DIR)
 	$(M68K_CC) $(M68K_CFLAGS) $< -o $@
 
+$(COPPERLINE_FIXTURE_DIR)/bigfile: tests/copperline/fixture/bigfile.c | $(BUILD)/.dir
+	@mkdir -p $(COPPERLINE_FIXTURE_DIR)
+	$(M68K_CC) $(M68K_CFLAGS) $< -o $@
+
 copperline-fixtures: $(COPPERLINE_FIXTURE_DIR)/stage $(COPPERLINE_FIXTURE_DIR)/readback \
 	$(COPPERLINE_FIXTURE_DIR)/bulkstage $(COPPERLINE_FIXTURE_DIR)/timeit $(COPPERLINE_FIXTURE_DIR)/modify \
-	$(COPPERLINE_FIXTURE_DIR)/checkuaem
+	$(COPPERLINE_FIXTURE_DIR)/checkuaem $(COPPERLINE_FIXTURE_DIR)/bigfile
 
 # Copperline on-target harness (docs/proposal.md "Toolchain and testing",
 # implementation-plan.md Phase 1 item 8): boots a minimal A1200/68020 from
@@ -177,11 +181,20 @@ copperline-fixtures: $(COPPERLINE_FIXTURE_DIR)/stage $(COPPERLINE_FIXTURE_DIR)/r
 # why HOSTFS's native .uaem awareness would make ApplyUAEM's own effect
 # unobservable). Depends on the same $(CROSS_GEN_BIN) make cross-check
 # builds, not on running that whole check again here.
+#
+# run-bigfile.sh proves fixed-size chunking end to end: a real file well
+# over AMISNAP_DEFAULT_CHUNK_SIZE (repo.h) backs up, verifies, and
+# restores byte-for-byte at a constrained fast-RAM config, exercising
+# both the write side (amisnap_repo_writer_file_chunked) and the read
+# side (restore.c's streaming use of backend.h's put_begin/put_append/
+# put_finish) -- see implementation-plan.md's chunking item for why the
+# read side needed its own fix, found only by this same on-target test.
 test-target: m68k copperline-fixtures $(CROSS_GEN_BIN)
 	sh tests/copperline/run.sh
 	sh tests/copperline/run-ffs.sh
 	sh tests/copperline/run-perf.sh
 	sh tests/copperline/run-uaem.sh
+	sh tests/copperline/run-bigfile.sh
 
 # semgrep installs into a venv rather than the system/user Python, so
 # `make lint` doesn't need pip on PATH (bare `pip` doesn't exist on
