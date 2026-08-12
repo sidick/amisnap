@@ -319,8 +319,47 @@ src/amiga/          m68k build only
                       volume being backed up -- a backup tool must
                       never mutate its source.                [done]
   restore_meta.c      SetProtection/SetComment/SetFileDate/SetOwner,
-                      applied metadata-last; degradation policy
-                      (fail/skip/truncate+log)             [phase 1]
+                      wired as restore.h's on_entry_restored hook --
+                      metadata-last (protection applied last of the
+                      four too, so a restrictive mask can't block a
+                      later SetComment/SetFileDate/SetOwner on the
+                      same object). Every field independently best-
+                      effort, accumulated into running ok/failed
+                      counts, never fatal to the restore. All four
+                      functions/version floors verified against the
+                      real NDK first: SetComment/SetProtection have no
+                      version label (pre-2.0); SetFileDate is V36
+                      (documented expected failure: OFS/FFS refuses it
+                      on the root directory); SetOwner's own autodoc
+                      has a genuinely useful nuance beyond its "(V39)"
+                      label -- the call slot exists from V37 and
+                      simply returns FALSE pre-V39, so it's safe to
+                      call unconditionally with no version check, a
+                      documented exception to the general V39+ policy.
+                      This module is inherently coupled to a real
+                      AmigaDOS path (not amisnap_backend's
+                      abstraction, which has no filesystem-path
+                      concept by design) -- its on_entry_restored
+                      adapter takes the destination root explicitly.
+                      Real execution under `vamos -C 020` against
+                      RAM: (not just cross-build): SetOwner's
+                      documented pre-V39 FALSE-return behavior
+                      confirmed exactly -- vamos's own stub returns
+                      d0=0 and amisnap_restore_meta_apply() correctly
+                      recorded owner_failed, exactly the intended
+                      degrade-gracefully path, real proof the contract
+                      works end to end. SetComment/SetProtection
+                      reported success but a follow-up Examine()
+                      readback showed the comment empty and protection
+                      0 -- vamos's own RAM: handler stubs for these
+                      two don't actually persist changes (a further,
+                      distinct vamos coverage gap, confirmed by vamos
+                      itself logging "SetComment: not implemented"),
+                      not evidence of a bug in this module, but also
+                      not proof of correctness -- genuine verification
+                      of SetComment/SetProtection/SetFileDate's real
+                      effect needs item 8's Copperline/Amiberry
+                      harness, same as scan.c's ExAll() gap.    [done]
   dosio.c             LIKELY NOT NEEDED, pending on-target
                       confirmation: backend_dir.c already builds
                       *and links* clean against libnix's stdio/mkdir/
@@ -496,6 +535,13 @@ Order of work within the phase:
    dos.library emulation doesn't implement `ExAll()`'s prerequisites at
    all -- see the "Stack management" testing section above for what
    this changes.
+   **`restore_meta.c` done** (see its own module-map entry for the
+   verified version floors -- SetOwner's genuinely useful "safe to call
+   unconditionally, returns FALSE pre-V39" nuance in particular -- and
+   what real vamos execution did and didn't confirm). Remaining in this
+   item: capability-probe refinement (the scan.c root-owner gap) is
+   deferred, not blocking; CLI wiring with ReadArgs templates and RC
+   codes is the one piece of item 6 not yet started.
 7. vamos regression test (`test-host`) covering `stackswap.c`'s own
    mechanism against a deep (but safely bounded -- see "Stack
    management" above on why deliberately triggering a real overflow is
