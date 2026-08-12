@@ -824,6 +824,13 @@ Order of work within the phase:
      AmigaDOS floppy pops a blocking system requester instead of a clean
      DOS error, hanging the whole run silently until the benchmark timeout
      -- `write_protected = false` must be set explicitly per floppy.
+   - `[floppy] speed = 800` (Copperline's own bit-identical faster-than-
+     real DMA option, not `0`/turbo -- Copperline's own docs call `0` "a
+     compatibility trade-off" that skips real transfer timing, not a
+     valid test of real filesystem behavior) speeds up each dostype's
+     iteration; motor/seek mechanics still run at real speed regardless
+     (confirmed empirically -- a 30s benchmark window still isn't enough
+     even at `speed = 800`), so `BENCH` stays at run.sh's own 60s default.
    - **DOS5 (FFS+International+DirCache) is excluded from the default
      loop, confirmed real via empirical isolation, not assumed**: the boot
      hangs before Copperline's own HOSTFS handlers even start (no
@@ -833,28 +840,41 @@ Order of work within the phase:
      shows for a dostype with no matching handler and no `L:` to load one
      from in a minimal, no-Workbench boot. Worth retrying only if a future
      phase adds an `L:FastFileSystem` asset to the boot volume.
-   - **A genuine, not-yet-fixed metadata gap this harness exists to catch,
-     found on its first real run**: the `Sub` directory's own protection
-     (archive bit) and datestamp come back wrong after restore on every
-     real FFS dostype tested -- confirmed independently by three separate
-     channels (AmiSnap's own restore report undercounting at 4/5,
-     `readback.c`'s live `Examine()`, and `xdftool unpack`'s own metadata
-     dump), all agreeing `Sub`'s protection reverted to 0 and its
-     datestamp jumped to "now" rather than the staged value, while every
-     *file* (including `Sub`'s own children) round-trips correctly. Root
-     cause not yet confirmed, but the leading theory given `restore.c`'s
-     current per-entry-immediate-callback ordering (`on_entry()` applies a
-     directory's own metadata via `on_entry_restored` right after
-     `mkcol()`, *before* descending into that directory's children) is
-     that real AmigaDOS FFS updates a directory's own datestamp (and
-     evidently something touches its protection too) when an entry is
-     later created inside it -- exactly the kind of real filesystem
-     side effect Copperline's own HOSTFS pass-through (which `run.sh`
-     alone would never catch this on) doesn't reproduce. Not fixed in
-     this pass -- restore.c's directory-metadata application may need to
-     move to *after* a directory's children are restored, not immediately
-     on creation. Tracked as a real, open correctness item, not silently
-     dropped.
+   - **A genuine metadata gap this harness exists to catch, found on its
+     first real run -- root-caused and fixed (2026-08-12)**: the `Sub`
+     directory's own protection (archive bit) and datestamp came back
+     wrong after restore on every real FFS dostype tested, confirmed
+     independently by three channels (AmiSnap's own restore report
+     undercounting at 4/5, `readback.c`'s live `Examine()`, and `xdftool
+     unpack`'s own metadata dump). Root cause, confirmed via a series of
+     minimal isolated reproductions run directly against a real FFS
+     floppy (house rule 6 -- verified empirically at each step, not
+     assumed): **creating a new entry inside a directory resets that
+     directory's own protection bits and datestamp on real AmigaDOS
+     FFS.** Two independent places had exactly this ordering flaw:
+     - `restore.c` applied a directory's own metadata immediately after
+       its `mkcol()`, before descending into its children -- fixed by
+       collecting the whole manifest and applying every entry's metadata
+       in a *second* pass, in *reverse* manifest order (children before
+       their parent; manifest entries are the scanner's own pre-order
+       DFS, so reversing it is a post-order walk with no tree
+       reconstruction needed). Two intermediate orderings were tried and
+       both still failed empirically before landing on reverse order --
+       see `restore.c`'s own `apply_metadata_reverse` comment for the
+       full trail.
+     - `tests/copperline/fixture/stage.c` (the test fixture that stages
+       the source tree) had the *identical* flaw: it stamped `Source:Sub`
+       immediately after `CreateDir()`, then created `Sub/nested.txt` and
+       `Sub/empty.txt` afterward -- silently corrupting `Sub`'s metadata
+       in the *source* tree before `SNAPSHOT` ever scanned it. This is
+       why the bug persisted even after the `restore.c` fix landed:
+       restore was faithfully reproducing already-corrupted source data,
+       not corrupting correct data itself. Fixed by reordering `stage.c`
+       to create and stamp both children before stamping `Sub` itself.
+     Both fixes were necessary; neither alone was sufficient to make the
+     harness pass. Confirmed clean on OFS/FFS/FFS+International after
+     both landed: `Sub`'s protection and datestamp round-trip correctly
+     end to end.
 
 Gate: snapshot → wipe → restore on FFS is metadata-bit-perfect in the
 emulator harness; 10k-file unchanged run under a minute on emulated

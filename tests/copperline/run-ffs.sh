@@ -105,6 +105,10 @@ fast = "2M"
 
 [floppy]
 drives = 3
+speed = 800   # bit-identical faster-than-real DMA, not 0/turbo (0 skips
+              # real disk-transfer timing, per Copperline's own docs a
+              # "compatibility trade-off" some software depends on --
+              # not a valid test of real filesystem behavior)
 
 [floppy.df0]
 path = "$work/Source.adf"

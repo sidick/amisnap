@@ -93,6 +93,40 @@ static amisnap_buf build_and_commit(amisnap_backend *repo, char snapid_out[17])
     return mf;
 }
 
+typedef struct {
+    amisnap_backend *dest;
+    size_t count;
+    int sub_children_existed;
+} meta_cb_ctx;
+
+static int path_is(const amisnap_entry_meta *entry, const char *s)
+{
+    size_t len = strlen(s);
+    return entry->path_len == len && memcmp(entry->path, s, len) == 0;
+}
+
+/* Regression check for the real bug the real-FFS Copperline harness found
+ * (implementation-plan.md item 8's real-FFS follow-up, 2026-08-12): real
+ * AmigaDOS filesystems update a directory's own datestamp (and evidently
+ * its protection) whenever an entry is later created inside it, so a
+ * directory's metadata must not be applied until every entry -- including
+ * its own children -- already exists at `dest`. Confirms this by checking
+ * "Sub"'s two children already exist at the moment "Sub" itself is handed
+ * to the callback; under the old immediately-after-mkcol() ordering this
+ * would be false (Sub/nested.txt and Sub/empty.txt are later entries in
+ * the same manifest, not yet restored when "Sub" was created). */
+static void record_entry_restored(void *user, const amisnap_entry_meta *entry)
+{
+    meta_cb_ctx *ctx = (meta_cb_ctx *)user;
+
+    ctx->count++;
+    if (path_is(entry, "Sub")) {
+        ctx->sub_children_existed =
+            amisnap_backend_exists(ctx->dest, "Sub/nested.txt") == 1 &&
+            amisnap_backend_exists(ctx->dest, "Sub/empty.txt") == 1;
+    }
+}
+
 void run_restore_tests(void)
 {
     amisnap_backend repo, dest;
@@ -134,6 +168,34 @@ void run_restore_tests(void)
 
         /* The softlink target was never written as a file. */
         TEST_CHECK(amisnap_backend_exists(&dest, "LinkToWork") == 0);
+    }
+
+    /* --- on_entry_restored (the Amiga metadata hook) fires only after
+     * every entry's content/container already exists -- see
+     * record_entry_restored's own comment above for why this matters. --- */
+    {
+        amisnap_backend dest6;
+        amisnap_restore_options opts6;
+        amisnap_restore_result r6;
+        meta_cb_ctx ctx;
+
+        TEST_CHECK(system("rm -rf " DESTDIR "6") == 0);
+        TEST_CHECK(amisnap_backend_dir_open(DESTDIR "6", &dest6) == AMISNAP_OK);
+
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.dest = &dest6;
+
+        memset(&opts6, 0, sizeof(opts6));
+        opts6.on_entry_restored = record_entry_restored;
+        opts6.user = &ctx;
+
+        TEST_CHECK(amisnap_restore_manifest(&repo, &dest6, mf.data, mf.len, &opts6, &r6) == AMISNAP_OK);
+        /* every non-link entry: "", root.txt, Empty, Sub, Sub/nested.txt, Sub/empty.txt */
+        TEST_CHECK(ctx.count == 6);
+        TEST_CHECK(ctx.sub_children_existed == 1);
+
+        amisnap_backend_close(&dest6);
+        TEST_CHECK(system("rm -rf " DESTDIR "6") == 0);
     }
 
     /* --- Subtree restore: only "Sub" and its contents --- */

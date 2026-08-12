@@ -52,11 +52,14 @@ typedef struct {
     const uint8_t *subtree_prefix;
     size_t subtree_prefix_len;
 
-    /* Optional: called after each non-link entry's content/container
-     * is created at `dest`, still holding the entry's full metadata --
-     * the hook point for applying protection/comment/datestamp/owner
-     * on Amiga. NULL is fine for a portable-core-only restore (e.g.
-     * these host tests). */
+    /* Optional: called for each non-link entry once, after every
+     * entry's content/container has been created at `dest` (a distinct
+     * second pass over the manifest, run only if this is non-NULL --
+     * see restore.c's own on_entry_meta comment for why metadata can't
+     * be applied to a directory right after its own mkcol()). Still
+     * holds the entry's full metadata -- the hook point for applying
+     * protection/comment/datestamp/owner on Amiga. NULL is fine for a
+     * portable-core-only restore (e.g. these host tests). */
     void (*on_entry_restored)(void *user, const amisnap_entry_meta *entry);
     void *user;
 } amisnap_restore_options;
@@ -80,7 +83,10 @@ typedef struct {
  * writing out unverified or partial content would be exactly that).
  * Entries are processed in the manifest's own depth-first, directories
  * -before-contents order, so a directory's amisnap_backend_mkcol
- * always happens before anything is written under it.
+ * always happens before anything is written under it. When
+ * opts->on_entry_restored is set, the manifest is walked a second time
+ * afterward, purely to invoke that callback once every entry's content/
+ * container already exists -- see restore.c's on_entry_meta.
  *
  * Returns AMISNAP_OK (check *result for what actually happened),
  * or the first error encountered (a manifest-decode error if

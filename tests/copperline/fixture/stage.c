@@ -15,6 +15,16 @@
  * returns an EXCLUSIVE lock on success -- UnLock() it before doing
  * anything else with that path, or later calls on the same directory
  * would contend with it.
+ *
+ * A directory's own stamp() MUST come after every file created inside
+ * it, never before -- confirmed empirically (implementation-plan.md's
+ * real-FFS Copperline follow-up, 2026-08-12): creating a new entry
+ * inside a directory resets that directory's own protection bits and
+ * datestamp on real AmigaDOS FFS. Staging "Sub" then stamping it, then
+ * creating its children, silently baked a corrupted "Sub" into the
+ * source tree itself before SNAPSHOT ever scanned it -- restore.c's own
+ * matching reverse-order metadata fix couldn't undo damage that already
+ * happened here, on the source side, first.
  */
 #include <stdio.h>
 #include <string.h>
@@ -88,9 +98,10 @@ int main(void)
         failed = 1;
     } else {
         UnLock(sublock);
-        stamp("Source:Sub", FIBF_ARCHIVE, "a subdirectory", 17000, 0, 0);
     }
 
+    /* children created (and stamped) before Sub's own stamp() -- see
+     * this file's header comment above for why the order matters. */
     if (!write_file("Source:Sub/nested.txt", "nested content here\n"))
         failed = 1;
     else
@@ -100,6 +111,9 @@ int main(void)
         failed = 1;
     else
         stamp("Source:Sub/empty.txt", FIBF_ARCHIVE, "", 17002, 0, 0);
+
+    if (sublock)
+        stamp("Source:Sub", FIBF_ARCHIVE, "a subdirectory", 17000, 0, 0);
 
     fprintf(g_log, "stage: %s\n", failed ? "FAILED" : "done");
     fclose(g_log);
