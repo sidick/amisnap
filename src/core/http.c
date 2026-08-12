@@ -37,7 +37,18 @@ int amisnap_http_build_request(amisnap_buf *out, const char *method, const char 
         if (rc != AMISNAP_OK) return rc;
     }
 
-    rc = amisnap_buf_bytes(out, "Connection: keep-alive\r\n\r\n", 27);
+    {
+        static const char tail[] = "Connection: keep-alive\r\n\r\n";
+
+        /* sizeof(tail) - 1, not a hand-counted literal -- a hardcoded
+         * length here previously miscounted by one (27 instead of the
+         * real 26), appending this string literal's own NUL terminator
+         * as a stray extra byte before every single request body. Never
+         * caught by test_http.c (which only exercises the response
+         * parser), only found once webdav.c's own tests checked a
+         * request's exact bytes against a real body. */
+        rc = amisnap_buf_bytes(out, tail, sizeof(tail) - 1);
+    }
     if (rc != AMISNAP_OK) return rc;
 
     if (body_len > 0) {

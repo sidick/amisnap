@@ -32,6 +32,7 @@
  * module something real to connect to and Phase 3 item 5's host-CI
  * WebDAV-container plan clarifies what's actually testable where.
  */
+#include <stdlib.h>
 #include <string.h>
 
 #include <exec/types.h>
@@ -118,3 +119,65 @@ void amisnap_socket_close(LONG sock)
     if (sock >= 0)
         CloseSocket(sock);
 }
+
+/* --- amisnap_transport_ops adapter (transport.h) -- the one thing
+ * webdav.c is allowed to depend on for network I/O, keeping webdav.c
+ * itself portable/host-testable (see transport.h's own header comment).
+ * Wraps the plain functions above behind the vtable shape; `t` is
+ * unused (SocketBase is a true process-global, not per-instance) but
+ * still threaded through for symmetry with a future transport that
+ * genuinely needs per-instance state (a mock, for instance). */
+typedef struct {
+    LONG sock;
+} bsdsocket_handle;
+
+static int bsdsocket_transport_connect(amisnap_transport *t, const char *host, uint16_t port,
+                                        void **handle_out)
+{
+    bsdsocket_handle *h;
+    LONG sock;
+    int rc;
+
+    (void)t;
+    rc = amisnap_socket_connect(host, port, &sock);
+    if (rc != AMISNAP_OK) return rc;
+
+    h = (bsdsocket_handle *)malloc(sizeof(*h));
+    if (!h) {
+        amisnap_socket_close(sock);
+        return AMISNAP_ERR_NOMEM;
+    }
+    h->sock = sock;
+    *handle_out = h;
+    return AMISNAP_OK;
+}
+
+static int bsdsocket_transport_send(amisnap_transport *t, void *handle, const void *data, size_t len)
+{
+    (void)t;
+    return amisnap_socket_send(((bsdsocket_handle *)handle)->sock, data, len);
+}
+
+static int bsdsocket_transport_recv(amisnap_transport *t, void *handle, void *buf, size_t len, size_t *got)
+{
+    (void)t;
+    return amisnap_socket_recv(((bsdsocket_handle *)handle)->sock, buf, len, got);
+}
+
+static void bsdsocket_transport_close(amisnap_transport *t, void *handle)
+{
+    bsdsocket_handle *h = (bsdsocket_handle *)handle;
+
+    (void)t;
+    if (h) {
+        amisnap_socket_close(h->sock);
+        free(h);
+    }
+}
+
+const amisnap_transport_ops amisnap_bsdsocket_transport_ops = {
+    bsdsocket_transport_connect,
+    bsdsocket_transport_send,
+    bsdsocket_transport_recv,
+    bsdsocket_transport_close
+};

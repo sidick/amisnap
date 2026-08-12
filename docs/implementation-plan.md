@@ -268,8 +268,13 @@ src/core/           portable engine (host CI runs all of it)
   chunk.[ch]          fixed-size split for files > threshold (8MB
                       default)                            [phase 2]
   chacha20/pbkdf2/hmac  vendored from AmiAuth v1.0        [phase 4]
-  webdav.c, s3.c      protocol clients over a socket abstraction
-                                                          [phase 3/5]
+  webdav.c            backend_ops over http.c + transport.h -- CLI
+                      wiring/on-target execution still pending, see
+                      Phase 3 item 3                              [done]
+  transport.h         abstract connect/send/recv/close vtable webdav.c
+                      (and s3.c later) build against, portable        [done]
+  base64.[ch]         RFC 4648 encoding, for WebDAV Basic auth        [done]
+  s3.c                protocol client over transport.h            [phase 5]
 
 src/amiga/          m68k build only
   scan.c              ExAll()/Examine()/Info()/Lock() volume walk
@@ -1412,12 +1417,123 @@ protocol code against a local WebDAV container.
    items 1+2 (PUT/GET/MKCOL/PROPFIND mapped onto `backend.h`'s
    put/get/mkcol/exists/list/remove, plus the streaming
    put_begin/put_append/put_finish/put_abort trio chunking's own restore
-   fix (Phase 2 item 7) added to the vtable). Not started.
+   fix (Phase 2 item 7) added to the vtable). **Backend implementation
+   done (2026-08-12); CLI wiring (a `DEST=` URL scheme dispatching to
+   this backend vs. `backend_dir.c`) not done yet -- tracked as a
+   remaining sub-item below, not silently assumed complete.**
+
+   `src/core/webdav.c`/`webdav.h`, `src/core/transport.h`,
+   `src/core/base64.[ch]`. `transport.h` is a new abstract
+   connect/send/recv/close vtable (same shape as `backend.h`'s own),
+   introduced specifically so `webdav.c` itself stays portable and
+   host-testable (module map: listed under `src/core/`, deliberately
+   not `src/amiga/`) -- it never calls bsdsocket.library or any host
+   sockets API directly, only through this interface.
+   `src/amiga/socket.c` (item 2) now also exposes
+   `amisnap_bsdsocket_transport_ops`, the real target's implementation
+   of it; a POSIX host implementation for item 5's own "run against a
+   local WebDAV container" doesn't exist yet.
+
+   A real bug this work found and fixed in item 1's own
+   `amisnap_http_build_request()` (`http.c`): the trailing
+   `"Connection: keep-alive\r\n\r\n"` was appended via a hand-counted
+   literal length (27) that was wrong by one -- the true byte count is
+   26, so every request built by this function was silently sending its
+   own C string literal's NUL terminator as a stray extra byte
+   immediately before the body. Never caught by `test_http.c` (which
+   only exercises the *response* parser, never checks a *request*'s
+   exact bytes against a body), only surfaced once `test_webdav.c`'s
+   mock server checked a PUT's received body byte-for-byte and found
+   `"hello"` arriving as `"\0hell"` -- confirmed via a raw hex dump of
+   the mock's own accumulated request bytes, not guessed. Fixed by
+   using `sizeof(tail) - 1` on a named literal instead of a hardcoded
+   count (matching `test_http.c`'s own header-verification convention
+   after the fact: no hand-counted string lengths anywhere in this
+   codebase should exist uninspected again).
+
+   `PROPFIND` (`list`/`exists`) is answered by a deliberately-scoped
+   href scraper (`webdav_scrape_hrefs()`), not a real namespace-aware
+   XML parser: it finds every `<...href>...</...>` occurrence
+   (tolerating any/no `D:`/`d:`/`lp1:`-style namespace prefix, matching
+   real servers' own variance -- Apache mod_dav vs. Nextcloud vs.
+   others), percent-decodes it, and reports the final path component of
+   everything except the request's own "self" entry. Scoped to the one
+   shape every real WebDAV `PROPFIND` response actually takes, not a
+   general SGML/XML document -- a documented limitation, not an
+   oversight (same "honest, explicit gap, not silently wrong" pattern
+   as restore.c's own soft-link handling).
+
+   `put()`/`mkcol()` auto-create every missing parent collection first
+   (`mkcol_parents()`/`webdav_mkcol_abspath()`, walking one path
+   component at a time exactly like `backend_dir.c`'s own `mkdir_p()`,
+   tolerating a `405`/`409` "already exists" response the same way
+   `mkdir_one()` tolerates `EEXIST`) -- required by `backend.h`'s own
+   `put()` contract ("creating any missing parent 'directories' as
+   needed"), not an optional nicety.
+
+   `put_begin`/`put_append`/`put_finish`/`put_abort` use real HTTP
+   chunked *request* Transfer-Encoding (not Content-Length, since
+   restore.c never knows the total size up front -- repo.h/restore.c's
+   own doc comments), so a large chunked-entry restore stays
+   memory-bounded end to end over WebDAV too, not just on the directory
+   backend -- the exact gap Phase 2 item 7 closed for `backend_dir.c`
+   would otherwise have silently reopened here.
+
+   `amisnap_backend_webdav_open()`'s own base_path bootstrap MKCOLs
+   every path component up front (mirroring
+   `amisnap_backend_dir_open()`'s own `mkdir_p(root)`), and HTTP Basic
+   auth (`username`/`password` -> a `base64.c`-encoded `Authorization`
+   header) is supported since essentially every real self-hosted WebDAV
+   target (Nextcloud, a NAS's WebDAV server) requires it -- not called
+   out explicitly in proposal.md's own Tier 2 description but a real,
+   unavoidable requirement in practice.
+
+   Also implements real HTTP/1.1 keep-alive connection reuse
+   (`webdav_exchange()`): one connection is kept open and reused across
+   calls, with exactly one retry on a fresh connection if a *reused*
+   connection's send/recv fails (the ordinary "server closed an idle
+   keep-alive connection" case) -- a freshly-opened connection failing,
+   or a malformed-response parse error, is never retried (retrying
+   either would just repeat a real failure, not recover from staleness).
+
+   Host-tested (`tests/test_webdav.c`) against a from-scratch in-memory
+   mock `amisnap_transport` + minimal WebDAV server (PUT/GET/DELETE/
+   MKCOL/PROPFIND, both Content-Length and chunked request bodies) --
+   not just "doesn't crash": the mock enforces that a PUT/MKCOL's
+   immediate parent must already exist as a known collection (else
+   `409`), which forces `webdav.c`'s own auto-MKCOL-parents logic to
+   really issue the right requests in the right order for these tests
+   to pass at all. Covers put/get/exists/list/remove/mkcol round trips,
+   the chunked streaming upload (including `put_abort` never becoming
+   visible), 404-vs-real-error distinctions, and Basic auth actually
+   being sent and enforced (including `amisnap_backend_webdav_open()`
+   itself failing outright against a server that requires auth it
+   wasn't given -- proving that failure isn't silently swallowed).
+   Cross-build-verified clean under `m68k-amigaos-gcc -noixemul` (the
+   whole point of `transport.h` existing) in addition to the host build.
+   Real on-target execution (a live WebDAV server reachable from
+   Copperline via `--hostsocket-net host`, item 2's own note) not done
+   yet.
+
+   **Remaining for this item**: CLI wiring (a `DEST=`/`REPO=` URL
+   scheme -- `http://`/`https://` -- dispatched in `src/cli/main.c` to
+   `amisnap_backend_webdav_open()` instead of `amisnap_backend_dir_
+   open()`, plus wiring `src/amiga/socket.c`'s real
+   `amisnap_bsdsocket_transport_ops` in on the Amiga side); TLS
+   (`https://` needs item 4 first, per proposal.md's own per-destination
+   opt-in policy -- until then only `http://` is reachable from the
+   CLI).
 4. `src/amiga/tls.c` -- soft-loaded AmiSSL, per-destination `TLS=YES`
    (absent library + TLS requested = clear failure, never a silent
    plaintext fallback). Not started.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
-   container. Not started -- needs item 3 first.
+   container -- needs a POSIX `amisnap_transport_ops` implementation
+   under `tests/` (not yet written; `src/core/` itself must stay free of
+   platform-specific transport code, since `CORE_SRCS` is a blanket
+   wildcard shared by both the host test build and the m68k cross-build,
+   and libnix `-noixemul` has no POSIX sockets at all -- confirmed the
+   hard way while designing `transport.h`, which is exactly why this
+   item needs its own separate, non-wildcarded home). Not started.
 
 **Phase 4 — Encryption.** Vendor ChaCha20/PBKDF2/HMAC from AmiAuth
 v1.0; key file with optional passphrase wrap; BLAKE2s joins AmiAuth's

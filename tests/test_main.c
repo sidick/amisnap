@@ -17,6 +17,8 @@ void run_prune_tests(void);
 void run_crash_safety_tests(void);
 void run_chunked_tests(void);
 void run_http_tests(void);
+void run_base64_tests(void);
+void run_webdav_tests(void);
 
 int main(void)
 {
@@ -34,6 +36,8 @@ int main(void)
     run_crash_safety_tests();
     run_chunked_tests();
     run_http_tests();
+    run_base64_tests();
+    run_webdav_tests();
 
     fprintf(stderr, "passed=%d failed=%d pending=%d\n",
             g_test.passed, g_test.failed, g_test.pending);

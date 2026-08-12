@@ -7,6 +7,8 @@
 
 #include <exec/types.h>
 
+#include "transport.h"
+
 /* Opens bsdsocket.library (version 4, Roadshow/AmiTCP's own long-
  * standing baseline -- the inet_aton/getaddrinfo-era API this module
  * uses is well past that floor on any TCP/IP stack actually in use
@@ -48,5 +50,11 @@ int amisnap_socket_recv(LONG sock, void *buf, size_t len, size_t *got);
 /* CloseSocket(); a no-op if sock < 0 (never opened / already closed),
  * matching amisnap_backend_close()'s own tolerant convention. */
 void amisnap_socket_close(LONG sock);
+
+/* transport.h adapter over the functions above -- what webdav.c is
+ * actually wired against on the real target (main.c constructs one
+ * amisnap_transport with these ops and ctx = NULL, since SocketBase is
+ * a process global, not per-instance state). */
+extern const amisnap_transport_ops amisnap_bsdsocket_transport_ops;
 
 #endif /* AMISNAP_SOCKET_H */
