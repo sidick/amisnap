@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026 Simon Dick
+
+# CI -- run on every push to main and every PR targeting main.
+#
+# Calls sidick/amiga-workflows' build-test.yml, which implements the
+# five-verb contract (build/test-host/test-target/lint/dist all resolve to
+# Makefile targets of the same name -- see this repo's Makefile "Verb
+# contract" section).
+#
+# readme-lint validates AmiSnap.readme against Aminet's rules on every
+# push/PR rather than only at release time (release.yml runs the real
+# validation on a pushed tag) -- a readme edit breaking Aminet's rules
+# would otherwise sit unnoticed until the next release. The validator only
+# checks the upload filename's extension/length, never its content, hence
+# the placeholder .lha. Same reasoning as sibling amipilot's ci.yml.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: sidick/amiga-workflows/.github/workflows/build-test.yml@v1
+
+  readme-lint:
+    name: Validate AmiSnap.readme against Aminet's rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create placeholder archive (extension/name only, content unchecked)
+        run: touch AmiSnap.lha
+      - name: Validate against Aminet readme rules
+        uses: sidick/aminet-release-action@v1
+        with:
+          filename: AmiSnap.lha
+          readme: AmiSnap.readme
+          category: disk/bakup
+          validate-only: true

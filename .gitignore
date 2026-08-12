@@ -1,0 +1,19 @@
+# Build output
+/build/
+
+# Object files
+*.o
+
+# Python
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# Machine-specific Copperline config (absolute local paths)
+/tests/copperline/*.local.toml
+
+# Emulator-generated Workbench/UAE mount metadata when the repo root is
+# mounted as an Amiga volume for on-target testing -- not source.
+/Disk.info
+/Disk.info.uaem

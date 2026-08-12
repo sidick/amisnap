@@ -1,0 +1,36 @@
+Short:        Versioned network backup with snapshots
+Author:       simond@irrelevant.org (Simon Dick)
+Uploader:     simond@irrelevant.org (Simon Dick)
+Type:         disk/bakup
+Version:      0.1
+Architecture: m68k-amigaos >= 3.0
+Distribution: Aminet
+
+AmiSnap is a snapshot-based backup tool for classic AmigaOS that backs
+up to modern destinations - a mounted volume (any DOS device, including
+smbfs/NFS mounts of a LAN NAS), and in later phases WebDAV and
+S3-compatible object storage - with incremental snapshots, retention
+pruning, verified restore, and full preservation of Amiga filesystem
+metadata.
+
+What generic copy-to-a-share approaches silently lose, AmiSnap
+round-trips bit-perfectly: the full 32-bit protection mask (not just
+HSPARWED), file comments (FileNotes), original datestamps at ticks
+precision, owner/group where the filesystem provides them, and long
+filenames on long-name FFS/SFS/PFS3.
+
+The design takes the platform's CPU seriously: change detection is
+metadata-first with the archive bit as a fast path, integrity hashing
+(BLAKE2s) happens once per new or changed file, and encryption/TLS are
+per-destination opt-ins that default to off - a trusted LAN NAS runs at
+wire speed.
+
+Snapshots are recoverable on a PC even if the Amiga is dead: the
+repository format is documented and versioned, with a host-side
+reference reader.
+
+Requirements: AmigaOS 3.0+, 68020+.
+
+This is an early development version - not yet a working backup tool.
+
+AmiSnap is open source under the BSD 2-Clause license.
