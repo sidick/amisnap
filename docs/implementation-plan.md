@@ -189,6 +189,21 @@ real-scan regression test originally envisioned here moves to item 7's
 Copperline/Amiberry harness, which runs the real ROM and has no
 stub-coverage gaps to work around.
 
+**Considered and declined:** vamos has a real, documented `amiga` mode
+(`.vamosrc`) that loads and executes a real extracted library binary's
+native code in place of its Python reimplementation for a given
+library -- but vamos's own docs explicitly say not to do this for
+`exec` or `dos`, since vamos's whole emulation model depends on
+intercepting those two in Python. `dos.library` is exactly where our
+gap is, so this wouldn't have helped even setting aside that bundling
+an extracted, copyrighted Kickstart/Workbench library binary into this
+repo or its CI image is its own separate problem. Patching vamos
+itself to add real `ExAll`/`Info`/`AllocDosObject(DOS_EXALLCONTROL)`
+support was also considered and declined -- a real upstream
+contribution, not a small one, for a gap the Copperline/Amiberry route
+(item 8) closes properly anyway. Decision: go straight to Copperline
+when this needs real on-target verification, not before.
+
 ## Architecture and module map
 
 ```
