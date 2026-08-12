@@ -9,9 +9,12 @@ AmiSnap is a snapshot-based backup tool for classic AmigaOS targeting
 modern destinations (mounted volumes / SMB / NFS first, then WebDAV,
 then S3-compatible object storage), with incremental snapshots,
 retention pruning, verified restore, and bit-perfect round-trip of Amiga
-filesystem metadata. **The design document of record is
-`docs/proposal.md`** -- read it before making architectural decisions;
-this file only covers building and navigating the code day to day.
+filesystem metadata. **The working plan of record is
+`docs/implementation-plan.md`** (module map, work order, decisions made
+since the proposal -- e.g. the archive-bit trust policy); the original
+design rationale is `docs/proposal.md`, and where they disagree the
+plan wins. Read the plan before making architectural decisions; this
+file only covers building and navigating the code day to day.
 
 **Current state:** scaffold only. The build system, CI wiring, test
 harness, and the first core module (`src/core/xxhash32.c`, XXH32 with
