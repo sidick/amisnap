@@ -243,11 +243,41 @@ src/amiga/          m68k build only
   restore_meta.c      SetProtection/SetComment/SetFileDate/SetOwner,
                       applied metadata-last; degradation policy
                       (fail/skip/truncate+log)             [phase 1]
-  dosio.c             DOS I/O for backend_dir on real volumes [phase 1]
+  dosio.c             LIKELY NOT NEEDED, pending on-target
+                      confirmation: backend_dir.c already builds
+                      *and links* clean against libnix's stdio/mkdir/
+                      opendir/readdir under m68k-amigaos-gcc -noixemul
+                      (see backend_dir.c's own entry above) -- strong
+                      evidence it can be the DOS I/O layer directly,
+                      with no separate indirection needed. Link-time
+                      symbol resolution isn't proof of correct runtime
+                      behavior, though (house rule 6) -- item 7's
+                      on-target harness, actually exercising
+                      backend_dir.c's put/get/list/mkcol against a
+                      real Amiga filesystem, is what turns "likely" into
+                      "confirmed". Keep this entry until that happens;
+                      only then delete it outright.
   stackswap.[ch]      StackSwap() to a generously sized allocated
                       stack at process start -- see "Stack management"
                       above; every other Amiga-side module runs on top
-                      of this from the start                [phase 1]
+                      of this from the start. Struct fields (stk_Lower:
+                      APTR, stk_Upper: ULONG -- not APTR, the one easy
+                      field to get wrong from memory -- stk_Pointer:
+                      APTR) and the V36 minimum verified against the
+                      real NDK headers in ghcr.io/sidick/amiga-dev
+                      (exec/tasks.h; exec_lib.sfd's "==version 36"
+                      grouping) before writing any code, not assumed.
+                      Wired into src/cli/main.c as real_main()'s
+                      wrapper, establishing the pattern immediately.
+                      Verified with a REAL execution, not just a
+                      cross-build: `vamos -C 020 build/AmiSnap` runs
+                      the actual binary under emulation and gets the
+                      expected output/RC -- the `-C <cpu>` flag turned
+                      out to be required (vamos's default CPU model
+                      alerts and aborts with RC 20 on a plain "hello
+                      world" too, confirmed not specific to this code)
+                      and is now on record for item 7's own vamos
+                      regression test to reuse.               [done]
   socket.c            bsdsocket glue for webdav/s3         [phase 3]
   tls.c               soft-loaded AmiSSL, per-destination  [phase 3]
 
@@ -370,9 +400,16 @@ Order of work within the phase:
    implemented (no CLI exists yet to report anything to) — tracked here
    so it isn't forgotten when item 6's CLI wiring lands.
 6. Amiga side: `stackswap.c` first (see "Stack management" above --
-   every module below runs on top of it, not the other way round),
-   then `scan.c`, `restore_meta.c`, `dosio.c`, capability probe; CLI
-   with ReadArgs templates and RC codes.
+   every module below runs on top of it, not the other way round).
+   **`stackswap.c` done** -- struct layout and V36 minimum verified
+   against the real NDK headers before writing any code (not assumed
+   from memory), wired into `src/cli/main.c` as `real_main()`'s
+   wrapper, and confirmed with a genuine execution under `vamos -C
+   020` (not just a cross-build) -- the expected output and RC came
+   back from the actual emulated binary. `dosio.c` looks unnecessary
+   (see its own module-map entry) but stays pending item 7's on-target
+   confirmation. Remaining: `scan.c`, `restore_meta.c`, capability
+   probe; CLI with ReadArgs templates and RC codes.
 7. vamos regression test (`test-host`) proving the stack swap actually
    happens and covers `scan.c`'s real recursion depth against a deep
    fixture tree, before any on-target work.
