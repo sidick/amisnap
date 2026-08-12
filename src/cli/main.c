@@ -39,6 +39,7 @@
 #include "amipath.h"
 #include "backend_dir.h"
 #include "index.h"
+#include "prune.h"
 #include "repo.h"
 #include "restore.h"
 #include "restore_meta.h"
@@ -565,6 +566,88 @@ static LONG cmd_verify(const char *repo, const char *snapid_arg, int full)
     return RETURN_OK;
 }
 
+/* --- prune ---------------------------------------------------------------- */
+
+/* PRUNE SNAPID=<id> deletes exactly that one snapshot (format.md's own
+ * raw "delete the target snapshot" primitive, verbatim). PRUNE
+ * KEEP_LAST=<n> is the retention-policy layer this CLI adds on top:
+ * keep the N most recent snapshots (list_all_snapshots' own ascending
+ * lexicographic order, format.md's own note that this is equivalent to
+ * chronological order), delete every older one. Exactly one of the two
+ * must be given -- combining them, or giving neither, is a usage error,
+ * not a guess at what the user meant. Daily/weekly/monthly retention
+ * (docs/proposal.md's fuller policy) needs real calendar arithmetic
+ * over AmigaDOS's day-since-1978 DateStamp and is deliberately not
+ * attempted here -- a separate follow-up, not silently approximated by
+ * KEEP_LAST alone. */
+static LONG cmd_prune(const char *repo, const char *snapid_arg, const LONG *keep_last)
+{
+    amisnap_backend be;
+    amisnap_prune_result result;
+    int rc;
+
+    if (!repo) {
+        amilog_err("AmiSnap: PRUNE needs REPO=<path>\n");
+        return RETURN_ERROR;
+    }
+    if (!snapid_arg && !keep_last) {
+        amilog_err("AmiSnap: PRUNE needs SNAPID=<id> or KEEP_LAST=<n>\n");
+        return RETURN_ERROR;
+    }
+    if (snapid_arg && keep_last) {
+        amilog_err("AmiSnap: PRUNE takes SNAPID= or KEEP_LAST=, not both\n");
+        return RETURN_ERROR;
+    }
+    if (keep_last && *keep_last < 0) {
+        amilog_err("AmiSnap: KEEP_LAST must be >= 0\n");
+        return RETURN_ERROR;
+    }
+
+    rc = amisnap_backend_dir_open(repo, &be);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        return RETURN_FAIL;
+    }
+
+    if (snapid_arg) {
+        const char *ids[1];
+        ids[0] = snapid_arg;
+        rc = amisnap_prune_execute(&be, ids, 1, &result);
+    } else {
+        snapshot_list list;
+        const char *delete_ids[MAX_SNAPSHOTS];
+        int delete_count, keep_n, i;
+
+        rc = list_all_snapshots(&be, &list);
+        if (rc != AMISNAP_OK) {
+            amilog_err("AmiSnap: cannot list snapshots (error %d)\n", rc);
+            amisnap_backend_close(&be);
+            return RETURN_FAIL;
+        }
+
+        keep_n = (*keep_last > list.count) ? list.count : (int)*keep_last;
+        delete_count = list.count - keep_n;
+        for (i = 0; i < delete_count; i++)
+            delete_ids[i] = list.ids[i]; /* ascending order: the oldest come first */
+
+        rc = amisnap_prune_execute(&be, delete_ids, (size_t)delete_count, &result);
+    }
+
+    amisnap_backend_close(&be);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: prune of \"%s\" aborted (error %d) -- %lu snapshots, %lu objects, "
+                        "%lu tmp entries removed before the failure\n",
+                repo, rc, (unsigned long)result.snapshots_deleted,
+                (unsigned long)result.objects_deleted, (unsigned long)result.tmp_deleted);
+        return RETURN_FAIL;
+    }
+
+    amilog("Prune %s: %lu snapshots, %lu objects, %lu tmp entries removed\n",
+           repo, (unsigned long)result.snapshots_deleted, (unsigned long)result.objects_deleted,
+           (unsigned long)result.tmp_deleted);
+    return RETURN_OK;
+}
+
 /* --- restore ----------------------------------------------------------------- */
 
 static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_arg,
@@ -669,8 +752,9 @@ static int str_ieq(const char *a, const char *b)
     return *a == '\0' && *b == '\0';
 }
 
-#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K"
-enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_LOG, ARG_COUNT };
+#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N"
+enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_LOG,
+       ARG_KEEP_LAST, ARG_COUNT };
 
 static int real_main(void *arg)
 {
@@ -718,8 +802,11 @@ static int real_main(void *arg)
     } else if (str_ieq(action, "VERIFY")) {
         rc = cmd_verify((const char *)args[ARG_REPO], (const char *)args[ARG_SNAPID],
                          args[ARG_FULL] != 0);
+    } else if (str_ieq(action, "PRUNE")) {
+        rc = cmd_prune((const char *)args[ARG_REPO], (const char *)args[ARG_SNAPID],
+                        (const LONG *)args[ARG_KEEP_LAST]);
     } else {
-        amilog_err("AmiSnap: unknown ACTION \"%s\" -- expected SNAPSHOT, RESTORE, LIST, or VERIFY\n",
+        amilog_err("AmiSnap: unknown ACTION \"%s\" -- expected SNAPSHOT, RESTORE, LIST, VERIFY, or PRUNE\n",
                    action ? action : "");
         rc = RETURN_ERROR;
     }

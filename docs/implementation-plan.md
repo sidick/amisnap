@@ -943,6 +943,55 @@ cross-implementation check. Gate: kill -9 mid-snapshot at any point
 leaves a repository `verify` passes on; Python reader restores a
 snapshot's full tree+metadata with the C code uninvolved.
 
+1. Mark-and-sweep prune engine + `keep last N` retention, wired to
+   `ACTION=PRUNE`. **Done (2026-08-12).** `src/core/prune.[ch]`
+   implements format.md's "Prune" section exactly as specified --
+   delete target manifest(s) first (always manifest-first, never
+   objects-first, so interruption anywhere leaves only harmless garbage
+   for the next run to collect), then one mark pass (decode every
+   surviving manifest, collect every referenced object hash into a
+   sorted set) and one sweep pass (delete every `objects/<hh>/<hex64>`
+   not in that set, then everything under `tmp/` -- nothing
+   legitimately persists there between normally-completed operations).
+   Deliberately policy-agnostic (principle 4, portable core/thin rind):
+   `amisnap_prune_execute()` just deletes whichever snapshot ids it's
+   handed: `PRUNE SNAPID=<id>` (format.md's raw single-snapshot
+   primitive, verbatim) or `PRUNE KEEP_LAST=<n>` (the CLI's own
+   retention-policy layer -- keep the N most recent by
+   `list_all_snapshots`'s existing ascending lexicographic order,
+   format.md's own note that this equals chronological order; delete
+   every older one). Host-tested (`tests/test_prune.c`: two snapshots
+   sharing one deduplicated object plus one unique object each, plus a
+   stray `tmp/` leftover simulating an interrupted run -- confirms
+   exactly the referenced objects survive, the stray tmp/ entry is
+   swept, and pruning the same already-gone id twice is a harmless no-
+   op, not an error) and confirmed live on Copperline (three snapshots,
+   `KEEP_LAST=2` correctly drops only the oldest, `VERIFY FULL` still
+   passes clean on what remains, both no-op cases -- `KEEP_LAST=` above
+   the actual count and `SNAPID=` of a nonexistent id -- correctly do
+   nothing rather than error).
+
+   **Daily/weekly/monthly retention is a deliberately separate,
+   not-yet-started follow-up**: unlike `keep last N` (pure snapid
+   lexicographic ordering, no calendar math needed), bucketing by
+   calendar day/week/month requires converting a snapid's embedded
+   days-since-Jan-1-1978 count into a real Gregorian calendar date
+   (year/month/day/weekday) from scratch -- AmigaDOS's own DateStamp
+   has no calendar library behind it, just a raw day counter. A well-
+   known, portable, floating-point-free algorithm exists for this
+   (Howard Hinnant's public-domain `civil_from_days`) and should be
+   used rather than hand-rolled leap-year logic -- scoped as its own
+   item, not bundled into this one.
+
+2. **Deferred design note: a backup exclude list.** Raised in
+   discussion (2026-08-12), not scheduled to a phase yet: a plain-text
+   file (per-source-directory, or one global list, TBD) naming files/
+   directories the user never wants backed up, read by `scan.c` before
+   walking so excluded entries never even get `Examine()`'d, matching
+   `docs/proposal.md`'s own already-planned "include/exclude patterns"
+   for `snapshot`. Natural to design alongside whichever item first
+   needs `scan.c` to filter its own walk rather than emit everything.
+
 **Deferred design note: media-spanning + parity (2026-08-12, not
 scheduled to a phase yet).** Two related, separable features raised in
 discussion, worth designing for but not building yet:
