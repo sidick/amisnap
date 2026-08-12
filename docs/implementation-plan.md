@@ -231,6 +231,13 @@ Order of work within the phase:
    above; `list`.
 5. `restore` (full/subtree, alternate path, metadata-last) + `verify`
    (structural; `FULL` re-hashes) against the directory backend.
+   Restore's report includes a long-path advisory: entries whose full
+   restored path exceeds ~255 bytes are restored anyway (AmigaDOS
+   creates/traverses component-wise, so it works) but flagged, since
+   stock shells/utilities with ~255-byte and BSTR-limited buffers may
+   misbehave on them. Advisory only, never a refusal — and the exact
+   threshold gets verified against the autodocs before the message is
+   written, not taken from folklore.
 6. Amiga side: `stackswap.c` first (see "Stack management" above --
    every module below runs on top of it, not the other way round),
    then `scan.c`, `restore_meta.c`, `dosio.c`, capability probe; CLI
@@ -301,6 +308,13 @@ ClassAct GUI + ARexx, repository mirroring.
   ROM/Workbench config is absent.
 - **On-target (Amiberry):** smoke test against a real Samba mount,
   muFS owner round-trip.
+- **Exotic-source cases in the matrix:** a FAT95-mounted image as a
+  source volume — its VFAT long names (up to 255 bytes) exceed the
+  107-byte ceiling of every native filesystem, making it the live
+  proof that no 107-char assumption crept in anywhere (capture, format,
+  restore reporting); and a PFS3 partition with a non-default
+  `setfnsize`, proving `maxnamelen` really is probed per volume rather
+  than derived from DosType (two PFS\3 volumes can differ).
 - **Benchmarks as tests where they gate design:** the 10k-file
   incremental target and hash throughput get a repeatable harness
   before any 68k asm optimization is considered (proposal's asm plans
