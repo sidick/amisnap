@@ -636,19 +636,119 @@ Order of work within the phase:
    explicitly (2026-08-12): easier to automate (its own JSON-RPC
    control protocol vs. Amiberry's more interactive MCP surface),
    matching how this plan already treats Copperline as the primary
-   harness elsewhere and Amiberry as the interactive fallback.
-   Copperline job snapshots a guest tree, host asserts metadata
-   fidelity via `.uaem` sidecars. This is where `scan.c`'s actual
-   directory-walk logic (`ExAll`/`Info`/`AllocDosObject
-   (DOS_EXALLCONTROL)`, none exercisable under vamos -- confirmed
-   scan.c *and* backend_dir.c's `list()`, which turned out to depend
-   on `ExAll` too via libnix's opendir/readdir) and `backend_dir.c`'s
-   real filesystem I/O get their first genuine execution confirmation,
-   not just a cross-build. Kickstart ROMs for this are staged locally
-   in `nondistribution/roms/` (gitignored, never committed -- see its
-   own README). Amiberry smoke test against a real Samba share (the
-   actual Tier-1 NAS scenario) stays a secondary, interactive check,
-   not the primary automated path.
+   harness elsewhere and Amiberry as the interactive fallback. This is
+   where `scan.c`'s actual directory-walk logic (`ExAll`/`Info`/
+   `AllocDosObject(DOS_EXALLCONTROL)`, none exercisable under vamos --
+   confirmed scan.c *and* backend_dir.c's `list()`, which turned out to
+   depend on `ExAll` too via libnix's opendir/readdir) and
+   `backend_dir.c`'s real filesystem I/O get their first genuine
+   execution confirmation, not just a cross-build. Amiberry smoke test
+   against a real Samba share (the actual Tier-1 NAS scenario) stays a
+   secondary, interactive check, not the primary automated path.
+
+   **Scope, decided 2026-08-12** (researched against all four sibling
+   repos' existing, working Copperline harnesses -- `amipilot`,
+   `amiauth`, `amirfb`, `copperline-bridgeboard-plugin` -- before
+   designing anything new, per house rule 6):
+
+   - **Minimal boot, no Workbench** -- following `amiauth`'s exact
+     pattern (`tests/copperline/sys/`: just `C/` + `S/Startup-Sequence`,
+     confirmed live in its own `machine.toml`/`run.sh`), not
+     `amipilot`'s full-Workbench one. Nothing this phase touches needs
+     a real Workbench install (no ReAction, no AmiSSL, no Workbench-
+     resident library) -- ROM-resident `dos.library`/`exec.library` is
+     everything the target binary needs. `[cpu] model = "68020"`
+     explicit (our real floor); no `--model A1200` (sidesteps
+     `amipilot`'s own documented EC020/Zorro-autoconfig-crowding
+     gotcha, since we never touch that flag at all).
+   - **Host-mounted `[[filesys]]` directories**, staged before launch
+     and read after (per user guidance), each its own mount: `boot/`
+     (the minimal boot volume: `C/AmiSnap`, `C/stage`, `C/readback`,
+     `S/Startup-Sequence`), `source/` (pre-staged test tree),
+     `repo/` (backup destination), `restored/` (restore destination).
+     Confirmed (via Copperline's own installed README) that 0.12+
+     makes these live, writable pass-throughs by default, not the
+     throwaway/snapshot behavior implied by a stale comment in
+     `amiauth`'s own `machine.toml` (predates that repo's Copperline
+     upgrade) -- verify this empirically before relying on it, don't
+     just trust the doc.
+   - **Test data staging without any Workbench C: commands**: a small
+     dedicated `stage` helper binary (test-only, never shipped --
+     same convention as AmiPilot's own `fixtures/`) creates the source
+     tree directly via `Open`/`Write`/`Close`/`SetProtection`/
+     `SetComment`/`SetFileDate` calls, since `C:Protect`/`C:SetComment`
+     aren't available in a minimal boot. Gives deliberately non-default
+     metadata (specific protection bits, comments, dates) to round-trip
+     -- exercising the real capture/restore path, not just defaults.
+   - **Verification: Amiga-side readback, not `.uaem` parsing.** The
+     `.uaem` sidecar's internal format is genuinely undocumented --
+     confirmed by checking all four sibling repos plus Copperline's own
+     installed README, which only describes the *capability*
+     ("protection bits/comments/datestamps in `.uaem` sidecars"), never
+     the byte format; no sibling repo has ever needed to parse one.
+     Building an automated assertion on an unverified, reverse-
+     engineered format would be exactly the kind of guess house rule 6
+     warns against. Instead: a small `readback` helper `Examine()`s the
+     restored tree and prints observed protection/comment/date/owner
+     into a results file on the host mount; the host script pattern-
+     matches that as plain text -- the same proven technique
+     `amipilot`/`amiauth` already use for their own assertions. `.uaem`
+     inspection stays a worthwhile secondary check later (a genuinely
+     independent verification channel, outside AmiSnap's own
+     reporting) once its format is empirically understood, not a
+     blocker for the first working harness. Checked WinUAE's own
+     source (`~/src/WinUAE/fsdb.cpp`) for a possible shortcut: its
+     classic mechanism is a *different* thing than Copperline's --
+     `_UAEFSDB.___`, one shared binary database per directory (not
+     Copperline's per-file `.uaem` naming), with a record format
+     documented directly in the source comment (`Offset 0, 1 byte,
+     valid; Offset 1, 4 bytes, mode; Offset 5, 257 bytes, aname;
+     Offset 263, 257 bytes, nname; Offset 519, 81 bytes, comment` --
+     600 bytes total, notably **no datestamp field**, since WinUAE
+     reads that from the host file's own mtime rather than a side
+     channel). Useful comparative context (confirms protection+comment
+     are the two fields with no native host equivalent, and that
+     datestamp handling commonly piggybacks on host mtime) but not
+     Copperline's actual byte format -- a genuinely independent, newer
+     emulator, almost certainly a different design. Copperline's own
+     source, not WinUAE's, is where the real answer lives if `.uaem`
+     inspection is ever pursued.
+   - **AmiSnap output capture: `LOG=<path>` CLI option** (decided over
+     relying on Startup-Sequence `>` redirection, which is probably
+     fine for a minimal boot -- the one sibling-repo gotcha found
+     (`amiauth`'s README) was specifically about `AUX:`/`SER:` device
+     handlers, not plain file redirection -- but untested, and this
+     sidesteps the question entirely while adding a real feature the
+     proposal already planned ("optional verbose log to a file").
+     AmiSnap opens and writes its own log file directly via `Open`/
+     `Write` when `LOG=` is given.
+   - **Config convention**: `copperline.example.toml` (committed) +
+     `copperline.local.toml` (gitignored, machine-specific ROM/host
+     paths) -- `amipilot`/`amirfb`'s established pattern -- with
+     `run.sh` skipping cleanly (exit 0, not a false pass) when the
+     local file is absent, so CI without the ROM asset still passes.
+     ROMs live in `nondistribution/roms/` (already staged, gitignored).
+   - **Orchestration**: `--cpu 68020` explicit, `--noaudio`,
+     `--benchmark-until <seconds>` (the simpler fixed-emulated-time
+     mode `amiauth`/`copperline-bridgeboard-plugin` use, no JSON-RPC
+     control server needed since nothing here requires indefinite
+     runtime or live interaction) -- boot, run `stage` → `AmiSnap
+     SNAPSHOT` → `LIST` → `VERIFY FULL` → `RESTORE` → `readback`, each
+     via `LOG=` to its own file on a host mount, then exit. Host script
+     reads every log back off the host-mounted directories and asserts
+     against expected content/counts/metadata -- no in-guest
+     interaction, no screen-scraping, matching `amipilot`'s own
+     established "read results straight off the host filesystem"
+     pattern.
+   - **Known gotchas already on record from sibling repos**, to apply
+     rather than rediscover: CRLF-strip serial output if any is used;
+     `--control` alone leaves the machine paused (not relevant here
+     since `--benchmark-until` is used instead); pin Copperline >=0.14.0
+     if a real 68000 target is ever added (a `[[filesys]]` hang on
+     68000/68010 was fixed upstream in 0.14.0); a file still
+     `LoadSeg`-resident when the host overwrites it live is silently a
+     no-op -- always stage files before Copperline starts, never
+     mid-session.
 
 Gate: snapshot → wipe → restore on FFS is metadata-bit-perfect in the
 emulator harness; 10k-file unchanged run under a minute on emulated
