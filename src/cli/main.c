@@ -45,6 +45,7 @@
 #include "restore_meta.h"
 #include "scan.h"
 #include "stackswap.h"
+#include "xxhash32.h"
 
 #ifndef VERSION
 #define VERSION 0
@@ -177,7 +178,8 @@ typedef struct {
     amisnap_repo_writer *rw;
     const char *source_root;
     const amisnap_index *prev_index; /* NULL on a first-ever backup (no previous snapshot) */
-    size_t files_ok, files_failed, files_unchanged;
+    int paranoid;
+    size_t files_ok, files_failed, files_unchanged, files_paranoid_mismatch;
 } snapshot_ctx;
 
 /* Sets the archive bit on the just-backed-up source file (best-effort,
@@ -221,6 +223,7 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
         LONG size;
         uint8_t *data = NULL;
         const amisnap_entry_meta *prev;
+        int unchanged;
 
         rc = amisnap_join_amiga_path(ctx->source_root, entry->path, entry->path_len, path, sizeof(path));
         if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
@@ -242,13 +245,14 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
         e.size = (uint64_t)size;
 
         prev = ctx->prev_index ? amisnap_index_lookup(ctx->prev_index, entry->path, entry->path_len) : NULL;
-        if (prev && amisnap_index_unchanged(prev, &e)) {
-            /* Metadata-first fast path (implementation-plan.md's
-             * archive-bit policy): every field index_unchanged()
-             * checks already proves this file's bytes are identical to
-             * what the previous snapshot already has safely stored, so
-             * reuse its content refs verbatim instead of re-reading
-             * and re-hashing bytes that provably haven't changed. */
+        unchanged = prev && amisnap_index_unchanged(prev, &e);
+
+        /* Pure fast path (metadata-first, no paranoid re-check): every
+         * field index_unchanged() checks already proves this file's
+         * bytes are identical to what the previous snapshot already
+         * has safely stored, so reuse its content refs verbatim
+         * without ever reading the file at all. */
+        if (unchanged && !ctx->paranoid) {
             e.content = prev->content;
             e.content_count = prev->content_count;
             rc = amisnap_repo_writer_entry(ctx->rw, &e);
@@ -259,6 +263,10 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
             return 0;
         }
 
+        /* Everything else needs the actual bytes: a genuine change, OR
+         * paranoid mode re-checking a metadata match before trusting
+         * it (docs/proposal.md: "Optional paranoid mode adds xxHash32
+         * verification of allegedly-unchanged files"). */
         if (size > 0) {
             LONG got = 0;
             data = (uint8_t *)malloc((size_t)size);
@@ -273,6 +281,38 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
             }
             Close(fh);
             if (got != size) { free(data); ctx->files_failed++; return 0; }
+        }
+
+        if (unchanged) {
+            /* Paranoid re-check: cross-check the CHEAP xxHash32 (near-
+             * memory-speed, docs/proposal.md's own CPU-budget case for
+             * using it freely) against what was stored alongside the
+             * previous entry's content, rather than trusting the
+             * metadata match blindly. A previous entry with no xhash
+             * at all (predates repo.c always recording one) can't be
+             * cross-checked -- degrades to "can't confirm, so don't
+             * claim it", i.e. falls through to a full re-hash+write
+             * below, the same as a genuine mismatch. */
+            if (prev->has_xhash &&
+                amisnap_xxh32(data, (size_t)(size > 0 ? size : 0), 0) == prev->xhash) {
+                free(data);
+                e.content = prev->content;
+                e.content_count = prev->content_count;
+                e.has_xhash = 1;
+                e.xhash = prev->xhash;
+                rc = amisnap_repo_writer_entry(ctx->rw, &e);
+                if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
+                ctx->files_ok++;
+                ctx->files_unchanged++;
+                mark_backed_up(path, e.prot);
+                return 0;
+            }
+            /* Metadata said "unchanged" but the paranoid re-check
+             * couldn't confirm it -- an honest, worth-reporting
+             * degradation (implementation-plan.md principle 1: never
+             * silently trust a fast path that might be wrong), not a
+             * silent fall-through. */
+            ctx->files_paranoid_mismatch++;
         }
 
         rc = amisnap_repo_writer_file(ctx->rw, &e, data, (size_t)(size > 0 ? size : 0));
@@ -360,7 +400,7 @@ static int snapshot_source_repo_overlap(const char *source, const char *repo)
     return overlap;
 }
 
-static LONG cmd_snapshot(const char *source, const char *repo, const char *comment)
+static LONG cmd_snapshot(const char *source, const char *repo, const char *comment, int paranoid)
 {
     amisnap_backend be;
     amisnap_repo_writer rw;
@@ -484,9 +524,11 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     ctx.rw = &rw;
     ctx.source_root = source;
     ctx.prev_index = have_prev_index ? &prev_index : NULL;
+    ctx.paranoid = paranoid;
     ctx.files_ok = 0;
     ctx.files_failed = 0;
     ctx.files_unchanged = 0;
+    ctx.files_paranoid_mismatch = 0;
     real_visitor.user = &ctx;
     real_visitor.on_entry = snapshot_on_entry;
     rc = amisnap_scan_volume(source, &real_visitor, &caps, &real_result);
@@ -510,6 +552,10 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
            snapid, (unsigned long)real_result.dirs_seen, (unsigned long)ctx.files_ok,
            (unsigned long)ctx.files_unchanged, (unsigned long)ctx.files_failed,
            (unsigned long)real_result.links_skipped);
+    if (paranoid)
+        amilog("Paranoid verify: %lu file(s) claimed unchanged by metadata but failed the "
+                   "xxHash32 re-check and were re-read in full\n",
+               (unsigned long)ctx.files_paranoid_mismatch);
 
     if (ctx.files_failed > 0 || real_result.links_skipped > 0)
         return RETURN_WARN;
@@ -840,9 +886,9 @@ static int str_ieq(const char *a, const char *b)
     return *a == '\0' && *b == '\0';
 }
 
-#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N"
+#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S"
 enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_LOG,
-       ARG_KEEP_LAST, ARG_COUNT };
+       ARG_KEEP_LAST, ARG_PARANOID, ARG_COUNT };
 
 static int real_main(void *arg)
 {
@@ -881,7 +927,7 @@ static int real_main(void *arg)
 
     if (str_ieq(action, "SNAPSHOT")) {
         rc = cmd_snapshot((const char *)args[ARG_SOURCE], (const char *)args[ARG_REPO],
-                           (const char *)args[ARG_COMMENT]);
+                           (const char *)args[ARG_COMMENT], args[ARG_PARANOID] != 0);
     } else if (str_ieq(action, "RESTORE")) {
         rc = cmd_restore((const char *)args[ARG_REPO], (const char *)args[ARG_DEST],
                           (const char *)args[ARG_SNAPID], (const char *)args[ARG_SUBTREE]);

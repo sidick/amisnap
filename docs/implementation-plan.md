@@ -1079,7 +1079,42 @@ snapshot's full tree+metadata with the C code uninvolved.
    the m68k cross-compiler) rather than trusting a green local macOS
    build alone.
 
-4. **Deferred design note: a backup exclude list.** Raised in
+4. Paranoid verify mode ("xxHash re-check of unchanged files",
+   `docs/proposal.md`: "Optional paranoid mode adds xxHash32
+   verification of allegedly-unchanged files"). **Done (2026-08-12).**
+   Two parts:
+   - `repo.c`'s `amisnap_repo_writer_file()` now computes and stores
+     E_XHASH (`amisnap_xxh32(data, len, 0)`) on every file, always --
+     not just under paranoid mode. It's near-memory-speed
+     (`docs/proposal.md`'s own CPU-budget case for using it freely),
+     and without it recorded on *every* snapshot, a later paranoid run
+     would have nothing from the previous one to compare against.
+   - `ACTION=SNAPSHOT PARANOID` (a new `/S` switch): when a file would
+     otherwise take the archive-bit fast path (metadata says
+     unchanged), paranoid mode reads its bytes anyway and cross-checks
+     `xxHash32` against what was stored last time before trusting the
+     metadata match -- a previous entry with no `E_XHASH` at all
+     (predates this item) can't be cross-checked and degrades honestly
+     to a full re-hash+write rather than silently claiming "verified"
+     it can't back up. A mismatch is reported distinctly
+     (`files_paranoid_mismatch`, its own summary line), not folded
+     silently into the ordinary "changed" count.
+
+   Confirmed live on Copperline, including the actual failure mode
+   this mode exists to catch, not just the happy path: a `lie.c`
+   fixture (verification-only, since removed) rewrote `root.txt` with
+   different bytes of the *same length*, then restored the exact same
+   protection (archive bit included), comment, and datestamp stage.c
+   had originally set -- metadata alone says "unchanged". Non-paranoid
+   `SNAPSHOT` was fooled (3/3 unchanged, wrong). `PARANOID` caught it
+   (1 mismatch reported, the file correctly re-read and re-hashed), and
+   `RESTORE` afterward reflected the real (lied-about) content
+   correctly. A following non-paranoid `SNAPSHOT` then correctly
+   trusted the *new*, accurate state (3/3 unchanged again) -- proving
+   this doesn't just detect a lie once, it correctly self-heals the
+   index for every run after.
+
+5. **Deferred design note: a backup exclude list.** Raised in
    discussion (2026-08-12), not scheduled to a phase yet: a plain-text
    file (per-source-directory, or one global list, TBD) naming files/
    directories the user never wants backed up, read by `scan.c` before

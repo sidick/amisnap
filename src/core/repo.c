@@ -4,6 +4,7 @@
 
 #include "blake2s.h"
 #include "repo.h"
+#include "xxhash32.h"
 
 #define SNAPID_KEY_LEN 32   /* "snapshots/" + 16 + ".mf" + NUL, generous */
 
@@ -80,6 +81,16 @@ int amisnap_repo_writer_file(amisnap_repo_writer *rw, amisnap_entry_meta *entry,
 
     entry->has_size = 1;
     entry->size = len;
+
+    /* format.md E_XHASH: "advisory accelerator for the paranoid-verify
+     * and dedup fast paths; readers never trust it for integrity" --
+     * computed here, on every file, unconditionally (not just under a
+     * future paranoid-verify mode), since it's near-memory-speed
+     * (docs/proposal.md's own CPU-budget case for using it freely) and
+     * without it stored now, a later paranoid check would have nothing
+     * from this snapshot to compare against. */
+    entry->has_xhash = 1;
+    entry->xhash = amisnap_xxh32(data, len, 0);
 
     if (len == 0) {
         entry->content = NULL;
