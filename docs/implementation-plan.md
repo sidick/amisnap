@@ -941,7 +941,11 @@ paranoid verify mode (xxHash re-check of "unchanged" files), fixed-size
 chunking for large files, `tools/amisnap_reader.py` + the CI
 cross-implementation check. Gate: kill -9 mid-snapshot at any point
 leaves a repository `verify` passes on; Python reader restores a
-snapshot's full tree+metadata with the C code uninvolved.
+snapshot's full tree+metadata with the C code uninvolved. **Both
+halves of the gate met (2026-08-12)** -- crash-safety was item 2
+above; the reader half is item 5 below, with one honest caveat on
+"+metadata": see that item for why a POSIX host reader reports every
+Amiga-specific metadata field rather than literally applying it.
 
 1. Mark-and-sweep prune engine + `keep last N` retention, wired to
    `ACTION=PRUNE`. **Done (2026-08-12).** `src/core/prune.[ch]`
@@ -1114,7 +1118,61 @@ snapshot's full tree+metadata with the C code uninvolved.
    this doesn't just detect a lie once, it correctly self-heals the
    index for every run after.
 
-5. **Deferred design note: a backup exclude list.** Raised in
+5. `tools/amisnap_reader.py` + the CI cross-implementation check.
+   **Done (2026-08-12).** A stdlib-only Python 3 reader (`hashlib`
+   has had BLAKE2s-256 since 3.6 -- no third-party dependency needed
+   even for the integrity-critical hash), every tag value and field
+   layout transcribed directly from `docs/format.md` and cross-checked
+   against `tlv.c`/`meta.c`/`manifest.c`/`repo.c`'s own encode/decode,
+   not assumed from the prose alone -- e.g. confirmed the double length
+   -encoding on string fields (the outer TLV `length` plus a second,
+   inner `u16` the string convention itself adds) directly against
+   `amisnap_buf_field_string()`, since format.md's own wording alone
+   left that genuinely ambiguous. Three subcommands: `list`, `verify
+   [--full]`, `restore <dest> [--subtree]`.
+
+   **The "+metadata" part of the gate has one honest caveat, not
+   silently glossed over**: format.md's own reader guidance says
+   "apply metadata as far as the target system allows, reporting what
+   it couldn't apply" -- on a bare POSIX host, that's "almost none of
+   it" (no `fib_Protection` concept, no per-file FileNote, no shared
+   uid/gid namespace with the source Amiga), so `restore` reports every
+   field's value for every entry rather than attempting a doomed
+   mapping onto `chmod`/xattrs. Content restoration -- the disaster-
+   recovery-critical half -- is complete and independently verified
+   (BLAKE2s-256 re-checked against each object's own name, same as the
+   C side, implemented from scratch rather than shared code).
+
+   **A second, real, honest gap surfaced immediately** on the very
+   first run: `amisnap.repo` (the repository header) is never actually
+   written by `repo.c` at all yet (`repo.h`'s own header comment:
+   repository-level state "is explicitly out of scope here... lands
+   with encryption wiring, phase 4") -- so format.md's own reader
+   guidance ("parse `amisnap.repo`, refuse unknown version/cipher") as
+   a literal first step doesn't hold against any repository this
+   version of AmiSnap can actually produce. The reader tolerates a
+   missing `amisnap.repo` (assumes CIPHER=0, the only value the C side
+   can produce right now) and says so on stderr, rather than either
+   refusing every real repository or silently pretending the file
+   exists.
+
+   **CI cross-implementation check** (`make cross-check`, wired into
+   `test-host`): `tests/cross/gen_sample_repo.c` (host-buildable, no
+   Amiga dependency -- exercises `backend_dir.c`/`repo.c` directly, the
+   same portable write path a real `SNAPSHOT` uses) writes one small,
+   deterministic repository exercising every optional REC_ENTRY field
+   at once (archive bit, comment, owner, a subdirectory, a zero-byte
+   file with no E_CONTENT at all). `tests/cross/run.sh` then drives the
+   Python reader against it as a real, independent subprocess (not an
+   imported library call) and asserts `list`/`verify --full`/`restore`
+   all agree with known-correct values -- then corrupts one real
+   object byte on disk and confirms the reader's own from-scratch
+   BLAKE2s-256 check independently catches it, proving the integrity
+   check is real rather than a rubber stamp that would pass regardless.
+   Confirmed passing inside `ghcr.io/sidick/amiga-dev` (CI's actual
+   environment, not just macOS).
+
+6. **Deferred design note: a backup exclude list.** Raised in
    discussion (2026-08-12), not scheduled to a phase yet: a plain-text
    file (per-source-directory, or one global list, TBD) naming files/
    directories the user never wants backed up, read by `scan.c` before

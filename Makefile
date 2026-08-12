@@ -62,7 +62,8 @@ AMIGA_GCC_IMAGE ?= ghcr.io/sidick/amiga-dev:1
 # for real in sibling AmiAuth's release rehearsal).
 DOCKER_USER     := --user "$(shell id -u):$(shell id -g)"
 
-.PHONY: all test m68k m68k-docker clean build test-host stackswap-vamos-test copperline-fixtures test-target lint dist version
+.PHONY: all test m68k m68k-docker clean build test-host stackswap-vamos-test cross-check \
+	copperline-fixtures test-target lint dist version
 
 all: test
 
@@ -72,7 +73,7 @@ all: test
 # own build steps rather than assuming a prior job ran.
 build: m68k
 
-test-host: test stackswap-vamos-test
+test-host: test stackswap-vamos-test cross-check
 
 # --- stackswap-vamos-test: Phase 1 item 7's vamos regression test ---------
 # Confirms amisnap_stackswap_run() genuinely swaps to a new stack -- see
@@ -91,6 +92,24 @@ $(STACKSWAP_TEST_BIN): $(STACKSWAP_TEST_SRC) src/amiga/stackswap.c src/amiga/sta
 
 stackswap-vamos-test: $(STACKSWAP_TEST_BIN)
 	vamos -C 020 $(STACKSWAP_TEST_BIN)
+
+# --- cross-check: Phase 2's CI cross-implementation check -----------------
+# docs/format.md's own opening line: "the C implementation and the host-
+# side reference reader both cite it, and CI asserts they agree." Builds
+# a small sample repository with the real portable C write path (host
+# compiler, not m68k -- backend_dir.c/repo.c have no Amiga dependency),
+# then tests/cross/run.sh drives tools/amisnap_reader.py (stdlib-only
+# Python) against it independently and asserts they agree.
+CROSS_GEN_SRC := tests/cross/gen_sample_repo.c
+CROSS_GEN_BIN := $(BUILD)/gen_sample_repo
+
+$(CROSS_GEN_BIN): $(CROSS_GEN_SRC) src/core/backend_dir.c src/core/repo.c src/core/manifest.c \
+	src/core/meta.c src/core/tlv.c src/core/blake2s.c src/core/xxhash32.c $(CORE_HDRS) | $(BUILD)/.dir
+	$(CC) $(CFLAGS) $(CORE_INC) $(CROSS_GEN_SRC) src/core/backend_dir.c src/core/repo.c \
+		src/core/manifest.c src/core/meta.c src/core/tlv.c src/core/blake2s.c src/core/xxhash32.c -o $@
+
+cross-check: $(CROSS_GEN_BIN)
+	sh tests/cross/run.sh
 
 # --- copperline-fixtures: test-only stage/readback helpers (Phase 1 item 8) -
 # Never shipped -- same convention as AmiPilot's own fixtures/. Kept out of
