@@ -395,7 +395,9 @@ src/amiga/          m68k build only
                       world" too, confirmed not specific to this code)
                       and is now on record for item 7's own vamos
                       regression test to reuse.               [done]
-  socket.c            bsdsocket glue for webdav/s3         [phase 3]
+  socket.c            bsdsocket glue for webdav/s3, cross-build-
+                      verified only (see Phase 3 item 2 for why -- no
+                      vamos/Copperline coverage exists yet)   [done]
   tls.c               soft-loaded AmiSSL, per-destination  [phase 3]
 
 src/cli/            AmiSnap front-end: one ReadArgs template
@@ -1356,7 +1358,39 @@ protocol code against a local WebDAV container.
 
 2. `src/amiga/socket.c` -- bsdsocket.library glue (`socket`/`connect`/
    `send`/`recv`/`close`, `SocketBase` opened per proposal.md's own
-   networking prerequisite). Not started.
+   networking prerequisite). **Done (2026-08-12), cross-build-verified
+   only.** A thin blocking TCP client: `amisnap_socket_lib_open()`
+   (`OpenLibrary("bsdsocket.library", 4)`, since bsdsocket -- unlike
+   dos.library -- isn't auto-opened by the C startup) /
+   `amisnap_socket_connect()` (dotted-quad via `inet_aton()`, DNS name
+   via `gethostbyname()` -- `inet_addr()` deliberately avoided, its
+   return value is ambiguous for the legitimate address
+   255.255.255.255) / `amisnap_socket_send()` (loops over `send()` --
+   one call isn't guaranteed to accept the whole buffer) /
+   `amisnap_socket_recv()` / `amisnap_socket_close()`.
+
+   bsdsocket.library is Roadshow/AmiTCP's own de facto standard API,
+   NOT part of the base NDK the rest of this codebase's Amiga-side
+   modules verify against -- every function signature and struct layout
+   here (`proto/bsdsocket.h`'s GCC inline-asm LVO stubs via a
+   module-global `SocketBase`, `netdb.h`'s `struct hostent`,
+   `netinet/in.h`'s `struct sockaddr_in`/`htons`) was instead checked
+   against the real Roadshow SDK headers bundled in
+   `ghcr.io/sidick/amiga-dev`, not assumed from memory -- house rule 6
+   applies the same to a third-party library's headers as to
+   Commodore/Hyperion's own.
+
+   Verification status, honestly: compiles clean AND links clean into
+   the full `AmiSnap` binary under `m68k-amigaos-gcc -noixemul` (a real
+   check -- the inline LVO stubs still have to resolve at link time).
+   Unlike this codebase's other Amiga-side modules, there is no
+   cross-build-then-vamos-then-Copperline staged story here yet: vamos
+   has no bsdsocket.library emulation at all (confirmed absent from its
+   own skill reference material, unlike its partial dos.library
+   coverage), and Copperline's own network-emulation capability is
+   unconfirmed. Genuine on-target verification is deferred to item 3
+   (something real to connect to) and item 5 (clarifying what's
+   actually testable where).
 3. `webdav.c` -- an `amisnap_backend_ops` implementation over
    items 1+2 (PUT/GET/MKCOL/PROPFIND mapped onto `backend.h`'s
    put/get/mkcol/exists/list/remove, plus the streaming
