@@ -1998,13 +1998,33 @@ derivation, nonce discipline, and the WRAPPED_KEY layout precisely).
    safe, but not yet wired.
 6. End-to-end test: snapshot/restore/verify cycle against a CIPHER=1
    repository (host `backend_dir`), plus the cross-check above.
-   **Core-level round-trip done (2026-08-13)**:
-   `tests/test_repo_encrypted.c` (see item 4). **Still open**: a
-   `tools/amisnap_reader.py` update (it still refuses any CIPHER != 0
-   repository outright, so `cross-check` doesn't yet exercise CIPHER=1
-   at all) and, on real hardware, confirming `cmd_init()`'s PBKDF2
+   **Done (2026-08-13)**, including the Python side:
+   `tests/test_repo_encrypted.c` (see item 4) for the core C round-trip,
+   and `tools/amisnap_reader.py` now implements CIPHER=1 fully -- a
+   stdlib-only pure-Python ChaCha20 (RFC 8439, deliberately *not*
+   calling into `src/core/chacha20.c` or a third-party crypto package:
+   the entire value of a reference reader is staying independent of the
+   implementation it's meant to be checking), PBKDF2/keyed-BLAKE2s via
+   `hashlib` (already stdlib), and a `getpass`-prompted passphrase. Its
+   subkey/nonce/frame functions are verified against the exact same
+   fixed vectors `tests/test_repo_crypto.c` uses (agreement with the C
+   side, not just internal self-consistency) plus the standalone RFC
+   8439 ChaCha20 vector directly. `tests/cross/gen_sample_repo.c` grew
+   an optional third argument (a passphrase) that writes a CIPHER=1
+   `amisnap.repo` (fixed, known-answer repo key -- this is a
+   reproducible test fixture, not a real repository, so real entropy
+   doesn't apply) and encrypts the same fixture snapshot;
+   `tests/cross/run.sh` now drives list/verify/restore against it
+   through the real Python reader (passphrase piped via stdin) and
+   confirms a wrong passphrase fails closed. Verified against the exact
+   CI container: `make test-host` 741/741, `cross-check` green
+   including the new encrypted section, `make build` (m68k) clean.
+   **Still open**: on real hardware, confirming `cmd_init()`'s PBKDF2
    calibration lands in the target range on at least one real
-   (non-emulated) CPU speed.
+   (non-emulated) CPU speed -- `amisnap_millis()`/`amisnap_random()`
+   are m68k-only and untestable on host or under vamos (no
+   timer.device/RAW-console emulation), same status as `random.c`
+   itself (item 2).
 
 **Phase 5 — S3.** SigV4 with `UNSIGNED-PAYLOAD`, large objects, tested
 against MinIO in CI and B2 manually.

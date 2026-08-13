@@ -18,13 +18,19 @@ integrity-critical hash needs no third-party dependency.
 
 Known, honest gap versus the spec's own reader guidance: format.md
 says a reader should "parse amisnap.repo (refuse unknown version/
-cipher)" as step one. src/core/repo.c does not write amisnap.repo at
-all yet (repo.h's own header comment: repository-level state "is
-explicitly out of scope here... lands with encryption wiring, phase
-4") -- so this reader treats a missing amisnap.repo as CIPHER=0 (the
-only value the C side can produce right now) rather than refusing,
-and says so. This is a real, current limitation of the repository
-this reader is reading, not a bug in the reader.
+cipher)" as step one. A CIPHER=0 repository still has no amisnap.repo
+at all in some cases (any repository never INIT'd -- repo.c's writer
+creates snapshots/objects on first use with no header required; only
+INIT PASSPHRASE writes one, per implementation-plan.md Phase 4 item
+3), so this reader treats a missing amisnap.repo as CIPHER=0 rather
+than refusing, and says so. CIPHER=1 (encrypted) repositories are
+supported: this reader prompts for the passphrase (getpass, no echo)
+and derives the repository key the same way src/core/repo_crypto.c
+does -- see the "Encryption" section below, a stdlib-only pure-Python
+reimplementation of ChaCha20/PBKDF2-HMAC-SHA256/keyed-BLAKE2s-256 kept
+deliberately independent of src/core/'s own C (this is the whole point
+of a *reference* reader: it must not just call back into the
+implementation it's meant to be checking).
 
 Subcommands:
   list <repo>                       list snapshot ids, oldest first
@@ -60,7 +66,9 @@ Subcommands:
 """
 import argparse
 import datetime
+import getpass
 import hashlib
+import hmac
 import os
 import struct
 import sys
@@ -120,6 +128,15 @@ ETYPE_FILE = 1
 ETYPE_DIR = 2
 ETYPE_SOFTLINK = 3
 ETYPE_HARDLINK = 4
+
+# Encryption (docs/format.md "Encryption (CIPHER 1)")
+CIPHER_NONE = 0
+CIPHER_CHACHA20_BLAKE2S = 1
+KDF_PBKDF2_HMAC_SHA256 = 1
+REPO_KEY_SIZE = 32
+NONCE_SIZE = 12
+MAC_SIZE = 16
+WRAPPED_KEY_SIZE = NONCE_SIZE + REPO_KEY_SIZE + MAC_SIZE
 
 
 class FormatError(Exception):
@@ -240,6 +257,135 @@ def parse_header(buf, expect_ftype):
 
 
 # --------------------------------------------------------------------------
+# Encryption (docs/format.md "Encryption (CIPHER 1)") -- a stdlib-only
+# pure-Python reimplementation of ChaCha20 (RFC 8439), independent of
+# src/core/chacha20.c (PBKDF2 and keyed BLAKE2s are already in
+# hashlib, no reimplementation needed for those). Deliberately NOT
+# calling into the C implementation or a third-party crypto package --
+# see this file's own module docstring on why a *reference* reader
+# staying independent is the entire point.
+# --------------------------------------------------------------------------
+
+def _chacha20_block(key, counter, nonce):
+    """One 64-byte keystream block (RFC 8439 Sec 2.3), 32-bit-wrapping
+    arithmetic throughout via `& 0xffffffff` (Python ints don't wrap on
+    their own)."""
+    def rotl32(x, n):
+        x &= 0xffffffff
+        return ((x << n) | (x >> (32 - n))) & 0xffffffff
+
+    state = [
+        0x61707865, 0x3320646e, 0x79622d32, 0x6b206574,
+    ] + list(struct.unpack("<8I", key)) + [
+        counter,
+    ] + list(struct.unpack("<3I", nonce))
+
+    working = list(state)
+
+    def quarter_round(a, b, c, d):
+        working[a] = (working[a] + working[b]) & 0xffffffff
+        working[d] ^= working[a]
+        working[d] = rotl32(working[d], 16)
+        working[c] = (working[c] + working[d]) & 0xffffffff
+        working[b] ^= working[c]
+        working[b] = rotl32(working[b], 12)
+        working[a] = (working[a] + working[b]) & 0xffffffff
+        working[d] ^= working[a]
+        working[d] = rotl32(working[d], 8)
+        working[c] = (working[c] + working[d]) & 0xffffffff
+        working[b] ^= working[c]
+        working[b] = rotl32(working[b], 7)
+
+    for _ in range(10):  # 20 rounds = 10 column+diagonal pairs
+        quarter_round(0, 4, 8, 12)
+        quarter_round(1, 5, 9, 13)
+        quarter_round(2, 6, 10, 14)
+        quarter_round(3, 7, 11, 15)
+        quarter_round(0, 5, 10, 15)
+        quarter_round(1, 6, 11, 12)
+        quarter_round(2, 7, 8, 13)
+        quarter_round(3, 4, 9, 14)
+
+    out_words = [(working[i] + state[i]) & 0xffffffff for i in range(16)]
+    return struct.pack("<16I", *out_words)
+
+
+def chacha20_xor(key, nonce, counter, data):
+    """XORs `data` with the ChaCha20 keystream (key/nonce/initial
+    counter -- see chacha20.h's own C signature, which this mirrors
+    exactly). Symmetric: the same call encrypts and decrypts."""
+    out = bytearray(len(data))
+    off = 0
+    blk_counter = counter
+    while off < len(data):
+        block = _chacha20_block(key, blk_counter, nonce)
+        n = min(64, len(data) - off)
+        for i in range(n):
+            out[off + i] = data[off + i] ^ block[i]
+        blk_counter = (blk_counter + 1) & 0xffffffff
+        off += n
+    return bytes(out)
+
+
+def _subkey(parent, label):
+    """docs/format.md "Subkey derivation": domain-separated keyed
+    BLAKE2s-256, subkey(parent, label) = keyed-BLAKE2s-256(key=parent,
+    message=label)."""
+    return hashlib.blake2s(label.encode("ascii"), key=parent, digest_size=32).digest()
+
+
+def derive_subkeys(repo_key):
+    return {
+        "enc": _subkey(repo_key, "AmiSnap-object-enc-v1"),
+        "mac": _subkey(repo_key, "AmiSnap-object-mac-v1"),
+        "nonce": _subkey(repo_key, "AmiSnap-object-nonce-v1"),
+    }
+
+
+def object_nonce(subkey_nonce, content_hash):
+    return hashlib.blake2s(content_hash, key=subkey_nonce, digest_size=32).digest()[:NONCE_SIZE]
+
+
+def manifest_nonce(subkey_nonce, snapid_bytes):
+    return hashlib.blake2s(snapid_bytes, key=subkey_nonce, digest_size=32).digest()[:NONCE_SIZE]
+
+
+def _mac16(key, nonce, ciphertext):
+    return hashlib.blake2s(nonce + ciphertext, key=key, digest_size=32).digest()[:MAC_SIZE]
+
+
+def encrypt_frame(sk, nonce, plaintext):
+    """docs/format.md's object/manifest frame: nonce || ChaCha20(K_enc,
+    nonce, plaintext) || first-16-bytes-of-keyed-BLAKE2s-256(K_mac,
+    nonce||ciphertext)."""
+    ciphertext = chacha20_xor(sk["enc"], nonce, 0, plaintext)
+    return nonce + ciphertext + _mac16(sk["mac"], nonce, ciphertext)
+
+
+def decrypt_frame(sk, frame):
+    if len(frame) < NONCE_SIZE + MAC_SIZE:
+        raise FormatError("encrypted frame shorter than nonce+mac (%d bytes)" % len(frame))
+    nonce = frame[:NONCE_SIZE]
+    ciphertext = frame[NONCE_SIZE:-MAC_SIZE]
+    mac = frame[-MAC_SIZE:]
+    want_mac = _mac16(sk["mac"], nonce, ciphertext)
+    if not hmac.compare_digest(want_mac, mac):
+        raise FormatError("MAC mismatch decrypting frame -- wrong passphrase, wrong "
+                           "repository key, or corrupt/tampered data")
+    return chacha20_xor(sk["enc"], nonce, 0, ciphertext)
+
+
+def wrap_key(k_wrap, wrap_nonce, repo_key):
+    sk = {"enc": _subkey(k_wrap, "AmiSnap-wrap-enc-v1"), "mac": _subkey(k_wrap, "AmiSnap-wrap-mac-v1")}
+    return encrypt_frame(sk, wrap_nonce, repo_key)
+
+
+def unwrap_key(k_wrap, wrapped):
+    sk = {"enc": _subkey(k_wrap, "AmiSnap-wrap-enc-v1"), "mac": _subkey(k_wrap, "AmiSnap-wrap-mac-v1")}
+    return decrypt_frame(sk, wrapped)
+
+
+# --------------------------------------------------------------------------
 # Repository header (amisnap.repo) -- see this file's own module
 # docstring for why a missing amisnap.repo is tolerated, not refused.
 # --------------------------------------------------------------------------
@@ -267,13 +413,32 @@ def parse_repo_header(buf):
             out["chunk_size"] = decode_u32(value)
         elif tag == TAG_FORMAT_APP:
             out["format_app"] = decode_string(value).decode("latin-1")
-        # KDF/WRAPPED_KEY: only meaningful once CIPHER != 0 (phase 4,
-        # unimplemented on the writer side); parsed but unused here.
+        elif tag == TAG_KDF:
+            # docs/format.md: kdfid:u8, iters:u32, salt:string -- packed
+            # scalars followed by the string primitive, not itself a
+            # nested TLV record (same convention E_DATE/E_OWNER use).
+            if len(value) < 1 + 4 + 2:
+                raise FormatError("KDF field too short")
+            out["kdf_id"] = value[0]
+            out["kdf_iters"] = struct.unpack_from(">I", value, 1)[0]
+            salt_len = struct.unpack_from(">H", value, 5)[0]
+            if 7 + salt_len != len(value):
+                raise FormatError("KDF salt length mismatch (declared %d, field holds %d)"
+                                   % (salt_len, len(value) - 7))
+            out["salt"] = value[7:7 + salt_len]
+        elif tag == TAG_WRAPPED_KEY:
+            if len(value) != WRAPPED_KEY_SIZE:
+                raise FormatError("WRAPPED_KEY is %d bytes, expected %d"
+                                   % (len(value), WRAPPED_KEY_SIZE))
+            out["wrapped_key"] = value
 
-    if out["cipher"] != 0:
+    if out["cipher"] not in (CIPHER_NONE, CIPHER_CHACHA20_BLAKE2S):
         raise FormatError(
             "amisnap.repo declares CIPHER=%d -- this reader only implements "
-            "CIPHER=0 (encryption lands in phase 4)" % out["cipher"])
+            "CIPHER=0 (none) and CIPHER=1 (ChaCha20 + keyed-BLAKE2s-256)"
+            % out["cipher"])
+    if out["cipher"] == CIPHER_CHACHA20_BLAKE2S and ("kdf_iters" not in out or "wrapped_key" not in out):
+        raise FormatError("amisnap.repo declares CIPHER=1 but is missing KDF/WRAPPED_KEY")
     return out
 
 
@@ -400,9 +565,14 @@ class Manifest:
 
 
 def parse_manifest(buf):
+    """Parses an already-plaintext manifest file. Encrypted manifests
+    (flags bit 0 set) go through open_manifest() first, which decrypts
+    and hands back an equivalent flags=0 buffer -- this function itself
+    never sees CIPHER involved, same split C's manifest.c/repo.c keep."""
     flags, body_start = parse_header(buf, FTYPE_MANIFEST)
     if flags != 0:
-        raise FormatError("manifest: reserved header flags must be 0 (encryption unimplemented)")
+        raise FormatError("manifest: flags must be 0 here -- callers decrypt via "
+                           "open_manifest() before calling parse_manifest()")
 
     snap = None
     volumes = []  # [(vol_dict, [entries]), ...]
@@ -487,10 +657,50 @@ def list_snapshot_ids(repo_dir):
     return ids
 
 
-def load_manifest(repo_dir, snapid):
+def open_manifest(repo_dir, snapid, subkeys):
+    """Fetches snapshots/<snapid>.mf and decrypts it if its common
+    header's flags bit 0 is set (docs/format.md "Encryption ...
+    Manifests"), mirroring src/core/repo.c's own
+    amisnap_repo_open_manifest() exactly -- including its consistency
+    check that the frame's own embedded nonce matches the deterministic
+    derivation from `snapid` (a protocol-violation check the MAC alone
+    wouldn't catch, since the MAC covers whatever nonce is actually
+    present). Returns raw bytes with a plaintext (flags=0) header,
+    ready for parse_manifest() -- callers never need to know CIPHER was
+    involved."""
     path = os.path.join(repo_dir, "snapshots", "%s.mf" % snapid)
     with open(path, "rb") as f:
-        return parse_manifest(f.read())
+        raw = f.read()
+
+    flags, body_start = parse_header(raw, FTYPE_MANIFEST)
+    if flags & ~1:
+        raise FormatError("manifest: reserved header flags must be 0 (got %d)" % flags)
+    if not (flags & 1):
+        return raw
+
+    if subkeys is None:
+        raise FormatError(
+            "%s.mf is encrypted (flags bit 0 set) but no repository key is available "
+            "-- this repository needs a passphrase" % snapid)
+
+    frame = raw[body_start:]
+    if len(frame) < NONCE_SIZE + MAC_SIZE:
+        raise FormatError("encrypted manifest frame too short")
+
+    expect_nonce = manifest_nonce(subkeys["nonce"], snapid.encode("ascii"))
+    if frame[:NONCE_SIZE] != expect_nonce:
+        raise FormatError(
+            "%s.mf's nonce doesn't match the deterministic derivation from its own "
+            "snapid -- this manifest wasn't produced the way this repository's own "
+            "writer produces them" % snapid)
+
+    plaintext_body = decrypt_frame(subkeys, frame)
+    header = MAGIC + bytes([FTYPE_MANIFEST, FORMAT_VERSION]) + struct.pack(">H", 0)
+    return header + plaintext_body
+
+
+def load_manifest(repo_dir, snapid, subkeys=None):
+    return parse_manifest(open_manifest(repo_dir, snapid, subkeys))
 
 
 def resolve_snapid(repo_dir, snapid):
@@ -505,28 +715,69 @@ def resolve_snapid(repo_dir, snapid):
 def read_repo_header(repo_dir):
     path = os.path.join(repo_dir, "amisnap.repo")
     if not os.path.exists(path):
-        # See this module's own docstring: the current C writer never
-        # creates amisnap.repo. Not a corrupt repository -- a real,
-        # current gap in what it writes.
-        print("note: no amisnap.repo (the C writer doesn't create one yet, "
-              "implementation-plan.md phase 4) -- assuming CIPHER=0", file=sys.stderr)
+        # See this module's own docstring: a repository that was never
+        # INIT'd (only ever needed for CIPHER 1) has no amisnap.repo at
+        # all. Not a corrupt repository -- a real, normal state for a
+        # plain one.
+        print("note: no amisnap.repo (never INIT'd -- a plain repository doesn't need "
+              "one) -- assuming CIPHER=0", file=sys.stderr)
         return {"cipher": 0}
     with open(path, "rb") as f:
         return parse_repo_header(f.read())
 
 
-def read_object(repo_dir, hash32, expected_size):
+def open_repo_key(header):
+    """Given a parsed amisnap.repo header (read_repo_header()), returns
+    the derived object/manifest subkeys (derive_subkeys()) for a
+    CIPHER=1 repository, or None for CIPHER=0. Prompts interactively
+    for the passphrase (getpass, no echo) and fails closed --
+    FormatError, never a silent fallback to unencrypted access -- on a
+    wrong passphrase (MAC mismatch unwrapping WRAPPED_KEY) exactly like
+    src/core/repo_crypto.c's amisnap_repo_unwrap_key()."""
+    if header["cipher"] == CIPHER_NONE:
+        return None
+
+    passphrase = getpass.getpass("AmiSnap passphrase: ")
+    k_wrap = hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), header["salt"],
+                                  header["kdf_iters"], REPO_KEY_SIZE)
+    try:
+        repo_key = unwrap_key(k_wrap, header["wrapped_key"])
+    except FormatError:
+        raise FormatError("wrong passphrase (or a corrupt amisnap.repo)")
+    return derive_subkeys(repo_key)
+
+
+def read_object(repo_dir, hash32, expected_size, subkeys=None):
     key = object_key(hash32)
     path = os.path.join(repo_dir, key)
     with open(path, "rb") as f:
         data = f.read()
-    if len(data) != expected_size:
-        raise FormatError("%s: size %d, E_CONTENT declared %d" % (key, len(data), expected_size))
-    got_hash = hashlib.blake2s(data, digest_size=32).digest()
+
+    if subkeys is None:
+        if len(data) != expected_size:
+            raise FormatError("%s: size %d, E_CONTENT declared %d" % (key, len(data), expected_size))
+        got_hash = hashlib.blake2s(data, digest_size=32).digest()
+        if got_hash != hash32:
+            raise FormatError("%s: content does not hash to its own name (got %s)"
+                               % (key, got_hash.hex()))
+        return data
+
+    expect_len = NONCE_SIZE + expected_size + MAC_SIZE
+    if len(data) != expect_len:
+        raise FormatError("%s: stored size %d, expected %d (E_CONTENT declared %d plaintext "
+                           "bytes + the encryption frame overhead)"
+                           % (key, len(data), expect_len, expected_size))
+    expect_nonce = object_nonce(subkeys["nonce"], hash32)
+    if data[:NONCE_SIZE] != expect_nonce:
+        raise FormatError("%s: nonce doesn't match the deterministic derivation from its "
+                           "own content hash -- this object wasn't produced the way this "
+                           "repository's own writer produces them" % key)
+    plaintext = decrypt_frame(subkeys, data)
+    got_hash = hashlib.blake2s(plaintext, digest_size=32).digest()
     if got_hash != hash32:
-        raise FormatError("%s: content does not hash to its own name (got %s)"
+        raise FormatError("%s: decrypted content does not hash to its own name (got %s)"
                            % (key, got_hash.hex()))
-    return data
+    return plaintext
 
 
 # --------------------------------------------------------------------------
@@ -534,22 +785,24 @@ def read_object(repo_dir, hash32, expected_size):
 # --------------------------------------------------------------------------
 
 def cmd_list(args):
-    read_repo_header(args.repo)
+    header = read_repo_header(args.repo)
+    subkeys = open_repo_key(header)
     ids = list_snapshot_ids(args.repo)
     if not ids:
         print("No snapshots in %r" % args.repo)
         return 0
     for snapid in ids:
-        mf = load_manifest(args.repo, snapid)
+        mf = load_manifest(args.repo, snapid, subkeys)
         n = sum(1 for _ in mf.all_entries())
         print("%s  %d entries" % (snapid, n))
     return 0
 
 
 def cmd_verify(args):
-    read_repo_header(args.repo)
+    header = read_repo_header(args.repo)
+    subkeys = open_repo_key(header)
     snapid = resolve_snapid(args.repo, args.snapid)
-    mf = load_manifest(args.repo, snapid)
+    mf = load_manifest(args.repo, snapid, subkeys)
 
     checked = missing = corrupt = 0
     for entry in mf.all_entries():
@@ -563,7 +816,7 @@ def cmd_verify(args):
                 continue
             if args.full:
                 try:
-                    read_object(args.repo, ref["hash"], ref["size"])
+                    read_object(args.repo, ref["hash"], ref["size"], subkeys)
                 except FormatError as e:
                     corrupt += 1
                     print("CORRUPT: %s: %s" % (key, e))
@@ -670,9 +923,10 @@ def write_uaem_sidecar(dest_path, entry):
 
 
 def cmd_restore(args):
-    read_repo_header(args.repo)
+    header = read_repo_header(args.repo)
+    subkeys = open_repo_key(header)
     snapid = resolve_snapid(args.repo, args.snapid)
-    mf = load_manifest(args.repo, snapid)
+    mf = load_manifest(args.repo, snapid, subkeys)
 
     subtree = args.subtree.encode("latin-1") if args.subtree else None
 
@@ -707,7 +961,7 @@ def cmd_restore(args):
             os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
             with open(dest_path, "wb") as out:
                 for ref in entry["content"]:
-                    out.write(read_object(args.repo, ref["hash"], ref["size"]))
+                    out.write(read_object(args.repo, ref["hash"], ref["size"], subkeys))
             files += 1
 
         if args.uaem and path:  # no sidecar for the root entry -- see write_uaem_sidecar

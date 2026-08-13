@@ -7,16 +7,84 @@
  * so the driving script can pass it to tools/amisnap_reader.py without
  * having to parse anything itself.
  *
+ * With a third argument (a passphrase), also writes a CIPHER=1
+ * amisnap.repo and encrypts the same snapshot -- implementation-plan.md
+ * Phase 4 item 6's "cross-check keeps proving the two agree once
+ * CIPHER=1 repositories exist". The repository key itself is a fixed,
+ * known-answer value (0x00..0x1f), not real entropy -- this is a test
+ * fixture that needs to be reproducible, not a real repository, and
+ * repo_crypto.c/repo_header.c don't care where the key came from. The
+ * PBKDF2 iteration count is deliberately tiny (real entropy/calibration
+ * is src/amiga/random.c's job, exercised on-target, not here) so this
+ * fixture generates in CI-test time, not KDF-calibrated real time.
+ *
  * Never shipped -- same convention as this repo's own Amiga-side test
  * fixtures under tests/copperline/fixture/, just host-buildable
  * instead of m68k-only, since this one only exercises the portable
  * core.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "backend_dir.h"
+#include "pbkdf2.h"
 #include "repo.h"
+#include "repo_header.h"
+
+#define TEST_KDF_ITERS 100u
+
+/* Writes a CIPHER=1 amisnap.repo wrapping the fixed test repo key
+ * under `passphrase`, and returns the derived object/manifest subkeys
+ * via *sk_out for the writer to use. Exits the process on failure --
+ * this is a fixture generator, not a library, so a short, loud death
+ * is more useful than plumbing an error code back through main(). */
+static void init_encrypted_repo(amisnap_backend *be, const char *passphrase,
+                                 uint8_t repo_key[AMISNAP_REPO_KEY_SIZE],
+                                 amisnap_repo_subkeys *sk_out)
+{
+    static const uint8_t salt[16] = {
+        0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+        0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf
+    };
+    static const uint8_t wrap_nonce[AMISNAP_REPO_NONCE_SIZE] = {
+        0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb
+    };
+    uint8_t k_wrap[32];
+    uint8_t wrapped[AMISNAP_WRAPPED_KEY_SIZE];
+    amisnap_repo_header hdr;
+    amisnap_buf hdr_bytes;
+    size_t i;
+
+    for (i = 0; i < AMISNAP_REPO_KEY_SIZE; i++) repo_key[i] = (uint8_t)i;
+    amisnap_repo_derive_subkeys(repo_key, sk_out);
+
+    amisnap_pbkdf2_hmac_sha256((const uint8_t *)passphrase, strlen(passphrase),
+                                salt, sizeof(salt), TEST_KDF_ITERS, k_wrap, sizeof(k_wrap));
+    amisnap_repo_wrap_key(k_wrap, wrap_nonce, repo_key, wrapped);
+
+    memset(&hdr, 0, sizeof(hdr));
+    for (i = 0; i < AMISNAP_REPO_ID_SIZE; i++) hdr.repo_id[i] = (uint8_t)(0xc0 + i);
+    hdr.cipher = 1;
+    hdr.kdf_id = AMISNAP_KDF_PBKDF2_HMAC_SHA256;
+    hdr.kdf_iters = TEST_KDF_ITERS;
+    hdr.salt = salt;
+    hdr.salt_len = sizeof(salt);
+    hdr.wrapped_key = wrapped;
+    hdr.has_format_app = 1;
+    hdr.format_app = (const uint8_t *)"AmiSnap";
+    hdr.format_app_len = 7;
+
+    if (amisnap_repo_header_encode(&hdr, &hdr_bytes) != AMISNAP_OK) {
+        fprintf(stderr, "gen_sample_repo: repo_header_encode failed\n");
+        exit(1);
+    }
+    if (amisnap_backend_put(be, "amisnap.repo", hdr_bytes.data, hdr_bytes.len) != AMISNAP_OK) {
+        fprintf(stderr, "gen_sample_repo: writing amisnap.repo failed\n");
+        exit(1);
+    }
+    amisnap_buf_free(&hdr_bytes);
+}
 
 int main(int argc, char **argv)
 {
@@ -28,9 +96,12 @@ int main(int argc, char **argv)
     char snapid[17];
     static const char readme_content[] = "Hello from AmiSnap\n";
     static const char notes_content[] = "notes\n";
+    uint8_t repo_key[AMISNAP_REPO_KEY_SIZE];
+    amisnap_repo_subkeys sk;
+    const amisnap_repo_subkeys *subkeys = NULL;
 
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s <repo-dir>\n", argv[0]);
+    if (argc != 2 && argc != 3) {
+        fprintf(stderr, "usage: %s <repo-dir> [passphrase]\n", argv[0]);
         return 1;
     }
 
@@ -39,7 +110,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    amisnap_repo_writer_init(&rw, &be, NULL);
+    if (argc == 3) {
+        init_encrypted_repo(&be, argv[2], repo_key, &sk);
+        subkeys = &sk;
+    }
+
+    amisnap_repo_writer_init(&rw, &be, subkeys);
 
     memset(&snap, 0, sizeof(snap));
     snap.created_days = 17000; snap.created_mins = 600; snap.created_ticks = 10;
