@@ -202,12 +202,22 @@ copperline-fixtures: $(COPPERLINE_FIXTURE_DIR)/stage $(COPPERLINE_FIXTURE_DIR)/r
 # side (restore.c's streaming use of backend.h's put_begin/put_append/
 # put_finish) -- see implementation-plan.md's chunking item for why the
 # read side needed its own fix, found only by this same on-target test.
+#
+# run-webdav.sh proves the WebDAV backend (Phase 3 item 3) end to end on
+# real hardware emulation: boots Copperline with --hostsocket-net host
+# (a Zorro board that installs bsdsocket.library into the guest with
+# zero guest-side setup) and runs a real SNAPSHOT/LIST/VERIFY/RESTORE
+# cycle against a real WebDAV server (tests/webdav/mini_webdav_server.py,
+# the same independent, non-mock server Phase 3 item 5's host-CI check
+# uses) reachable over a real TCP loopback connection out of the guest.
+# Needs python3, same as webdav-check.
 test-target: m68k copperline-fixtures $(CROSS_GEN_BIN)
 	sh tests/copperline/run.sh
 	sh tests/copperline/run-ffs.sh
 	sh tests/copperline/run-perf.sh
 	sh tests/copperline/run-uaem.sh
 	sh tests/copperline/run-bigfile.sh
+	sh tests/copperline/run-webdav.sh
 
 # semgrep installs into a venv rather than the system/user Python, so
 # `make lint` doesn't need pip on PATH (bare `pip` doesn't exist on

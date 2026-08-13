@@ -58,6 +58,57 @@ void amisnap_socket_lib_close(void)
     }
 }
 
+/* Hand-rolled dotted-quad parser, deliberately NOT inet_aton() or
+ * inet_addr(): confirmed live (real hang under Copperline's own
+ * HostSocket board, its guest ROM/dispatch has no CALL_INET_ATON at
+ * all -- grepped its own guest/hostsocket_board.h, only CALL_INET_ADDR
+ * exists) that inet_aton() specifically isn't a safe cross-
+ * implementation assumption to make; sibling project amipilot's own
+ * tcp.c independently reached the same conclusion for a *different*
+ * bsdsocket emulator (a real CPU trap there, not a hang), hand-rolling
+ * its own parser for the identical reason -- not a one-off Copperline
+ * quirk. inet_addr()'s own well-known ambiguity (255.255.255.255 is
+ * indistinguishable from "not a dotted quad") is irrelevant for a
+ * repository host address in practice, but avoided anyway now that a
+ * parser this simple costs nothing to write directly against strtoul-
+ * free digit parsing. Returns 1 on success, 0 if `s` isn't a plain
+ * "n.n.n.n" (each n in 0-255, no leading/trailing garbage) -- callers
+ * fall back to gethostbyname() in that case, same as inet_aton() itself
+ * would have signalled via a 0 return. */
+static int parse_dotted_quad(const char *s, struct in_addr *out)
+{
+    unsigned char octets[4];
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        unsigned int val = 0;
+        int digits = 0;
+
+        while (*s >= '0' && *s <= '9') {
+            val = val * 10 + (unsigned int)(*s - '0');
+            s++;
+            digits++;
+            if (digits > 3 || val > 255) return 0;
+        }
+        if (digits == 0) return 0;
+        octets[i] = (unsigned char)val;
+        if (i < 3) {
+            if (*s != '.') return 0;
+            s++;
+        }
+    }
+    if (*s != '\0') return 0;
+
+    /* m68k is big-endian, matching network byte order, so this 32-bit
+     * value's own in-memory byte layout is already correct with no
+     * separate htonl()-equivalent step -- octets[0] (the first octet
+     * in the string) belongs in the most significant byte position,
+     * exactly as it would arrive first over the wire. */
+    out->s_addr = ((uint32_t)octets[0] << 24) | ((uint32_t)octets[1] << 16) |
+                  ((uint32_t)octets[2] << 8) | (uint32_t)octets[3];
+    return 1;
+}
+
 int amisnap_socket_connect(const char *host, uint16_t port, LONG *sock_out)
 {
     struct sockaddr_in addr;
@@ -67,7 +118,7 @@ int amisnap_socket_connect(const char *host, uint16_t port, LONG *sock_out)
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
 
-    if (!inet_aton((STRPTR)host, &addr.sin_addr)) {
+    if (!parse_dotted_quad(host, &addr.sin_addr)) {
         struct hostent *he = gethostbyname((STRPTR)host);
 
         /* h_length is the resolved address's own byte length (netdb.h);

@@ -1532,10 +1532,61 @@ protocol code against a local WebDAV container.
    (`AMISNAP_ERR_IO`, "not implemented yet ... use an http://
    destination instead") rather than silently downgrading to plaintext
    -- proposal.md's own per-destination TLS opt-in policy, honored even
-   though TLS itself (item 4) doesn't exist yet. Real on-target exercise
-   of an actual `http://` destination (a live WebDAV server reachable
-   from Copperline via `--hostsocket-net host`) is still the one
-   remaining piece -- not done yet.
+   though TLS itself (item 4) doesn't exist yet.
+
+   **Real on-target exercise: done (2026-08-13),** and it found two real
+   bugs neither the mock (`tests/test_webdav.c`) nor the host-CI check
+   against a real server (item 5, over a POSIX transport) could have --
+   both required an actual m68k guest talking to real
+   `bsdsocket.library` LVOs. `tests/copperline/run-webdav.sh` boots
+   Copperline with `--hostsocket-net host` and runs a real SNAPSHOT/
+   LIST/VERIFY FULL/RESTORE cycle against `tests/webdav/mini_webdav_
+   server.py` (the same independent server item 5 uses) over a real TCP
+   loopback connection out of the guest -- confirmed stable across
+   repeated runs, restored content checked byte-for-byte, and
+   independently cross-checked against the object/snapshot files that
+   actually landed on the server's own backing directory.
+
+   Both bugs were found by bisecting with `amilog_err()` diagnostics
+   inserted at each step (unbuffered logging was itself a necessary
+   fix first -- see below) until the exact hanging call was isolated,
+   not guessed at:
+
+   - `src/amiga/socket.c`'s `amisnap_socket_connect()` used
+     `inet_aton()` to parse a dotted-quad host before falling back to
+     `gethostbyname()`. Confirmed by grepping Copperline's own guest
+     ROM/dispatch (`guest/hostsocket/hostsocket_board.h`'s `CALL_*`
+     list) that **no `CALL_INET_ATON` exists at all** -- only
+     `CALL_INET_ADDR` -- so the LVO stub jumps into an unimplemented
+     slot and the guest hangs forever, not a clean failure. Sibling
+     project amipilot independently reached the identical conclusion
+     for a *different* bsdsocket emulator (a real CPU trap there, not a
+     hang) and hand-rolls its own dotted-quad parser for the same
+     reason -- not a one-off Copperline quirk, a real "don't assume
+     every bsdsocket.library implements every Roadshow-era extension"
+     lesson. Fixed with a small hand-rolled `parse_dotted_quad()`
+     (digit-by-digit, no `sscanf`), avoiding both this gap and
+     `inet_addr()`'s own well-known `255.255.255.255` ambiguity.
+   - `cmd_snapshot`'s `snapshot_source_repo_overlap()` guard (the
+     self-backup check, `main.c`) called `Lock()` on `REPO=` unconditionally
+     -- fine for a real AmigaDOS path, but for a WebDAV URL string
+     (`"http://127.0.0.1:.../repo"`) `Lock()` doesn't fail cleanly the
+     way an ordinary unmounted-device name would; it hangs indefinitely.
+     Not investigated further (a real AmigaDOS/DOS-handler quirk parsing
+     a string shaped nothing like `device:path`, not this codebase's own
+     to fix) -- the check is skipped outright for a `http://`/`https://`
+     `repo` instead, which is also the *correct* semantics: a URL can
+     never alias a local AmigaDOS path in the first place (categorically
+     different address space), so the check was meaningless there even
+     before the hang.
+
+   A real, permanent robustness fix landed alongside the diagnosis, not
+   just removed afterward: `LOG=`'s output file is now opened
+   unbuffered (`setvbuf(g_log, NULL, _IONBF, 0)`, `main.c`) -- stdio's
+   default full-buffering-on-a-non-tty meant a run that hangs or
+   crashes before its own `fclose()` left behind a *completely empty*
+   log with zero diagnostic value, exactly the failure mode that made
+   this bisection slower than it needed to be the first time through.
 4. `src/amiga/tls.c` -- soft-loaded AmiSSL, per-destination `TLS=YES`
    (absent library + TLS requested = clear failure, never a silent
    plaintext fallback). Not started.

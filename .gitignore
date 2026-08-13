@@ -42,6 +42,9 @@ __pycache__/
 # run-bigfile.sh -- same story, its own self-contained work directory.
 /tests/copperline/bigfile-work/
 
+# run-webdav.sh -- same story, its own self-contained work directory.
+/tests/copperline/webdav-work/
+
 # Emulator-generated Workbench/UAE mount metadata when the repo root is
 # mounted as an Amiga volume for on-target testing -- not source.
 /Disk.info

@@ -499,10 +499,26 @@ static int lock_is_ancestor_or_self(BPTR ancestor, BPTR descendant)
  * -- if either path can't be locked, the normal scan/backend-open path
  * a few lines below reports that failure with its own clear message;
  * this guard only needs to fire when both locks are real and it can
- * prove an overlap. */
+ * prove an overlap.
+ *
+ * A WebDAV `repo` (a "http://"/"https://" URL, open_backend()'s own
+ * scheme dispatch) is skipped outright, not just left to fail Lock()
+ * "normally": a URL can never alias a local AmigaDOS path (categorically
+ * different address space, no shared Lock()/SameLock() identity
+ * possible), so the check is meaningless there -- and, confirmed live
+ * under Copperline, calling `Lock()` on a URL string doesn't fail
+ * cleanly the way a merely-unmounted device name would; it hangs
+ * indefinitely instead. Not investigated further (a real AmigaDOS
+ * bug/quirk parsing a string shaped nothing like a device:path, not
+ * this codebase's own to fix) -- avoided entirely instead, same
+ * "degrade explicitly rather than chase an unrelated hang" instinct as
+ * every other honest gap in this codebase. */
 static int snapshot_source_repo_overlap(const char *source, const char *repo)
 {
     BPTR source_lock, repo_lock;
+
+    if (strncmp(repo, "http://", 7) == 0 || strncmp(repo, "https://", 8) == 0)
+        return 0;
     int overlap = 0;
 
     source_lock = Lock((STRPTR)source, ACCESS_READ);
@@ -1074,6 +1090,15 @@ static int real_main(void *arg)
             FreeArgs(rdargs);
             return RETURN_FAIL;
         }
+        /* Unbuffered, not stdio's default full-buffering-on-a-non-tty:
+         * a run that hangs or crashes before its own fclose() must
+         * never leave behind a log that's silently empty just because
+         * everything written so far was still sitting in a libc buffer
+         * -- exactly the kind of quiet failure principle 1 rules out,
+         * and a real one hit live while debugging the WebDAV on-target
+         * harness (tests/copperline/run-webdav.sh): a hang left a
+         * completely empty snapshot.log with zero diagnostic value. */
+        setvbuf(g_log, NULL, _IONBF, 0);
     }
 
     action = (const char *)args[ARG_ACTION];
