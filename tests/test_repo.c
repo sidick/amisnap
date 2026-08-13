@@ -107,7 +107,7 @@ void run_repo_tests(void)
     TEST_CHECK(system("rm -rf " TESTDIR) == 0);
     TEST_CHECK(amisnap_backend_dir_open(TESTDIR, &be) == AMISNAP_OK);
 
-    amisnap_repo_writer_init(&rw, &be);
+    amisnap_repo_writer_init(&rw, &be, NULL);
 
     memset(&snap, 0, sizeof(snap));
     snap.created_days = 1000; snap.created_mins = 1; snap.created_ticks = 1;
@@ -200,7 +200,7 @@ void run_repo_tests(void)
         amisnap_entry_meta e2;
         char snapid2[17];
 
-        amisnap_repo_writer_init(&rw2, &be);
+        amisnap_repo_writer_init(&rw2, &be, NULL);
         memset(&snap2, 0, sizeof(snap2));
         snap2.created_days = 1000; snap2.created_mins = 1; snap2.created_ticks = 1; /* identical */
         TEST_CHECK(amisnap_repo_writer_snap(&rw2, &snap2) == AMISNAP_OK);

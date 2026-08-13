@@ -27,7 +27,7 @@ static amisnap_buf build_and_commit(amisnap_backend *repo, char snapid_out[17])
     static const char sub_data[] = "nested file content";
     amisnap_buf mf;
 
-    amisnap_repo_writer_init(&rw, repo);
+    amisnap_repo_writer_init(&rw, repo, NULL);
 
     memset(&snap, 0, sizeof(snap));
     snap.created_days = 2000; snap.created_mins = 1; snap.created_ticks = 1;
@@ -141,7 +141,7 @@ void run_restore_tests(void)
     mf = build_and_commit(&repo, snapid);
 
     /* --- Full restore --- */
-    TEST_CHECK(amisnap_restore_manifest(&repo, &dest, mf.data, mf.len, NULL, &result) == AMISNAP_OK);
+    TEST_CHECK(amisnap_restore_manifest(&repo, &dest, NULL, NULL, mf.data, mf.len, NULL, &result) == AMISNAP_OK);
     TEST_CHECK(result.files_written == 3); /* root.txt, Sub/nested.txt, Sub/empty.txt */
     TEST_CHECK(result.dirs_created == 3);  /* "", Empty, Sub */
     TEST_CHECK(result.links_skipped == 1);
@@ -189,7 +189,7 @@ void run_restore_tests(void)
         opts6.on_entry_restored = record_entry_restored;
         opts6.user = &ctx;
 
-        TEST_CHECK(amisnap_restore_manifest(&repo, &dest6, mf.data, mf.len, &opts6, &r6) == AMISNAP_OK);
+        TEST_CHECK(amisnap_restore_manifest(&repo, &dest6, NULL, NULL, mf.data, mf.len, &opts6, &r6) == AMISNAP_OK);
         /* every non-link entry: "", root.txt, Empty, Sub, Sub/nested.txt, Sub/empty.txt */
         TEST_CHECK(ctx.count == 6);
         TEST_CHECK(ctx.sub_children_existed == 1);
@@ -211,7 +211,7 @@ void run_restore_tests(void)
         opts.subtree_prefix = (const uint8_t *)"Sub";
         opts.subtree_prefix_len = 3;
 
-        TEST_CHECK(amisnap_restore_manifest(&repo, &dest2, mf.data, mf.len, &opts, &r2) == AMISNAP_OK);
+        TEST_CHECK(amisnap_restore_manifest(&repo, &dest2, NULL, NULL, mf.data, mf.len, &opts, &r2) == AMISNAP_OK);
         TEST_CHECK(r2.dirs_created == 1);   /* "Sub" itself */
         TEST_CHECK(r2.files_written == 2);  /* Sub/nested.txt, Sub/empty.txt */
         /* everything else ("", root.txt, Empty, LinkToWork) is outside
@@ -231,7 +231,7 @@ void run_restore_tests(void)
             memset(&opts3, 0, sizeof(opts3));
             opts3.subtree_prefix = (const uint8_t *)"Su";
             opts3.subtree_prefix_len = 2;
-            TEST_CHECK(amisnap_restore_manifest(&repo, &dest3, mf.data, mf.len, &opts3, &r3) == AMISNAP_OK);
+            TEST_CHECK(amisnap_restore_manifest(&repo, &dest3, NULL, NULL, mf.data, mf.len, &opts3, &r3) == AMISNAP_OK);
             TEST_CHECK(r3.dirs_created == 0 && r3.files_written == 0);
             amisnap_backend_close(&dest3);
             TEST_CHECK(system("rm -rf " DESTDIR "3") == 0);
@@ -258,7 +258,7 @@ void run_restore_tests(void)
 
         TEST_CHECK(system("rm -rf " DESTDIR "4") == 0);
         TEST_CHECK(amisnap_backend_dir_open(DESTDIR "4", &dest4) == AMISNAP_OK);
-        TEST_CHECK(amisnap_restore_manifest(&repo, &dest4, mf.data, mf.len, NULL, &r4) == AMISNAP_ERR_NOT_FOUND);
+        TEST_CHECK(amisnap_restore_manifest(&repo, &dest4, NULL, NULL, mf.data, mf.len, NULL, &r4) == AMISNAP_ERR_NOT_FOUND);
         amisnap_backend_close(&dest4);
         TEST_CHECK(system("rm -rf " DESTDIR "4") == 0);
 
@@ -285,7 +285,7 @@ void run_restore_tests(void)
 
         TEST_CHECK(system("rm -rf " DESTDIR "5") == 0);
         TEST_CHECK(amisnap_backend_dir_open(DESTDIR "5", &dest5) == AMISNAP_OK);
-        TEST_CHECK(amisnap_restore_manifest(&repo, &dest5, mf.data, mf.len, NULL, &r5) == AMISNAP_ERR_HASH_MISMATCH);
+        TEST_CHECK(amisnap_restore_manifest(&repo, &dest5, NULL, NULL, mf.data, mf.len, NULL, &r5) == AMISNAP_ERR_HASH_MISMATCH);
         /* The corrupted file itself must never have been written. */
         TEST_CHECK(amisnap_backend_exists(&dest5, "Sub/nested.txt") == 0);
         amisnap_backend_close(&dest5);

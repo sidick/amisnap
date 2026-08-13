@@ -41,7 +41,7 @@ static void commit_snapshot(amisnap_backend *repo, uint32_t days, const char *ta
     char unique_data[32];
     char path[32];
 
-    amisnap_repo_writer_init(&rw, repo);
+    amisnap_repo_writer_init(&rw, repo, NULL);
 
     memset(&snap, 0, sizeof(snap));
     snap.created_days = days; snap.created_mins = 1; snap.created_ticks = 1;

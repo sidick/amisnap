@@ -1,5 +1,5 @@
 /* test_verify.c -- amisnap_verify_manifest() (repo.h): structural
- * (existence only) and full (re-hash) modes, against a real directory
+ * (existence only) and full (re-hash) modes, NULL, NULL, against a real directory
  * backend.
  */
 #include <stdio.h>
@@ -32,7 +32,7 @@ void run_verify_tests(void)
     TEST_CHECK(system("rm -rf " REPODIR) == 0);
     TEST_CHECK(amisnap_backend_dir_open(REPODIR, &repo) == AMISNAP_OK);
 
-    amisnap_repo_writer_init(&rw, &repo);
+    amisnap_repo_writer_init(&rw, &repo, NULL);
     memset(&snap, 0, sizeof(snap));
     snap.created_days = 3000; snap.created_mins = 1; snap.created_ticks = 1;
     TEST_CHECK(amisnap_repo_writer_snap(&rw, &snap) == AMISNAP_OK);
@@ -64,12 +64,12 @@ void run_verify_tests(void)
     TEST_CHECK(amisnap_backend_get(&repo, mf_key, &mf) == AMISNAP_OK);
 
     /* --- Healthy repository: both modes report zero problems. --- */
-    TEST_CHECK(amisnap_verify_manifest(&repo, mf.data, mf.len, 0, &result) == AMISNAP_OK);
+    TEST_CHECK(amisnap_verify_manifest(&repo, NULL, NULL, mf.data, mf.len, 0, &result) == AMISNAP_OK);
     TEST_CHECK(result.objects_checked == 2);
     TEST_CHECK(result.objects_missing == 0);
     TEST_CHECK(result.objects_corrupt == 0);
 
-    TEST_CHECK(amisnap_verify_manifest(&repo, mf.data, mf.len, 1, &result) == AMISNAP_OK);
+    TEST_CHECK(amisnap_verify_manifest(&repo, NULL, NULL, mf.data, mf.len, 1, &result) == AMISNAP_OK);
     TEST_CHECK(result.objects_checked == 2);
     TEST_CHECK(result.objects_missing == 0);
     TEST_CHECK(result.objects_corrupt == 0);
@@ -78,7 +78,7 @@ void run_verify_tests(void)
      * existence alone. --- */
     TEST_CHECK(amisnap_backend_remove(&repo, key2) == AMISNAP_OK);
 
-    TEST_CHECK(amisnap_verify_manifest(&repo, mf.data, mf.len, 0, &result) == AMISNAP_OK);
+    TEST_CHECK(amisnap_verify_manifest(&repo, NULL, NULL, mf.data, mf.len, 0, &result) == AMISNAP_OK);
     TEST_CHECK(result.objects_checked == 2);
     TEST_CHECK(result.objects_missing == 1);
     TEST_CHECK(result.objects_corrupt == 0);
@@ -97,11 +97,11 @@ void run_verify_tests(void)
         TEST_CHECK(amisnap_backend_put(&repo, key2, corrupt, len) == AMISNAP_OK);
     }
 
-    TEST_CHECK(amisnap_verify_manifest(&repo, mf.data, mf.len, 0, &result) == AMISNAP_OK);
+    TEST_CHECK(amisnap_verify_manifest(&repo, NULL, NULL, mf.data, mf.len, 0, &result) == AMISNAP_OK);
     TEST_CHECK(result.objects_missing == 0);
     TEST_CHECK(result.objects_corrupt == 0); /* structural mode is blind to this, by design */
 
-    TEST_CHECK(amisnap_verify_manifest(&repo, mf.data, mf.len, 1, &result) == AMISNAP_OK);
+    TEST_CHECK(amisnap_verify_manifest(&repo, NULL, NULL, mf.data, mf.len, 1, &result) == AMISNAP_OK);
     TEST_CHECK(result.objects_checked == 2);
     TEST_CHECK(result.objects_missing == 0);
     TEST_CHECK(result.objects_corrupt == 1); /* full mode catches it */

@@ -77,7 +77,7 @@ void run_chunked_tests(void)
     TEST_CHECK(system("rm -rf " REPODIR) == 0);
     TEST_CHECK(amisnap_backend_dir_open(REPODIR, &repo) == AMISNAP_OK);
 
-    amisnap_repo_writer_init(&rw, &repo);
+    amisnap_repo_writer_init(&rw, &repo, NULL);
     memset(&snap, 0, sizeof(snap));
     snap.created_days = 3000; snap.created_mins = 1; snap.created_ticks = 1;
     TEST_CHECK(amisnap_repo_writer_snap(&rw, &snap) == AMISNAP_OK);
@@ -162,7 +162,7 @@ void run_chunked_tests(void)
         snprintf(key, sizeof(key), "snapshots/%s.mf", snapid);
         TEST_CHECK(amisnap_backend_get(&repo, key, &mf) == AMISNAP_OK);
 
-        TEST_CHECK(amisnap_restore_manifest(&repo, &dest, mf.data, mf.len, NULL, &rresult) == AMISNAP_OK);
+        TEST_CHECK(amisnap_restore_manifest(&repo, &dest, NULL, NULL, mf.data, mf.len, NULL, &rresult) == AMISNAP_OK);
         TEST_CHECK(rresult.files_written == 2);
 
         TEST_CHECK(amisnap_backend_get(&dest, "a.bin", &got) == AMISNAP_OK);
@@ -173,7 +173,7 @@ void run_chunked_tests(void)
         TEST_CHECK(got.len == CONTENT_B_LEN && memcmp(got.data, content_b, CONTENT_B_LEN) == 0);
         amisnap_buf_free(&got);
 
-        TEST_CHECK(amisnap_verify_manifest(&repo, mf.data, mf.len, 1, &vresult) == AMISNAP_OK);
+        TEST_CHECK(amisnap_verify_manifest(&repo, NULL, NULL, mf.data, mf.len, 1, &vresult) == AMISNAP_OK);
         TEST_CHECK(vresult.objects_checked == 5); /* 3 refs for a.bin + 2 for b.bin, occurrence-counted */
         TEST_CHECK(vresult.objects_missing == 0 && vresult.objects_corrupt == 0);
 
@@ -196,7 +196,7 @@ void run_chunked_tests(void)
 
         TEST_CHECK(system("rm -rf " REPODIR "-short") == 0);
         TEST_CHECK(amisnap_backend_dir_open(REPODIR "-short", &repo2) == AMISNAP_OK);
-        amisnap_repo_writer_init(&rw2, &repo2);
+        amisnap_repo_writer_init(&rw2, &repo2, NULL);
         memset(&snap, 0, sizeof(snap));
         snap.created_days = 3001; snap.created_mins = 1; snap.created_ticks = 1;
         TEST_CHECK(amisnap_repo_writer_snap(&rw2, &snap) == AMISNAP_OK);
@@ -230,7 +230,7 @@ void run_chunked_tests(void)
 
         TEST_CHECK(system("rm -rf " REPODIR "-err") == 0);
         TEST_CHECK(amisnap_backend_dir_open(REPODIR "-err", &repo3) == AMISNAP_OK);
-        amisnap_repo_writer_init(&rw3, &repo3);
+        amisnap_repo_writer_init(&rw3, &repo3, NULL);
         memset(&snap, 0, sizeof(snap));
         snap.created_days = 3002; snap.created_mins = 1; snap.created_ticks = 1;
         TEST_CHECK(amisnap_repo_writer_snap(&rw3, &snap) == AMISNAP_OK);

@@ -39,7 +39,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    amisnap_repo_writer_init(&rw, &be);
+    amisnap_repo_writer_init(&rw, &be, NULL);
 
     memset(&snap, 0, sizeof(snap));
     snap.created_days = 17000; snap.created_mins = 600; snap.created_ticks = 10;

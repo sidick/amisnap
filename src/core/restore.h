@@ -43,6 +43,7 @@
 
 #include "backend.h"
 #include "meta.h"
+#include "repo_crypto.h"
 
 typedef struct {
     /* NULL/0 = full restore (every entry). Otherwise selects the
@@ -92,8 +93,17 @@ typedef struct {
  * or the first error encountered (a manifest-decode error if
  * `manifest_data` itself never validated, or a backend/hash error from
  * partway through -- *result reflects only what completed before the
- * failure). */
+ * failure).
+ *
+ * `manifest_data`/`manifest_len` are the raw manifest FILE bytes (as
+ * fetched from the backend, still carrying the common header) --
+ * decrypted internally (repo.h's amisnap_repo_open_manifest()) using
+ * `subkeys`/`snapid` when the manifest turns out to be encrypted, and
+ * every content object is likewise decrypted via
+ * amisnap_repo_fetch_object() before being written to `dest`. Pass
+ * subkeys=NULL, snapid=NULL for a CIPHER 0 repository. */
 int amisnap_restore_manifest(amisnap_backend *repo, amisnap_backend *dest,
+                              const amisnap_repo_subkeys *subkeys, const char *snapid,
                               const uint8_t *manifest_data, size_t manifest_len,
                               const amisnap_restore_options *opts,
                               amisnap_restore_result *result);

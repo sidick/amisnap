@@ -606,7 +606,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
         return RETURN_FAIL;
     }
 
-    amisnap_repo_writer_init(&rw, &be);
+    amisnap_repo_writer_init(&rw, &be, NULL);
 
     DateStamp(&now);
     memset(&snap, 0, sizeof(snap));
@@ -836,7 +836,7 @@ static LONG cmd_verify(const char *repo, const char *snapid_arg, int full)
         return RETURN_FAIL;
     }
 
-    rc = amisnap_verify_manifest(&be, mf.data, mf.len, full, &result);
+    rc = amisnap_verify_manifest(&be, NULL, NULL, mf.data, mf.len, full, &result);
     amisnap_buf_free(&mf);
     amisnap_backend_close(&be);
     if (rc != AMISNAP_OK) {
@@ -1022,7 +1022,7 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
     opts.on_entry_restored = amisnap_restore_meta_on_entry;
     opts.user = &meta_ctx;
 
-    rc = amisnap_restore_manifest(&repo_be, &dest_be, mf.data, mf.len, &opts, &result);
+    rc = amisnap_restore_manifest(&repo_be, &dest_be, NULL, NULL, mf.data, mf.len, &opts, &result);
     amisnap_buf_free(&mf);
     amisnap_backend_close(&repo_be);
     amisnap_backend_close(&dest_be);

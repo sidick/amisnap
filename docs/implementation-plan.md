@@ -1933,7 +1933,30 @@ derivation, nonce discipline, and the WRAPPED_KEY layout precisely).
    docs/format.md's own "New format structures need the host-side
    reference reader updated in the same change" rule — so
    `cross-check` keeps proving the two agree once CIPHER=1 repositories
-   exist.
+   exist. **C side done (2026-08-13)**: `amisnap_repo_writer_init()`
+   takes an optional `amisnap_repo_subkeys *` (NULL = CIPHER 0,
+   unchanged behavior) and, when set, `write_object()` encrypts every
+   new object and `amisnap_repo_writer_finish()` encrypts the manifest
+   (flags bit 0 set), both using repo_crypto.c's deterministic nonce
+   derivation. Two new shared read-side helpers —
+   `amisnap_repo_fetch_object()` (fetch+decrypt+hash-verify one object
+   in a single call) and `amisnap_repo_open_manifest()` (decrypt a
+   fetched manifest file's body if its flags bit 0 is set, including a
+   consistency check that the embedded nonce matches the deterministic
+   derivation from its own snapid) — are now used by both
+   `amisnap_verify_manifest()` and `amisnap_restore_manifest()` (both
+   gained `subkeys`/`snapid` parameters), so a real end-to-end
+   write→verify→restore cycle against a CIPHER=1 repository works
+   today (`tests/test_repo_encrypted.c`: writes a snapshot with real
+   subkeys, confirms the *raw backend bytes* are genuinely not
+   plaintext — not just that the high-level round-trip succeeds — then
+   verifies and restores it, plus negative cases for no key and the
+   wrong key). `make test`: 741/741 (in the exact CI container, not
+   just locally). **`tools/amisnap_reader.py` is NOT yet updated** —
+   it still refuses any CIPHER != 0 repository outright; that, plus
+   repository-header wiring (item 3's `init --passphrase`) and CLI
+   passphrase handling (item 5), are what's left before an encrypted
+   repository is usable end-to-end from the actual CLI.
 5. CLI: passphrase prompt (`amiga_read_passphrase()`) or key-file
    option for every command that opens an encrypted repository; a
    wrong passphrase must fail closed with a clear message (MAC check

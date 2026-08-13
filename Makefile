@@ -103,10 +103,12 @@ stackswap-vamos-test: $(STACKSWAP_TEST_BIN)
 CROSS_GEN_SRC := tests/cross/gen_sample_repo.c
 CROSS_GEN_BIN := $(BUILD)/gen_sample_repo
 
-$(CROSS_GEN_BIN): $(CROSS_GEN_SRC) src/core/backend_dir.c src/core/repo.c src/core/manifest.c \
-	src/core/meta.c src/core/tlv.c src/core/blake2s.c src/core/xxhash32.c $(CORE_HDRS) | $(BUILD)/.dir
+$(CROSS_GEN_BIN): $(CROSS_GEN_SRC) src/core/backend_dir.c src/core/repo.c src/core/repo_crypto.c \
+	src/core/manifest.c src/core/meta.c src/core/tlv.c src/core/blake2s.c src/core/chacha20.c \
+	src/core/xxhash32.c $(CORE_HDRS) | $(BUILD)/.dir
 	$(CC) $(CFLAGS) $(CORE_INC) $(CROSS_GEN_SRC) src/core/backend_dir.c src/core/repo.c \
-		src/core/manifest.c src/core/meta.c src/core/tlv.c src/core/blake2s.c src/core/xxhash32.c -o $@
+		src/core/repo_crypto.c src/core/manifest.c src/core/meta.c src/core/tlv.c src/core/blake2s.c \
+		src/core/chacha20.c src/core/xxhash32.c -o $@
 
 cross-check: $(CROSS_GEN_BIN)
 	sh tests/cross/run.sh

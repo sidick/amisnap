@@ -10,12 +10,22 @@
  * step. Directory/link entries, which have no content to hash, forward
  * straight to the manifest writer.
  *
+ * Encryption (docs/format.md "Encryption (CIPHER 1)"): every entry
+ * point here takes an `amisnap_repo_subkeys *` -- NULL for a CIPHER 0
+ * repository (unchanged behavior), or a real one (from
+ * amisnap_repo_derive_subkeys(), repo_crypto.h) to encrypt objects/
+ * manifests on write and decrypt+verify them on read. This module
+ * still has no opinion on where that repository key comes from --
+ * generating it (real entropy) and wrapping it under a passphrase are
+ * repo_header.h/entropy.h's job, not this one's; repo.c only ever
+ * consumes already-derived subkeys.
+ *
  * Repository-level state (amisnap.repo / REC_REPO: REPO_ID, CIPHER,
- * CHUNK_SIZE, FORMAT_APP) is explicitly out of scope here -- this
- * writer assumes CIPHER=0 (format.md's default) and doesn't touch
- * amisnap.repo at all; that lands with encryption wiring (phase 4) or
- * whichever future item first needs to read it back (see
- * implementation-plan.md).
+ * CHUNK_SIZE, KDF, WRAPPED_KEY, FORMAT_APP) is still out of scope
+ * here -- reading/writing amisnap.repo itself is repo_header.h; this
+ * module doesn't touch it. Whatever opens a repository is responsible
+ * for reading amisnap.repo, unwrapping the key if CIPHER != 0, and
+ * handing the resulting subkeys to the functions below.
  */
 #ifndef AMISNAP_REPO_H
 #define AMISNAP_REPO_H
@@ -25,6 +35,7 @@
 
 #include "backend.h"
 #include "manifest.h"
+#include "repo_crypto.h"
 
 /* "objects/" + 2 fan-out chars + "/" + 64 hex + NUL, generous. */
 #define AMISNAP_OBJECT_KEY_LEN 80
@@ -34,15 +45,53 @@
  * restore.c, and verify -- implemented exactly once. */
 void amisnap_repo_object_key(const uint8_t hash[32], char out[AMISNAP_OBJECT_KEY_LEN]);
 
+/* Fetches content object `ref` from `repo`, decrypts it if `subkeys`
+ * is non-NULL, and verifies the resulting plaintext against
+ * `ref->hash` -- every caller needs fetch+decrypt+verify together
+ * (format.md's disaster-recovery procedure: "verifying each against
+ * its name"), so this does all three in one call rather than making
+ * restore.c and verify's own full-mode duplicate the sequence. `out`
+ * receives the plaintext (caller amisnap_buf_free()s it). Returns
+ * AMISNAP_OK, AMISNAP_ERR_NOT_FOUND, AMISNAP_ERR_MALFORMED (stored
+ * size doesn't match `ref->size` once the encryption frame overhead,
+ * when `subkeys` is set, is accounted for), AMISNAP_ERR_HASH_MISMATCH
+ * (MAC or content hash mismatch), or another backend error. */
+int amisnap_repo_fetch_object(amisnap_backend *repo, const amisnap_repo_subkeys *subkeys,
+                               const amisnap_content_ref *ref, amisnap_buf *out);
+
+/* Given the raw bytes of a manifest file as fetched from the backend
+ * (snapshots/<snapid>.mf), returns its plaintext body via
+ * `plaintext_out` (caller amisnap_buf_free()s it) -- decrypting first
+ * if the common header's flags bit 0 is set (format.md "Encryption
+ * ... Manifests"). `subkeys` may be NULL only if the manifest turns
+ * out not to be encrypted; a NULL `subkeys` against an encrypted
+ * manifest returns AMISNAP_ERR_MISSING_FIELD. `snapid` (the
+ * manifest's own 16-hex-character identifier, no NUL required beyond
+ * that -- see docs/format.md "Nonce discipline" for why the decrypt
+ * nonce is derived from it rather than stored) is only read when
+ * decryption is actually needed. The returned buffer always has
+ * flags=0 in its own 8-byte header regardless of whether decryption
+ * happened, so amisnap_manifest_decode() and everything built on it
+ * never need to know CIPHER was involved. */
+int amisnap_repo_open_manifest(const amisnap_repo_subkeys *subkeys, const char *snapid,
+                                const uint8_t *raw, size_t rawlen, amisnap_buf *plaintext_out);
+
 typedef struct {
     amisnap_backend *be;
     amisnap_manifest_writer mw;
     uint32_t snap_days, snap_mins, snap_ticks;
     int have_snap;
+    const amisnap_repo_subkeys *subkeys;   /* NULL = CIPHER 0 (plaintext) */
 } amisnap_repo_writer;
 
-/* `be` is borrowed -- the writer never opens or closes it. */
-void amisnap_repo_writer_init(amisnap_repo_writer *rw, amisnap_backend *be);
+/* `be` is borrowed -- the writer never opens or closes it. `subkeys`
+ * is also borrowed (must outlive the writer) and may be NULL for a
+ * CIPHER 0 repository; when non-NULL, every object
+ * amisnap_repo_writer_file[_chunked]() writes and the manifest
+ * amisnap_repo_writer_finish() commits are encrypted per
+ * docs/format.md's Encryption section. */
+void amisnap_repo_writer_init(amisnap_repo_writer *rw, amisnap_backend *be,
+                               const amisnap_repo_subkeys *subkeys);
 void amisnap_repo_writer_free(amisnap_repo_writer *rw);
 
 /* Forwards to the manifest writer (see manifest.h for the ordering
@@ -176,8 +225,15 @@ typedef struct {
  * alongside prune's own object enumeration (phase 2), not promised
  * here. Returns AMISNAP_OK once verification has run to completion
  * (check *result for the actual findings) or a manifest-decode error
- * if the manifest itself never validated. */
-int amisnap_verify_manifest(amisnap_backend *repo, const uint8_t *manifest_data, size_t manifest_len,
+ * if the manifest itself never validated.
+ *
+ * `manifest_data`/`manifest_len` are the raw manifest FILE bytes (as
+ * fetched from the backend, still carrying the common header) --
+ * decrypted internally via amisnap_repo_open_manifest() using
+ * `subkeys`/`snapid` when the manifest turns out to be encrypted;
+ * pass subkeys=NULL, snapid=NULL for a CIPHER 0 repository. */
+int amisnap_verify_manifest(amisnap_backend *repo, const amisnap_repo_subkeys *subkeys,
+                             const char *snapid, const uint8_t *manifest_data, size_t manifest_len,
                              int full, amisnap_verify_result *result);
 
 #endif /* AMISNAP_REPO_H */

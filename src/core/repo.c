@@ -39,12 +39,14 @@ static void snapid_encode(uint32_t days, uint16_t mins, uint16_t ticks, char out
     out[16] = '\0';
 }
 
-void amisnap_repo_writer_init(amisnap_repo_writer *rw, amisnap_backend *be)
+void amisnap_repo_writer_init(amisnap_repo_writer *rw, amisnap_backend *be,
+                               const amisnap_repo_subkeys *subkeys)
 {
     rw->be = be;
     amisnap_manifest_writer_init(&rw->mw);
     rw->snap_days = rw->snap_mins = rw->snap_ticks = 0;
     rw->have_snap = 0;
+    rw->subkeys = subkeys;
 }
 
 void amisnap_repo_writer_free(amisnap_repo_writer *rw)
@@ -74,9 +76,18 @@ int amisnap_repo_writer_volume(amisnap_repo_writer *rw, const amisnap_volume_met
  * content object, filling in its content_ref. Never touches the
  * manifest -- callers assemble the entry's own E_CONTENT list from
  * however many of these they need (one whole-file object, or several
- * chunks). */
-static int write_object(amisnap_backend *be, const void *data, size_t len,
-                         amisnap_content_ref *ref_out)
+ * chunks).
+ *
+ * `subkeys` NULL writes `data`/`len` as-is (CIPHER 0). Non-NULL
+ * encrypts it first (format.md "Encryption ... Objects": nonce||
+ * ciphertext||mac) -- the object's *name* is still the plaintext
+ * hash (dedup and content-addressing stay plaintext-identity, per
+ * that same section), only the stored bytes and ref_out->size (still
+ * the plaintext length -- callers/readers need that to know how much
+ * plaintext to expect after decrypting) differ from the CIPHER 0
+ * path. */
+static int write_object(amisnap_backend *be, const amisnap_repo_subkeys *subkeys,
+                         const void *data, size_t len, amisnap_content_ref *ref_out)
 {
     uint8_t hash[32];
     char key[AMISNAP_OBJECT_KEY_LEN];
@@ -91,7 +102,19 @@ static int write_object(amisnap_backend *be, const void *data, size_t len,
         /* Object genuinely new: write it. rc == 1 (already present)
          * skips this entirely -- format.md "Objects already present
          * are never rewritten." */
-        rc = amisnap_backend_put(be, key, data, len);
+        if (subkeys) {
+            uint8_t nonce[AMISNAP_REPO_NONCE_SIZE];
+            size_t framelen = AMISNAP_REPO_NONCE_SIZE + len + AMISNAP_REPO_MAC_SIZE;
+            uint8_t *frame = (uint8_t *)malloc(framelen);
+            if (!frame) return AMISNAP_ERR_NOMEM;
+
+            amisnap_repo_object_nonce(subkeys->nonce, hash, nonce);
+            amisnap_repo_encrypt_frame(subkeys, nonce, (const uint8_t *)data, len, frame);
+            rc = amisnap_backend_put(be, key, frame, framelen);
+            free(frame);
+        } else {
+            rc = amisnap_backend_put(be, key, data, len);
+        }
         if (rc != AMISNAP_OK) return rc;
     }
 
@@ -128,7 +151,7 @@ int amisnap_repo_writer_file(amisnap_repo_writer *rw, amisnap_entry_meta *entry,
         return amisnap_manifest_writer_entry(&rw->mw, entry);
     }
 
-    rc = write_object(rw->be, data, len, &ref);
+    rc = write_object(rw->be, rw->subkeys, data, len, &ref);
     if (rc != AMISNAP_OK) return rc;
 
     entry->content = &ref;
@@ -177,7 +200,7 @@ int amisnap_repo_writer_file_chunked(amisnap_repo_writer *rw, amisnap_entry_meta
             ref_cap = newcap;
         }
 
-        rc = write_object(rw->be, buf, got, &refs[ref_count]);
+        rc = write_object(rw->be, rw->subkeys, buf, got, &refs[ref_count]);
         if (rc != AMISNAP_OK) goto out;
         ref_count++;
 
@@ -243,8 +266,35 @@ int amisnap_repo_writer_finish(amisnap_repo_writer *rw, char snapid_out[17])
         else { ticks++; }
     }
 
-    rc = amisnap_backend_put(rw->be, key, manifest_bytes.data, manifest_bytes.len);
-    amisnap_buf_free(&manifest_bytes);
+    if (rw->subkeys) {
+        /* format.md "Encryption ... Manifests": same nonce||ciphertext||
+         * mac framing as objects, applied to the whole file after the
+         * common header, with flags bit 0 set to mark it. */
+        amisnap_buf encrypted;
+        uint8_t nonce[AMISNAP_REPO_NONCE_SIZE];
+        size_t plainlen = manifest_bytes.len - 8; /* past the common header */
+        size_t framelen = AMISNAP_REPO_NONCE_SIZE + plainlen + AMISNAP_REPO_MAC_SIZE;
+        uint8_t *frame = (uint8_t *)malloc(framelen);
+
+        if (!frame) { amisnap_buf_free(&manifest_bytes); return AMISNAP_ERR_NOMEM; }
+
+        amisnap_repo_manifest_nonce(rw->subkeys->nonce, (const uint8_t *)snapid, 16, nonce);
+        amisnap_repo_encrypt_frame(rw->subkeys, nonce, manifest_bytes.data + 8, plainlen, frame);
+        amisnap_buf_free(&manifest_bytes);
+
+        amisnap_buf_init(&encrypted);
+        rc = amisnap_write_header(&encrypted, AMISNAP_FTYPE_MANIFEST, 1);
+        if (rc == AMISNAP_OK)
+            rc = amisnap_buf_bytes(&encrypted, frame, framelen);
+        free(frame);
+        if (rc != AMISNAP_OK) { amisnap_buf_free(&encrypted); return rc; }
+
+        rc = amisnap_backend_put(rw->be, key, encrypted.data, encrypted.len);
+        amisnap_buf_free(&encrypted);
+    } else {
+        rc = amisnap_backend_put(rw->be, key, manifest_bytes.data, manifest_bytes.len);
+        amisnap_buf_free(&manifest_bytes);
+    }
     if (rc != AMISNAP_OK) return rc;
 
     memcpy(snapid_out, snapid, 17);
@@ -279,8 +329,106 @@ int amisnap_repo_list_snapshots(amisnap_backend *be,
     return amisnap_backend_list(be, "snapshots", list_trampoline, &lc);
 }
 
+int amisnap_repo_fetch_object(amisnap_backend *repo, const amisnap_repo_subkeys *subkeys,
+                               const amisnap_content_ref *ref, amisnap_buf *out)
+{
+    char key[AMISNAP_OBJECT_KEY_LEN];
+    amisnap_buf raw;
+    uint8_t actual_hash[32];
+    int rc;
+
+    amisnap_repo_object_key(ref->hash, key);
+    rc = amisnap_backend_get(repo, key, &raw);
+    if (rc != AMISNAP_OK) return rc;
+
+    if (!subkeys) {
+        if (raw.len != ref->size) { amisnap_buf_free(&raw); return AMISNAP_ERR_MALFORMED; }
+        amisnap_blake2s256(raw.data, raw.len, actual_hash);
+        if (memcmp(actual_hash, ref->hash, 32) != 0) {
+            amisnap_buf_free(&raw);
+            return AMISNAP_ERR_HASH_MISMATCH;
+        }
+        *out = raw; /* transfer ownership */
+        return AMISNAP_OK;
+    }
+
+    {
+        size_t expect_len = AMISNAP_REPO_NONCE_SIZE + ref->size + AMISNAP_REPO_MAC_SIZE;
+        uint8_t *plain;
+
+        if (raw.len != expect_len) { amisnap_buf_free(&raw); return AMISNAP_ERR_MALFORMED; }
+
+        plain = (uint8_t *)malloc(ref->size ? ref->size : 1);
+        if (!plain) { amisnap_buf_free(&raw); return AMISNAP_ERR_NOMEM; }
+
+        rc = amisnap_repo_decrypt_frame(subkeys, raw.data, raw.len, plain);
+        amisnap_buf_free(&raw);
+        if (rc != AMISNAP_OK) { free(plain); return rc; }
+
+        amisnap_blake2s256(plain, ref->size, actual_hash);
+        if (memcmp(actual_hash, ref->hash, 32) != 0) { free(plain); return AMISNAP_ERR_HASH_MISMATCH; }
+
+        out->data = plain;
+        out->len = ref->size;
+        out->cap = ref->size;
+        return AMISNAP_OK;
+    }
+}
+
+int amisnap_repo_open_manifest(const amisnap_repo_subkeys *subkeys, const char *snapid,
+                                const uint8_t *raw, size_t rawlen, amisnap_buf *plaintext_out)
+{
+    uint16_t flags;
+    size_t body_start;
+    int rc;
+
+    rc = amisnap_read_header(raw, rawlen, AMISNAP_FTYPE_MANIFEST, &flags, &body_start);
+    if (rc != AMISNAP_OK) return rc;
+
+    if ((flags & 1u) == 0) {
+        amisnap_buf_init(plaintext_out);
+        return amisnap_buf_bytes(plaintext_out, raw, rawlen);
+    }
+    if (!subkeys) return AMISNAP_ERR_MISSING_FIELD;
+
+    {
+        size_t framelen = rawlen - body_start;
+        size_t plainlen;
+        uint8_t *plain;
+        uint8_t expect_nonce[AMISNAP_REPO_NONCE_SIZE];
+
+        if (framelen < AMISNAP_REPO_NONCE_SIZE + AMISNAP_REPO_MAC_SIZE) return AMISNAP_ERR_MALFORMED;
+        plainlen = framelen - AMISNAP_REPO_NONCE_SIZE - AMISNAP_REPO_MAC_SIZE;
+
+        /* format.md's nonce discipline ties the manifest nonce
+         * deterministically to its own snapid -- a mismatch here means
+         * this manifest wasn't produced the way this repository's own
+         * writer produces them (protocol violation, not just a MAC
+         * failure the decrypt below would already have caught on its
+         * own since the MAC covers the nonce too). */
+        amisnap_repo_manifest_nonce(subkeys->nonce, (const uint8_t *)snapid, 16, expect_nonce);
+        if (memcmp(raw + body_start, expect_nonce, AMISNAP_REPO_NONCE_SIZE) != 0)
+            return AMISNAP_ERR_MALFORMED;
+
+        plain = (uint8_t *)malloc(plainlen ? plainlen : 1);
+        if (!plain) return AMISNAP_ERR_NOMEM;
+
+        rc = amisnap_repo_decrypt_frame(subkeys, raw + body_start, framelen, plain);
+        if (rc != AMISNAP_OK) { free(plain); return rc; }
+
+        amisnap_buf_init(plaintext_out);
+        rc = amisnap_write_header(plaintext_out, AMISNAP_FTYPE_MANIFEST, 0);
+        if (rc == AMISNAP_OK)
+            rc = amisnap_buf_bytes(plaintext_out, plain, plainlen);
+        free(plain);
+        if (rc != AMISNAP_OK) { amisnap_buf_free(plaintext_out); return rc; }
+        return AMISNAP_OK;
+    }
+}
+
 typedef struct {
     amisnap_backend *repo;
+    const amisnap_repo_subkeys *subkeys;
     int full;
     amisnap_verify_result *result;
 } verify_ctx;
@@ -304,44 +452,43 @@ static int verify_on_entry(void *user, const amisnap_entry_meta *entry)
         }
 
         {
-            amisnap_buf obj;
-            uint8_t actual_hash[32];
-            int rc = amisnap_backend_get(vc->repo, key, &obj);
+            amisnap_buf plain;
+            int rc = amisnap_repo_fetch_object(vc->repo, vc->subkeys, &entry->content[i], &plain);
 
             if (rc == AMISNAP_ERR_NOT_FOUND) {
                 vc->result->objects_missing++;
                 continue;
             }
             if (rc != AMISNAP_OK) {
-                /* Treat any other backend error the same as missing --
-                 * verify's job is to report, not to propagate an I/O
-                 * failure mid-scan and abandon the rest of the check. */
-                vc->result->objects_missing++;
+                /* Treat any other error (backend I/O, size mismatch,
+                 * hash/MAC mismatch) the same as corrupt -- verify's
+                 * job is to report, not to propagate a failure mid-scan
+                 * and abandon the rest of the check. */
+                vc->result->objects_corrupt++;
                 continue;
             }
-
-            if (obj.len != entry->content[i].size) {
-                vc->result->objects_corrupt++;
-                amisnap_buf_free(&obj);
-                continue;
-            }
-            amisnap_blake2s256(obj.data, obj.len, actual_hash);
-            if (memcmp(actual_hash, entry->content[i].hash, 32) != 0)
-                vc->result->objects_corrupt++;
-            amisnap_buf_free(&obj);
+            amisnap_buf_free(&plain);
         }
     }
     return 0; /* verify deliberately never aborts early -- see amisnap_verify_manifest's doc comment */
 }
 
-int amisnap_verify_manifest(amisnap_backend *repo, const uint8_t *manifest_data, size_t manifest_len,
+int amisnap_verify_manifest(amisnap_backend *repo, const amisnap_repo_subkeys *subkeys,
+                             const char *snapid, const uint8_t *manifest_data, size_t manifest_len,
                              int full, amisnap_verify_result *result)
 {
     verify_ctx vc;
     amisnap_manifest_visitor v;
+    amisnap_buf plaintext;
+    int rc;
 
     memset(result, 0, sizeof(*result));
+
+    rc = amisnap_repo_open_manifest(subkeys, snapid, manifest_data, manifest_len, &plaintext);
+    if (rc != AMISNAP_OK) return rc;
+
     vc.repo = repo;
+    vc.subkeys = subkeys;
     vc.full = full;
     vc.result = result;
 
@@ -349,5 +496,7 @@ int amisnap_verify_manifest(amisnap_backend *repo, const uint8_t *manifest_data,
     v.user = &vc;
     v.on_entry = verify_on_entry;
 
-    return amisnap_manifest_decode(manifest_data, manifest_len, &v);
+    rc = amisnap_manifest_decode(plaintext.data, plaintext.len, &v);
+    amisnap_buf_free(&plaintext);
+    return rc;
 }

@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "blake2s.h"
 #include "manifest.h"
 #include "repo.h"
 #include "restore.h"
@@ -10,6 +9,7 @@
 typedef struct {
     amisnap_backend *repo;
     amisnap_backend *dest;
+    const amisnap_repo_subkeys *subkeys;
     const amisnap_restore_options *opts;
     amisnap_restore_result *result;
 } restore_ctx;
@@ -74,30 +74,15 @@ static int restore_file(restore_ctx *rc, const amisnap_entry_meta *entry, const 
     if (status != AMISNAP_OK) return status;
 
     for (i = 0; i < entry->content_count; i++) {
-        char objkey[AMISNAP_OBJECT_KEY_LEN];
         amisnap_buf obj;
-        uint8_t actual_hash[32];
 
-        amisnap_repo_object_key(entry->content[i].hash, objkey);
-
-        status = amisnap_backend_get(rc->repo, objkey, &obj);
+        /* format.md's own disaster-recovery procedure: "verifying each
+         * against its name" -- amisnap_repo_fetch_object() decrypts (if
+         * rc->subkeys is set) and verifies against the declared hash in
+         * one call, so a corrupt or tampered object never reaches
+         * put_append below. */
+        status = amisnap_repo_fetch_object(rc->repo, rc->subkeys, &entry->content[i], &obj);
         if (status != AMISNAP_OK) { amisnap_backend_put_abort(rc->dest, handle); return status; }
-
-        if (obj.len != entry->content[i].size) {
-            amisnap_buf_free(&obj);
-            amisnap_backend_put_abort(rc->dest, handle);
-            return AMISNAP_ERR_MALFORMED;
-        }
-
-        /* format.md's own disaster-recovery procedure: "verifying
-         * each against its name" -- never write out content whose
-         * bytes don't match the hash the manifest declared for them. */
-        amisnap_blake2s256(obj.data, obj.len, actual_hash);
-        if (memcmp(actual_hash, entry->content[i].hash, 32) != 0) {
-            amisnap_buf_free(&obj);
-            amisnap_backend_put_abort(rc->dest, handle);
-            return AMISNAP_ERR_HASH_MISMATCH;
-        }
 
         status = amisnap_backend_put_append(rc->dest, handle, obj.data, obj.len);
         total += obj.len;
@@ -237,17 +222,24 @@ static int apply_metadata_reverse(restore_ctx *rc, const meta_collect_ctx *cc)
 }
 
 int amisnap_restore_manifest(amisnap_backend *repo, amisnap_backend *dest,
+                              const amisnap_repo_subkeys *subkeys, const char *snapid,
                               const uint8_t *manifest_data, size_t manifest_len,
                               const amisnap_restore_options *opts,
                               amisnap_restore_result *result)
 {
     restore_ctx rc;
     amisnap_manifest_visitor v;
+    amisnap_buf plaintext;
     int status;
 
     memset(result, 0, sizeof(*result));
+
+    status = amisnap_repo_open_manifest(subkeys, snapid, manifest_data, manifest_len, &plaintext);
+    if (status != AMISNAP_OK) return status;
+
     rc.repo = repo;
     rc.dest = dest;
+    rc.subkeys = subkeys;
     rc.opts = opts;
     rc.result = result;
 
@@ -255,8 +247,8 @@ int amisnap_restore_manifest(amisnap_backend *repo, amisnap_backend *dest,
     v.user = &rc;
     v.on_entry = on_entry;
 
-    status = amisnap_manifest_decode(manifest_data, manifest_len, &v);
-    if (status != AMISNAP_OK) return status;
+    status = amisnap_manifest_decode(plaintext.data, plaintext.len, &v);
+    if (status != AMISNAP_OK) { amisnap_buf_free(&plaintext); return status; }
 
     if (opts && opts->on_entry_restored) {
         meta_collect_ctx cc;
@@ -267,7 +259,7 @@ int amisnap_restore_manifest(amisnap_backend *repo, amisnap_backend *dest,
         v.user = &cc;
         v.on_entry = collect_entry;
 
-        status = amisnap_manifest_decode(manifest_data, manifest_len, &v);
+        status = amisnap_manifest_decode(plaintext.data, plaintext.len, &v);
         if (status == AMISNAP_OK)
             status = apply_metadata_reverse(&rc, &cc);
 
@@ -275,5 +267,6 @@ int amisnap_restore_manifest(amisnap_backend *repo, amisnap_backend *dest,
             free((void *)cc.entries[i].content); /* cast away const -- collect_entry's own malloc */
         free(cc.entries);
     }
+    amisnap_buf_free(&plaintext);
     return status;
 }
