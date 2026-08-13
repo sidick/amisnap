@@ -538,25 +538,239 @@ static int s3_list(amisnap_backend *be, const char *prefix,
 }
 
 /* --- streaming upload (put_begin/put_append/put_finish/put_abort):
- * unlike webdav.c's real chunked-Transfer-Encoding stream, this
- * buffers the whole chunk in memory and issues one ordinary signed PUT
- * at put_finish() -- SigV4's own UNSIGNED-PAYLOAD shortcut still needs
- * a definite Content-Length (S3 does not accept arbitrary
- * Transfer-Encoding: chunked request bodies the way a generic WebDAV
- * server does), and real S3 chunked-signed-streaming
- * (STREAMING-AWS4-HMAC-SHA256-PAYLOAD) is deliberately out of scope
- * for v1 (implementation-plan.md Phase 5 item 4). This is not a
- * memory regression in practice: every caller of this API
- * (restore.c) only ever streams one already-chunk-sized piece at a
- * time (repo.h's own AMISNAP_DEFAULT_CHUNK_SIZE), exactly the same
- * bound amisnap_repo_writer_file()'s ordinary single-buffer put()
- * already accepts for a whole unchunked object. --- */
+ * buffers into `body` and, once it reaches AMISNAP_S3_MIN_PART_SIZE,
+ * escalates to a REAL S3 multipart upload (CreateMultipartUpload ->
+ * UploadPart* -> CompleteMultipartUpload) rather than continuing to
+ * grow one unbounded in-memory buffer -- exactly the memory-bounded
+ * treatment restore.c's own put_begin/append/finish call already
+ * relies on: it spans an ENTIRE reconstructed destination file
+ * (restore.c's own restore_file(), looping put_append() once per
+ * E_CONTENT chunk read from the repository), which can be arbitrarily
+ * large regardless of how small AmiSnap's own AMISNAP_DEFAULT_CHUNK_SIZE
+ * chunks are -- a single unbounded buffer here would silently defeat
+ * the entire point of chunked restore for any S3 destination. An
+ * upload that never reaches the threshold falls back to the original
+ * one-PUT path unchanged (implementation-plan.md Phase 5's own note
+ * that SigV4's UNSIGNED-PAYLOAD still needs a definite Content-Length,
+ * so this is never a real chunked-Transfer-Encoding stream on the
+ * request side, unlike webdav.c's). Real S3 requires every part
+ * except the last to be >= 5 MiB -- AMISNAP_S3_MIN_PART_SIZE matches
+ * that exactly, so every part this uploads (other than the final one
+ * at put_finish()) is already large enough. */
+#define AMISNAP_S3_MIN_PART_SIZE (5u * 1024u * 1024u)
+
+typedef struct {
+    char etag[128]; /* including the quotes S3 itself returns them with --
+                      * CompleteMultipartUpload must echo them back verbatim */
+} s3_part;
+
+static int s3_multipart_initiate(s3_ctx *ctx, const char *key, char upload_id_out[512])
+{
+    amisnap_buf path, req;
+    amisnap_http_response resp;
+    int rc;
+
+    rc = s3_encoded_path(ctx, key, &path);
+    if (rc != AMISNAP_OK) return rc;
+    rc = s3_build_signed(ctx, "POST", (const char *)path.data, "uploads=", UNSIGNED_PAYLOAD,
+                          NULL, 0, &req);
+    amisnap_buf_free(&path);
+    if (rc != AMISNAP_OK) return rc;
+    rc = s3_exchange(ctx, &req, &resp);
+    amisnap_buf_free(&req);
+    if (rc != AMISNAP_OK) return rc;
+
+    if (resp.status_code / 100 != 2) { amisnap_http_response_free(&resp); return AMISNAP_ERR_IO; }
+
+    if (!xml_extract((const char *)resp.body.data, resp.body.len, "UploadId", 0,
+                      upload_id_out, 512, NULL)) {
+        amisnap_http_response_free(&resp);
+        return AMISNAP_ERR_MALFORMED;
+    }
+    amisnap_http_response_free(&resp);
+    return AMISNAP_OK;
+}
+
+static int s3_multipart_upload_part(s3_ctx *ctx, const char *key, const char *upload_id,
+                                     unsigned part_number, const void *data, size_t len,
+                                     char etag_out[128])
+{
+    amisnap_buf path, query, req;
+    amisnap_http_response resp;
+    const amisnap_http_parsed_header *etag_hdr;
+    char partbuf[16];
+    int rc;
+
+    rc = s3_encoded_path(ctx, key, &path);
+    if (rc != AMISNAP_OK) return rc;
+
+    snprintf(partbuf, sizeof(partbuf), "%u", part_number);
+    amisnap_buf_init(&query);
+    rc = amisnap_buf_bytes(&query, "partNumber=", strlen("partNumber="));
+    if (rc == AMISNAP_OK) rc = amisnap_buf_bytes(&query, partbuf, strlen(partbuf));
+    if (rc == AMISNAP_OK) rc = amisnap_buf_bytes(&query, "&uploadId=", strlen("&uploadId="));
+    if (rc == AMISNAP_OK) rc = amisnap_sigv4_uri_encode(upload_id, strlen(upload_id), 1, &query);
+    if (rc == AMISNAP_OK) rc = amisnap_buf_bytes(&query, "", 1);
+    if (rc != AMISNAP_OK) { amisnap_buf_free(&path); amisnap_buf_free(&query); return rc; }
+
+    rc = s3_build_signed(ctx, "PUT", (const char *)path.data, (const char *)query.data,
+                          UNSIGNED_PAYLOAD, data, len, &req);
+    amisnap_buf_free(&path);
+    amisnap_buf_free(&query);
+    if (rc != AMISNAP_OK) return rc;
+
+    rc = s3_exchange(ctx, &req, &resp);
+    amisnap_buf_free(&req);
+    if (rc != AMISNAP_OK) return rc;
+
+    if (resp.status_code / 100 != 2) { amisnap_http_response_free(&resp); return AMISNAP_ERR_IO; }
+
+    etag_hdr = amisnap_http_response_header(&resp, "etag");
+    if (!etag_hdr || etag_hdr->value_len == 0 || etag_hdr->value_len >= 128) {
+        amisnap_http_response_free(&resp);
+        return AMISNAP_ERR_MALFORMED;
+    }
+    memcpy(etag_out, etag_hdr->value, etag_hdr->value_len);
+    etag_out[etag_hdr->value_len] = '\0';
+    amisnap_http_response_free(&resp);
+    return AMISNAP_OK;
+}
+
+static int s3_multipart_complete(s3_ctx *ctx, const char *key, const char *upload_id,
+                                  const s3_part *parts, size_t part_count)
+{
+    amisnap_buf path, query, body, req;
+    amisnap_http_response resp;
+    size_t i;
+    int rc;
+
+    rc = s3_encoded_path(ctx, key, &path);
+    if (rc != AMISNAP_OK) return rc;
+
+    amisnap_buf_init(&query);
+    rc = amisnap_buf_bytes(&query, "uploadId=", strlen("uploadId="));
+    if (rc == AMISNAP_OK) rc = amisnap_sigv4_uri_encode(upload_id, strlen(upload_id), 1, &query);
+    if (rc == AMISNAP_OK) rc = amisnap_buf_bytes(&query, "", 1);
+    if (rc != AMISNAP_OK) { amisnap_buf_free(&path); amisnap_buf_free(&query); return rc; }
+
+    amisnap_buf_init(&body);
+    rc = amisnap_buf_bytes(&body, "<CompleteMultipartUpload>", strlen("<CompleteMultipartUpload>"));
+    for (i = 0; rc == AMISNAP_OK && i < part_count; i++) {
+        char entry[256];
+        int n = snprintf(entry, sizeof(entry),
+                          "<Part><PartNumber>%u</PartNumber><ETag>%s</ETag></Part>",
+                          (unsigned)(i + 1), parts[i].etag);
+        rc = amisnap_buf_bytes(&body, entry, (size_t)n);
+    }
+    if (rc == AMISNAP_OK)
+        rc = amisnap_buf_bytes(&body, "</CompleteMultipartUpload>",
+                                strlen("</CompleteMultipartUpload>"));
+    if (rc != AMISNAP_OK) {
+        amisnap_buf_free(&path); amisnap_buf_free(&query); amisnap_buf_free(&body);
+        return rc;
+    }
+
+    rc = s3_build_signed(ctx, "POST", (const char *)path.data, (const char *)query.data,
+                          UNSIGNED_PAYLOAD, body.data, body.len, &req);
+    amisnap_buf_free(&path);
+    amisnap_buf_free(&query);
+    amisnap_buf_free(&body);
+    if (rc != AMISNAP_OK) return rc;
+
+    rc = s3_exchange(ctx, &req, &resp);
+    amisnap_buf_free(&req);
+    if (rc != AMISNAP_OK) return rc;
+
+    /* CompleteMultipartUpload can, in rare real-S3 cases, answer 200
+     * with an error embedded in the XML body instead of a non-2xx
+     * status -- not handled specially here (same "2xx == success"
+     * convention every other operation in this file uses); a real,
+     * documented limitation, not an oversight. */
+    rc = (resp.status_code / 100 == 2) ? AMISNAP_OK : AMISNAP_ERR_IO;
+    amisnap_http_response_free(&resp);
+    return rc;
+}
+
+/* Best-effort cleanup on a failed/aborted multipart upload -- nothing
+ * more useful to do with an error here (the handle is already being
+ * torn down); a real S3 also auto-expires abandoned multipart uploads
+ * via bucket lifecycle rules some operators configure, so this isn't
+ * the only backstop against orphaned parts accumulating storage cost. */
+static void s3_multipart_abort(s3_ctx *ctx, const char *key, const char *upload_id)
+{
+    amisnap_buf path, query, req;
+    amisnap_http_response resp;
+    int rc;
+
+    rc = s3_encoded_path(ctx, key, &path);
+    if (rc != AMISNAP_OK) return;
+
+    amisnap_buf_init(&query);
+    rc = amisnap_buf_bytes(&query, "uploadId=", strlen("uploadId="));
+    if (rc == AMISNAP_OK) rc = amisnap_sigv4_uri_encode(upload_id, strlen(upload_id), 1, &query);
+    if (rc == AMISNAP_OK) rc = amisnap_buf_bytes(&query, "", 1);
+    if (rc != AMISNAP_OK) { amisnap_buf_free(&path); amisnap_buf_free(&query); return; }
+
+    rc = s3_build_signed(ctx, "DELETE", (const char *)path.data, (const char *)query.data,
+                          UNSIGNED_PAYLOAD, NULL, 0, &req);
+    amisnap_buf_free(&path);
+    amisnap_buf_free(&query);
+    if (rc != AMISNAP_OK) return;
+
+    rc = s3_exchange(ctx, &req, &resp);
+    amisnap_buf_free(&req);
+    if (rc == AMISNAP_OK) amisnap_http_response_free(&resp);
+}
 
 typedef struct {
     s3_ctx *ctx;
     char *key;
-    amisnap_buf body;
+    amisnap_buf body;      /* bytes accumulated for the part not yet uploaded */
+    char *upload_id;       /* NULL until MIN_PART_SIZE forces real multipart */
+    s3_part *parts;
+    size_t part_count, part_cap;
+    int failed;             /* first error hit mid-stream, if any -- once set,
+                              * every further call just reports it back rather
+                              * than trying to keep talking to a connection/
+                              * upload already known to be broken. */
 } s3_put_handle;
+
+/* Uploads whatever is currently buffered in h->body as the next part
+ * (initiating the multipart upload first if this is the first
+ * escalation), then resets the buffer. Called both when MIN_PART_SIZE
+ * is reached mid-stream and, from put_finish(), for the final
+ * (possibly short) part. */
+static int s3_upload_next_part(s3_put_handle *h)
+{
+    char etag[128];
+    int rc;
+
+    if (!h->upload_id) {
+        char upload_id[512];
+        rc = s3_multipart_initiate(h->ctx, h->key, upload_id);
+        if (rc != AMISNAP_OK) return rc;
+        h->upload_id = dup_str(upload_id);
+        if (!h->upload_id) return AMISNAP_ERR_NOMEM;
+    }
+
+    rc = s3_multipart_upload_part(h->ctx, h->key, h->upload_id, (unsigned)(h->part_count + 1),
+                                   h->body.data, h->body.len, etag);
+    if (rc != AMISNAP_OK) return rc;
+
+    if (h->part_count == h->part_cap) {
+        size_t newcap = h->part_cap ? h->part_cap * 2 : 8;
+        s3_part *newarr = (s3_part *)realloc(h->parts, newcap * sizeof(*newarr));
+        if (!newarr) return AMISNAP_ERR_NOMEM;
+        h->parts = newarr;
+        h->part_cap = newcap;
+    }
+    memcpy(h->parts[h->part_count].etag, etag, sizeof(etag));
+    h->part_count++;
+
+    amisnap_buf_free(&h->body);
+    amisnap_buf_init(&h->body);
+    return AMISNAP_OK;
+}
 
 static int s3_put_begin(amisnap_backend *be, const char *key, void **handle_out)
 {
@@ -564,6 +778,7 @@ static int s3_put_begin(amisnap_backend *be, const char *key, void **handle_out)
     s3_put_handle *h = (s3_put_handle *)malloc(sizeof(*h));
 
     if (!h) return AMISNAP_ERR_NOMEM;
+    memset(h, 0, sizeof(*h));
     h->ctx = ctx;
     h->key = dup_str(key);
     if (!h->key) { free(h); return AMISNAP_ERR_NOMEM; }
@@ -575,17 +790,49 @@ static int s3_put_begin(amisnap_backend *be, const char *key, void **handle_out)
 static int s3_put_append(amisnap_backend *be, void *handle, const void *data, size_t len)
 {
     s3_put_handle *h = (s3_put_handle *)handle;
+    int rc;
+
     (void)be;
+    if (h->failed != AMISNAP_OK) return h->failed;
     if (len == 0) return AMISNAP_OK;
-    return amisnap_buf_bytes(&h->body, data, len);
+
+    rc = amisnap_buf_bytes(&h->body, data, len);
+    if (rc != AMISNAP_OK) { h->failed = rc; return rc; }
+
+    if (h->body.len >= AMISNAP_S3_MIN_PART_SIZE) {
+        rc = s3_upload_next_part(h);
+        if (rc != AMISNAP_OK) h->failed = rc;
+    }
+    return rc;
 }
 
 static int s3_put_finish(amisnap_backend *be, void *handle)
 {
     s3_put_handle *h = (s3_put_handle *)handle;
-    int rc = s3_put(be, h->key, h->body.data, h->body.len);
+    int rc = h->failed;
+
+    if (rc == AMISNAP_OK && !h->upload_id) {
+        /* Never escalated -- small enough for one ordinary PUT, same
+         * path amisnap_repo_writer_file()'s own whole-object put() takes. */
+        rc = s3_put(be, h->key, h->body.data, h->body.len);
+    } else if (rc == AMISNAP_OK) {
+        /* Final part -- may be shorter than MIN_PART_SIZE, which S3
+         * explicitly permits only for the last part of a multipart
+         * upload. A zero-byte final part (the stream ended exactly on
+         * a part boundary) is skipped; S3 doesn't want one and every
+         * byte is already durably uploaded in the prior parts. */
+        if (h->body.len > 0) rc = s3_upload_next_part(h);
+        if (rc == AMISNAP_OK)
+            rc = s3_multipart_complete(h->ctx, h->key, h->upload_id, h->parts, h->part_count);
+    }
+
+    if (rc != AMISNAP_OK && h->upload_id)
+        s3_multipart_abort(h->ctx, h->key, h->upload_id);
+
     amisnap_buf_free(&h->body);
     free(h->key);
+    free(h->upload_id);
+    free(h->parts);
     free(h);
     return rc;
 }
@@ -595,8 +842,11 @@ static void s3_put_abort(amisnap_backend *be, void *handle)
     s3_put_handle *h = (s3_put_handle *)handle;
     (void)be;
     if (h) {
+        if (h->upload_id) s3_multipart_abort(h->ctx, h->key, h->upload_id);
         amisnap_buf_free(&h->body);
         free(h->key);
+        free(h->upload_id);
+        free(h->parts);
         free(h);
     }
 }

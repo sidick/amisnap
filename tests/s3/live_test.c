@@ -125,6 +125,51 @@ int main(int argc, char **argv)
         CHECK(0 /* put_begin failed */);
     }
 
+    /* Real multipart upload: three appends spanning the AMISNAP_S3_MIN_
+     * PART_SIZE (5 MiB) threshold twice, so this actually exercises
+     * CreateMultipartUpload -> UploadPart x3 -> CompleteMultipartUpload
+     * against mini_s3_server.py's own independent implementation of
+     * that protocol (not just s3.c's own client-side bookkeeping) --
+     * the whole point of Phase 5 item 4. Placed under "objects/cd/" so
+     * the list() count check below (2 top-level prefixes) stays valid. */
+    {
+        size_t part_size = 5u * 1024u * 1024u; /* AMISNAP_S3_MIN_PART_SIZE */
+        unsigned char *part1 = (unsigned char *)malloc(part_size);
+        unsigned char *part2 = (unsigned char *)malloc(part_size);
+        unsigned char *part3 = (unsigned char *)malloc(2u * 1024u * 1024u);
+        size_t part3_size = 2u * 1024u * 1024u;
+        size_t total = part_size + part_size + part3_size;
+        unsigned char *readback = (unsigned char *)malloc(total);
+        size_t i;
+
+        CHECK(part1 && part2 && part3 && readback);
+        if (part1 && part2 && part3 && readback) {
+            for (i = 0; i < part_size; i++) part1[i] = (unsigned char)(i & 0xFF);
+            for (i = 0; i < part_size; i++) part2[i] = (unsigned char)((i + 77) & 0xFF);
+            for (i = 0; i < part3_size; i++) part3[i] = (unsigned char)((i + 200) & 0xFF);
+
+            CHECK(amisnap_backend_put_begin(&be, "objects/cd/multipart", &handle) == AMISNAP_OK);
+            CHECK(amisnap_backend_put_append(&be, handle, part1, part_size) == AMISNAP_OK);
+            CHECK(amisnap_backend_put_append(&be, handle, part2, part_size) == AMISNAP_OK);
+            CHECK(amisnap_backend_put_append(&be, handle, part3, part3_size) == AMISNAP_OK);
+            CHECK(amisnap_backend_put_finish(&be, handle) == AMISNAP_OK);
+
+            CHECK(amisnap_backend_get(&be, "objects/cd/multipart", &got) == AMISNAP_OK);
+            CHECK(got.len == total);
+            if (got.len == total) {
+                memcpy(readback, got.data, total);
+                CHECK(memcmp(readback, part1, part_size) == 0);
+                CHECK(memcmp(readback + part_size, part2, part_size) == 0);
+                CHECK(memcmp(readback + 2 * part_size, part3, part3_size) == 0);
+            }
+            amisnap_buf_free(&got);
+        }
+        free(part1);
+        free(part2);
+        free(part3);
+        free(readback);
+    }
+
     /* ListObjectsV2-backed list() against a real server's own XML --
      * the whole reason s3_scrape_listing()/xml_extract() exist is to
      * survive a real server's own response shape, not just this

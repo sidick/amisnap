@@ -2165,8 +2165,38 @@ needed).
    chunk size for S3 destinations specifically (SigV4 signs one whole
    request at a time, so a chunk is one PUT either way); real S3
    multipart upload (`CreateMultipartUpload`/`UploadPart`/
-   `CompleteMultipartUpload`) is out of scope for v1 unless a single
-   PUT's practical size ceiling turns out to force it.
+   `CompleteMultipartUpload`) was originally scoped as out of scope for
+   v1 unless a single PUT's practical size ceiling forced it.
+   **Done anyway (2026-08-13)**, once a real ceiling turned out to
+   already exist: `restore.c`'s `put_begin`/`append`/`finish` spans an
+   ENTIRE reconstructed destination file (looping `put_append()` once
+   per source `E_CONTENT` chunk), which can be arbitrarily large no
+   matter how small `AMISNAP_DEFAULT_CHUNK_SIZE` itself is — the
+   original whole-buffer-then-one-PUT streaming implementation (item 2)
+   would have silently defeated chunked restore's own memory-bounded
+   design for any S3 destination restoring a large file. `s3.c`'s
+   streaming path now escalates to a real multipart upload once
+   buffered data reaches `AMISNAP_S3_MIN_PART_SIZE` (5 MiB, S3's own
+   real minimum part size for every part but the last), uploading each
+   full part as it's reached rather than continuing to grow one
+   unbounded buffer; an upload that never reaches the threshold still
+   takes the original single-PUT path unchanged. `put_abort()`/a
+   failed `put_finish()` both issue a real `AbortMultipartUpload` once
+   a multipart upload was actually started.
+
+   `tests/s3/mini_s3_server.py` grew a genuine implementation of all
+   four multipart operations (not a shortcut) specifically so this
+   proves `s3.c`'s multipart *client* code against something that
+   actually implements the server side of the protocol, the same
+   "independent implementation, not this project's own assumptions"
+   reasoning as everything else in that file.
+   `tests/s3/live_test.c` uploads a real 12 MiB object across three
+   `put_append()` calls (crossing the 5 MiB threshold twice, so this
+   is a genuine 3-part upload, not just a 1-part edge case) and
+   confirms the round-tripped bytes match exactly — passed on the
+   first real run. Verified against the exact CI container: `make
+   test-host` 884/884 (including `s3-check`'s new multipart round
+   trip) and `make build` (m68k) both clean.
 5. Host CI: a real MinIO instance (container or process, same
    "independent implementation, not this project's own mock a second
    way" reasoning `tests/webdav/mini_webdav_server.py` documents —

@@ -37,9 +37,12 @@ Prints "READY <port>" to stdout once listening.
 import hashlib
 import hmac
 import http.server
+import itertools
 import os
+import re
 import socketserver
 import sys
+import threading
 import urllib.parse
 
 MAX_KEYS_DEFAULT = 1000
@@ -149,7 +152,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _handle(self, method):
         canonical_uri, canonical_query_string, bucket, key = self._parse_path()
-        body = self._read_body() if method == "PUT" else b""
+        body = self._read_body() if method in ("PUT", "POST") else b""
+        params = urllib.parse.parse_qs(canonical_query_string, keep_blank_values=True)
 
         if bucket != self.server.bucket:
             self._respond(404)
@@ -157,6 +161,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if not self._verify_sigv4(method, canonical_uri, canonical_query_string, len(body)):
             self._respond(403, b"SignatureDoesNotMatch")
+            return
+
+        # --- multipart upload (Phase 5 item 4): CreateMultipartUpload
+        # (POST ?uploads), UploadPart (PUT ?partNumber=N&uploadId=X),
+        # CompleteMultipartUpload (POST ?uploadId=X, XML body),
+        # AbortMultipartUpload (DELETE ?uploadId=X) -- real S3 semantics,
+        # not a shortcut, since the whole point of this check is proving
+        # s3.c's own multipart client code against something that
+        # actually implements the protocol rather than trusting it blindly. ---
+        if method == "POST" and "uploads" in params and key:
+            self._initiate_multipart(key)
+            return
+        if method == "PUT" and "partNumber" in params and "uploadId" in params and key:
+            self._upload_part(key, params["partNumber"][0], params["uploadId"][0], body)
+            return
+        if method == "POST" and "uploadId" in params and key:
+            self._complete_multipart(key, params["uploadId"][0], body)
+            return
+        if method == "DELETE" and "uploadId" in params and key:
+            self._abort_multipart(params["uploadId"][0])
             return
 
         if method == "PUT":
@@ -193,6 +217,55 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         self._respond(400)
+
+    def _initiate_multipart(self, key):
+        upload_id = "upload-%d" % self.server.next_upload_id()
+        self.server.multipart_uploads[upload_id] = {"key": key, "parts": {}}
+        xml = ('<?xml version="1.0" encoding="UTF-8"?>'
+               "<InitiateMultipartUploadResult><UploadId>%s</UploadId>"
+               "</InitiateMultipartUploadResult>" % upload_id).encode("utf-8")
+        self._respond(200, xml, "application/xml")
+
+    def _upload_part(self, key, part_number, upload_id, body):
+        upload = self.server.multipart_uploads.get(upload_id)
+        if not upload or upload["key"] != key:
+            self._respond(404, b"NoSuchUpload")
+            return
+        etag = '"%s"' % hashlib.md5(body).hexdigest()
+        upload["parts"][int(part_number)] = (etag, body)
+        self.send_response(200)
+        self.send_header("ETag", etag)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _complete_multipart(self, key, upload_id, body):
+        upload = self.server.multipart_uploads.get(upload_id)
+        if not upload or upload["key"] != key:
+            self._respond(404, b"NoSuchUpload")
+            return
+        # Trust the part ordering the client's own CompleteMultipartUpload
+        # body declares (<Part><PartNumber>N</PartNumber>...) rather than
+        # just concatenating server-side insertion order -- a real S3
+        # does honor a client-declared order too (though it must match
+        # what was actually uploaded, which this mock doesn't cross-check
+        # since s3.c always sends them in ascending order anyway).
+        part_numbers = [int(n) for n in re.findall(rb"<PartNumber>(\d+)</PartNumber>", body)]
+        fs_path = self._key_path(key)
+        os.makedirs(os.path.dirname(fs_path) or self.server.root, exist_ok=True)
+        with open(fs_path, "wb") as f:
+            for n in part_numbers:
+                if n not in upload["parts"]:
+                    self._respond(400, b"InvalidPart")
+                    return
+                f.write(upload["parts"][n][1])
+        del self.server.multipart_uploads[upload_id]
+        xml = ('<?xml version="1.0" encoding="UTF-8"?>'
+               "<CompleteMultipartUploadResult></CompleteMultipartUploadResult>").encode("utf-8")
+        self._respond(200, xml, "application/xml")
+
+    def _abort_multipart(self, upload_id):
+        self.server.multipart_uploads.pop(upload_id, None)
+        self._respond(204)
 
     def _list_objects(self, query):
         params = urllib.parse.parse_qs(query, keep_blank_values=True)
@@ -250,6 +323,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_PUT(self):
         self._handle("PUT")
 
+    def do_POST(self):
+        self._handle("POST")
+
     def do_GET(self):
         self._handle("GET")
 
@@ -288,6 +364,14 @@ def main():
     server.secret_key = secret_key
     server.region = region
     server.max_keys = max_keys
+    server.multipart_uploads = {}  # upload_id -> {"key": ..., "parts": {part_number: (etag, bytes)}}
+    _upload_id_counter = itertools.count(1)
+    _upload_id_lock = threading.Lock()
+
+    def next_upload_id():
+        with _upload_id_lock:
+            return next(_upload_id_counter)
+    server.next_upload_id = next_upload_id
     print("READY %d" % server.server_address[1], flush=True)
     server.serve_forever()
 
