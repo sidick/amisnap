@@ -233,28 +233,75 @@ Interruption anywhere leaves only harmless garbage (sweep re-run
 collects it), never a manifest referencing a deleted object — because
 deletion order is always manifest-first, objects-second.
 
-## Encryption (CIPHER 1) — framing fixed now, activated phase 4
+## Encryption (CIPHER 1)
 
-Fixed in v1 so the format never breaks when encryption lands:
+The 32-byte **repository key** `K` is random at init (generated via
+the vendored AmiAuth HMAC-DRBG, seeded from `src/amiga/entropy.c`'s
+Amiga entropy pool on-target and `/dev/urandom` on the host — see
+implementation-plan.md Phase 4), stored KDF-wrapped in the repository
+header (`WRAPPED_KEY`), and never changes — losing/changing the
+passphrase re-wraps one header field, not the repository.
 
-- The 32-byte **repository key** is random at init, stored KDF-wrapped
-  in the repository header (WRAPPED_KEY), and never changes — so
-  losing/changing the passphrase re-wraps one header field, not the
-  repository.
-- **Objects:** `nonce:12 bytes` `ciphertext` `mac:16 bytes`, where
-  ciphertext = ChaCha20(key, nonce, plaintext) and mac = first 16
-  bytes of keyed-BLAKE2s-256(key=MAC subkey, nonce ‖ ciphertext).
-  Object *names* remain the plaintext hash (dedup works; accepted
-  trade-off: an attacker with the repository learns plaintext equality
-  and sizes, documented honestly).
-- **Manifests:** same framing, applied to the whole file after the
-  common header; `flags` bit 0 of the common header set = body is
-  encrypted.
-- Subkey derivation, WRAPPED_KEY layout, and nonce discipline are
-  specified precisely in phase 4 alongside the vendored AmiAuth
-  crypto; until then CIPHER MUST be 0 and readers refuse otherwise.
-  These details may be refined while draft status lasts, but the
-  record/tag structure above is fixed.
+**Subkey derivation.** Every subkey is domain-separated keyed
+BLAKE2s-256, `subkey(parent, label) = keyed-BLAKE2s-256(key=parent,
+message=label)`, using the vendored `amisnap_blake2s_init_key()`.
+From `K`:
+
+| label                        | use                                   |
+|------------------------------|----------------------------------------|
+| `"AmiSnap-object-enc-v1"`    | `K_enc` — object/manifest ChaCha20 key |
+| `"AmiSnap-object-mac-v1"`    | `K_mac` — object/manifest MAC key      |
+| `"AmiSnap-object-nonce-v1"`  | `K_nonce` — deterministic nonce derivation (below) |
+
+From the KDF-derived wrapping key `K_wrap = PBKDF2-HMAC-SHA256(passphrase,
+salt, iters, 32)` (the `KDF` tag's parameters):
+
+| label                      | use                                |
+|----------------------------|-------------------------------------|
+| `"AmiSnap-wrap-enc-v1"`    | `K_wrap_enc` — wraps `K`            |
+| `"AmiSnap-wrap-mac-v1"`    | `K_wrap_mac` — authenticates the wrap |
+
+**Nonce discipline.** ChaCha20 nonces must never repeat under the same
+key. `K` is never rewrapped per-object, so object/manifest nonces
+can't rely on a wrap-time RNG call; instead they're derived
+deterministically from data that is itself already guaranteed unique,
+at zero extra RNG cost:
+
+- **Object nonce** = first 12 bytes of `keyed-BLAKE2s-256(key=K_nonce,
+  message=<the object's own plaintext content-address hash>)`. Since
+  the object name *is* that hash and dedup guarantees a given
+  plaintext is only ever encrypted once per repository, this can never
+  repeat for two different plaintexts, and a repeated plaintext is
+  dedup'd (never re-encrypted) rather than re-nonced.
+- **Manifest nonce** = first 12 bytes of `keyed-BLAKE2s-256(key=K_nonce,
+  message=<snapid>)`. `<snapid>` is unique per manifest by
+  construction (see "Layout" above).
+- **WRAPPED_KEY nonce** is a genuinely fresh 12 random bytes from the
+  DRBG at every (re)wrap — wrapping is rare (init / passphrase change,
+  never per-object), so it isn't CPU-budget-sensitive, and a random
+  nonce here means a re-key never has to reason about whether the
+  previous salt/nonce pair could repeat.
+
+**Objects:** `nonce:12 bytes` `ciphertext` `mac:16 bytes`, where
+ciphertext = ChaCha20(`K_enc`, nonce, counter=0, plaintext) and mac =
+first 16 bytes of `keyed-BLAKE2s-256(key=K_mac, message=nonce ‖
+ciphertext)`. Object *names* remain the plaintext hash (dedup works;
+accepted trade-off: an attacker with the repository learns plaintext
+equality and sizes, documented honestly).
+
+**Manifests:** same framing (`K_enc`/`K_mac`, manifest nonce above),
+applied to the whole file after the common header; `flags` bit 0 of
+the common header set = body is encrypted.
+
+**WRAPPED_KEY** (the `0x8014` tag's content, 60 bytes): `nonce_wrap:12
+bytes` `ciphertext:32 bytes` `mac:16 bytes`, where ciphertext =
+ChaCha20(`K_wrap_enc`, nonce_wrap, counter=0, `K`) and mac = first 16
+bytes of `keyed-BLAKE2s-256(key=K_wrap_mac, message=nonce_wrap ‖
+ciphertext)`.
+
+Until `src/core/repo.c` actually writes `CIPHER != 0`, it MUST stay 0
+and readers refuse any other value (already true — see REC_REPO
+above).
 
 ## Local index cache
 

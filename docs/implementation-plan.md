@@ -1869,10 +1869,55 @@ protocol code against a local WebDAV container.
    concurrent-connection behavior a real WebDAV server (Apache mod_dav,
    Nextcloud, ...) already has to handle as a matter of course.
 
-**Phase 4 — Encryption.** Vendor ChaCha20/PBKDF2/HMAC from AmiAuth
-v1.0; key file with optional passphrase wrap; BLAKE2s joins AmiAuth's
-vector + OpenSSL-differential-fuzz regime. Format already carries the
-encryption tags from day one (designed in phase 1, unused until here).
+**Phase 4 — Encryption.** Format already carries the encryption tags
+from day one (designed in phase 1, unused until here;
+docs/format.md "Encryption (CIPHER 1)" now specifies subkey
+derivation, nonce discipline, and the WRAPPED_KEY layout precisely).
+
+1. Vendor SHA-256/ChaCha20/HMAC-SHA256/PBKDF2-HMAC-SHA256 from AmiAuth
+   v1.0. **Done (2026-08-13)** — `src/core/{sha256,chacha20,hmac_sha256,
+   pbkdf2}.[ch]`. SHA-256 and ChaCha20 are straight renamed ports of
+   AmiAuth's (RFC-verified there); HMAC is trimmed to the SHA-256
+   variant only (AmiSnap has no use for AmiAuth's SHA-1/SHA-512 vault
+   forms — carrying them would violate the CPU-budget "never
+   mandatory" rule for code nobody calls on a 68020); PBKDF2 is
+   adapted to HMAC-SHA256 per docs/format.md's `KDF` tag (AmiAuth's is
+   HMAC-SHA1), with vectors independently computed via Python's
+   `hashlib.pbkdf2_hmac` and cross-checked against `openssl kdf` since
+   no RFC ships SHA-256 PBKDF2 vectors the way RFC 6070 does for
+   SHA-1. ChaCha20 drops AmiAuth's asm-dispatch seam — AmiAuth itself
+   measured a hand-written 68k asm block function slower than the C
+   reference on real hardware, so there's nothing to dispatch to yet.
+   `make test`: 673/673.
+2. Vendor AmiAuth's HMAC-DRBG (`src/core/drbg.c`) and Amiga entropy
+   pool (`src/amiga/random.c`/`entropy.h`, incl. `amiga_read_passphrase()`
+   and `amiga_millis()` for PBKDF2 calibration below) — the repository
+   key, its wrap nonce, and the KDF salt all need real randomness, not
+   just the deterministic subkey derivation docs/format.md's Encryption
+   section covers.
+3. `init --passphrase`: generate the repository key and salt, calibrate
+   PBKDF2 iterations with a short timing probe against `amiga_millis()`
+   (target ~1-2s wall clock, same pattern as AmiAuth's own vault KDF
+   calibration) rather than a fixed iteration count, wrap the key, and
+   write `CIPHER`/`KDF`/`WRAPPED_KEY` into `REC_REPO`. A `re-key`
+   path (new passphrase, same repository key) only touches
+   `WRAPPED_KEY` — the point of keeping the repository key stable.
+4. Wire `K`/`K_enc`/`K_mac` through `repo.c`'s object writer/reader and
+   `manifest.c`'s manifest writer/reader for the nonce/ciphertext/mac
+   framing docs/format.md specifies. `tools/amisnap_reader.py` (the
+   host-side reference reader) gets the same logic in parallel —
+   docs/format.md's own "New format structures need the host-side
+   reference reader updated in the same change" rule — so
+   `cross-check` keeps proving the two agree once CIPHER=1 repositories
+   exist.
+5. CLI: passphrase prompt (`amiga_read_passphrase()`) or key-file
+   option for every command that opens an encrypted repository; a
+   wrong passphrase must fail closed with a clear message (MAC check
+   on `WRAPPED_KEY`), never silently produce garbage plaintext.
+6. End-to-end test: snapshot/restore/verify cycle against a CIPHER=1
+   repository (host `backend_dir`), plus the cross-check above. On
+   real hardware, confirm `init --passphrase`'s calibration lands in
+   the target range on at least one real (non-emulated) CPU speed.
 
 **Phase 5 — S3.** SigV4 with `UNSIGNED-PAYLOAD`, large objects, tested
 against MinIO in CI and B2 manually.
