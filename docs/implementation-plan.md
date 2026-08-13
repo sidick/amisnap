@@ -1990,12 +1990,23 @@ derivation, nonce discipline, and the WRAPPED_KEY layout precisely).
    Phase 4 blurb's "key file with optional passphrase wrap" is exactly
    what `WRAPPED_KEY` inside `amisnap.repo` already *is*, once
    format.md's design was worked out in full -- there was never a
-   second on-disk key file to design). `PRUNE` is a known, deliberate
-   gap: it still decodes manifests directly (`prune.c`'s own
-   mark-and-sweep pass, unlike list/verify/restore) without a
-   subkeys/snapid parameter, so it fails closed with a decode error
-   against a CIPHER=1 repository rather than corrupting anything --
-   safe, but not yet wired.
+   second on-disk key file to design). **`PRUNE` wired too
+   (2026-08-13)**: `prune.c`'s mark pass (decode every surviving
+   manifest to collect referenced object hashes) now calls
+   `amisnap_repo_open_manifest()` per snapshot, same as list/verify/
+   restore; the sweep pass needed no change at all (object *names* are
+   always the plaintext content hash regardless of CIPHER, so matching
+   sweep candidates against the mark set never touched the key).
+   `amisnap_prune_execute()` gained a `subkeys` parameter, threaded
+   through from `cmd_prune()`'s own `open_repo_key()` call.
+   `tests/test_repo_encrypted.c` covers it: two encrypted snapshots
+   sharing one deduplicated object, pruning the older one with the
+   wrong key (fails closed on the mark pass -- confirmed via
+   `objects_deleted == 0`, i.e. the sweep that would touch real
+   objects never ran, even though the target manifest itself was
+   already gone by then per the documented manifest-first-no-partial-
+   rollback contract) and then the real key (correctly sweeps the
+   orphaned object, leaves the still-referenced shared one alone).
 6. End-to-end test: snapshot/restore/verify cycle against a CIPHER=1
    repository (host `backend_dir`), plus the cross-check above.
    **Done (2026-08-13)**, including the Python side:

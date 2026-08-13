@@ -15,6 +15,7 @@
 #include <stddef.h>
 
 #include "backend.h"
+#include "repo_crypto.h"
 
 typedef struct {
     size_t snapshots_deleted;
@@ -42,8 +43,15 @@ typedef struct {
  * AMISNAP_ERR_NOT_FOUND being expected/ignorable here. Any other
  * backend or decode error aborts immediately -- this call does not
  * attempt partial credit; *result reflects only what completed before
- * the failure. Returns AMISNAP_OK or a negative AMISNAP_ERR_* code. */
-int amisnap_prune_execute(amisnap_backend *repo, const char *const *delete_snapids,
+ * the failure. Returns AMISNAP_OK or a negative AMISNAP_ERR_* code.
+ *
+ * `subkeys` (NULL for a CIPHER 0 repository) is used only to decrypt
+ * each surviving manifest during the mark pass -- object *names* are
+ * always the plaintext content hash regardless of CIPHER (format.md
+ * "Objects"), so the sweep pass (matching those names against the mark
+ * set) needs no key at all. */
+int amisnap_prune_execute(amisnap_backend *repo, const amisnap_repo_subkeys *subkeys,
+                           const char *const *delete_snapids,
                            size_t delete_count, amisnap_prune_result *result);
 
 #endif /* AMISNAP_PRUNE_H */

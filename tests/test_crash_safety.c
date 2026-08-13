@@ -198,7 +198,7 @@ void run_crash_safety_tests(void)
         amisnap_buf mf;
         char key[32];
 
-        TEST_CHECK(amisnap_prune_execute(&repo, NULL, 0, &presult) == AMISNAP_OK);
+        TEST_CHECK(amisnap_prune_execute(&repo, NULL, NULL, 0, &presult) == AMISNAP_OK);
         TEST_CHECK(presult.snapshots_deleted == 0);
 
         snprintf(key, sizeof(key), "snapshots/%s.mf", baseline_snapid);

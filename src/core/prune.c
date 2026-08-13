@@ -73,6 +73,7 @@ static int mark_on_entry(void *user, const amisnap_entry_meta *entry)
 
 typedef struct {
     amisnap_backend *repo;
+    const amisnap_repo_subkeys *subkeys;
     hashset *hs;
     int status;
 } mark_snap_ctx;
@@ -81,7 +82,7 @@ static void mark_snap_cb(void *user, const char *snapid)
 {
     mark_snap_ctx *msc = (mark_snap_ctx *)user;
     char key[SNAPID_KEY_LEN];
-    amisnap_buf mf;
+    amisnap_buf mf, plaintext;
     amisnap_manifest_visitor v;
     mark_ctx mc;
     int rc;
@@ -93,14 +94,18 @@ static void mark_snap_cb(void *user, const char *snapid)
     rc = amisnap_backend_get(msc->repo, key, &mf);
     if (rc != AMISNAP_OK) { msc->status = rc; return; }
 
+    rc = amisnap_repo_open_manifest(msc->subkeys, snapid, mf.data, mf.len, &plaintext);
+    amisnap_buf_free(&mf);
+    if (rc != AMISNAP_OK) { msc->status = rc; return; }
+
     mc.hs = msc->hs;
     mc.status = AMISNAP_OK;
     memset(&v, 0, sizeof(v));
     v.user = &mc;
     v.on_entry = mark_on_entry;
 
-    rc = amisnap_manifest_decode(mf.data, mf.len, &v);
-    amisnap_buf_free(&mf);
+    rc = amisnap_manifest_decode(plaintext.data, plaintext.len, &v);
+    amisnap_buf_free(&plaintext);
     if (rc != AMISNAP_OK) msc->status = rc;
 }
 
@@ -182,7 +187,8 @@ static void sweep_tmp_cb(void *user, const char *name)
     else if (rc != AMISNAP_ERR_NOT_FOUND) stc->status = rc;
 }
 
-int amisnap_prune_execute(amisnap_backend *repo, const char *const *delete_snapids,
+int amisnap_prune_execute(amisnap_backend *repo, const amisnap_repo_subkeys *subkeys,
+                           const char *const *delete_snapids,
                            size_t delete_count, amisnap_prune_result *result)
 {
     size_t i;
@@ -207,6 +213,7 @@ int amisnap_prune_execute(amisnap_backend *repo, const char *const *delete_snapi
     /* Step 2: mark. */
     memset(&hs, 0, sizeof(hs));
     msc.repo = repo;
+    msc.subkeys = subkeys;
     msc.hs = &hs;
     msc.status = AMISNAP_OK;
     rc = amisnap_repo_list_snapshots(repo, mark_snap_cb, &msc);

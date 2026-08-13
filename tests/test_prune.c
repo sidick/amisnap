@@ -118,7 +118,7 @@ void run_prune_tests(void)
     /* --- Prune snapshot A. "shared.txt"'s object must survive (B
      * still references it); "onlyA.txt"'s object must not. --- */
     delete_ids[0] = g_snapid_a;
-    TEST_CHECK(amisnap_prune_execute(&repo, delete_ids, 1, &result) == AMISNAP_OK);
+    TEST_CHECK(amisnap_prune_execute(&repo, NULL, delete_ids, 1, &result) == AMISNAP_OK);
     TEST_CHECK(result.snapshots_deleted == 1);
     TEST_CHECK(result.objects_deleted == 1); /* only "onlyA.txt"'s object */
     TEST_CHECK(result.tmp_deleted == 1);
@@ -143,7 +143,7 @@ void run_prune_tests(void)
     /* --- A repeat prune of the same (now-gone) id is a harmless no-op,
      * not an error -- amisnap_backend_remove's own AMISNAP_ERR_NOT_FOUND
      * must not abort the call. --- */
-    TEST_CHECK(amisnap_prune_execute(&repo, delete_ids, 1, &result) == AMISNAP_OK);
+    TEST_CHECK(amisnap_prune_execute(&repo, NULL, delete_ids, 1, &result) == AMISNAP_OK);
     TEST_CHECK(result.snapshots_deleted == 0);
     TEST_CHECK(amisnap_backend_exists(&repo, obj_shared) == 1);
     TEST_CHECK(amisnap_backend_exists(&repo, obj_only_b) == 1);
@@ -151,7 +151,7 @@ void run_prune_tests(void)
     /* --- Pruning every remaining snapshot leaves an empty repository:
      * every object gone, nothing left referenced. --- */
     delete_ids[0] = g_snapid_b;
-    TEST_CHECK(amisnap_prune_execute(&repo, delete_ids, 1, &result) == AMISNAP_OK);
+    TEST_CHECK(amisnap_prune_execute(&repo, NULL, delete_ids, 1, &result) == AMISNAP_OK);
     TEST_CHECK(result.snapshots_deleted == 1);
     TEST_CHECK(amisnap_backend_exists(&repo, obj_shared) == 0);
     TEST_CHECK(amisnap_backend_exists(&repo, obj_only_b) == 0);

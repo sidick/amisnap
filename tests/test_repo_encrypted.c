@@ -14,6 +14,7 @@
 #include "backend_dir.h"
 #include "blake2s.h"
 #include "manifest.h"
+#include "prune.h"
 #include "repo.h"
 #include "restore.h"
 #include "test.h"
@@ -187,5 +188,141 @@ void run_repo_encrypted_tests(void)
     }
 
     amisnap_buf_free(&mf_raw);
+    amisnap_backend_close(&be);
+}
+
+#define PRUNEDIR "build/test-repo-encrypted-prune"
+
+/* amisnap_prune_execute()'s mark pass decodes every surviving
+ * manifest to collect referenced object hashes -- against an
+ * encrypted repository that means decrypting each one first
+ * (prune.c's mark_snap_cb, wired to repo.h's amisnap_repo_open_
+ * manifest() in the same commit that added this test). Two snapshots
+ * sharing one deduplicated object plus one object unique to each,
+ * same shape as test_prune.c's own CIPHER 0 coverage: prune the older
+ * snapshot and confirm mark-and-sweep keeps exactly the surviving
+ * one's objects (including the still-referenced shared one) and
+ * nothing else -- which only exercises real, working decryption in
+ * the mark pass if the counts come out right. */
+void run_prune_encrypted_tests(void)
+{
+    amisnap_backend be;
+    amisnap_repo_subkeys sk;
+    uint8_t key[32];
+    char snapid_a[17], snapid_b[17];
+    int i;
+
+    for (i = 0; i < 32; i++) key[i] = (uint8_t)(0xE0 + i);
+    amisnap_repo_derive_subkeys(key, &sk);
+
+    TEST_CHECK(system("rm -rf " PRUNEDIR) == 0);
+    TEST_CHECK(amisnap_backend_dir_open(PRUNEDIR, &be) == AMISNAP_OK);
+
+    {
+        amisnap_repo_writer rw;
+        amisnap_snap_meta snap;
+        amisnap_volume_meta vol;
+        amisnap_entry_meta e;
+
+        amisnap_repo_writer_init(&rw, &be, &sk);
+        memset(&snap, 0, sizeof(snap));
+        snap.created_days = 3000; snap.created_mins = 1; snap.created_ticks = 1;
+        TEST_CHECK(amisnap_repo_writer_snap(&rw, &snap) == AMISNAP_OK);
+        memset(&vol, 0, sizeof(vol));
+        vol.vol_root = (const uint8_t *)"Work:"; vol.vol_root_len = 5;
+        TEST_CHECK(amisnap_repo_writer_volume(&rw, &vol) == AMISNAP_OK);
+        memset(&e, 0, sizeof(e));
+        e.path = (const uint8_t *)"shared.txt"; e.path_len = 10;
+        e.type = AMISNAP_ETYPE_FILE; e.date_days = 3000;
+        TEST_CHECK(amisnap_repo_writer_file(&rw, &e, "same bytes", 10) == AMISNAP_OK);
+        memset(&e, 0, sizeof(e));
+        e.path = (const uint8_t *)"only_a.txt"; e.path_len = 10;
+        e.type = AMISNAP_ETYPE_FILE; e.date_days = 3000;
+        TEST_CHECK(amisnap_repo_writer_file(&rw, &e, "unique to a", 11) == AMISNAP_OK);
+        TEST_CHECK(amisnap_repo_writer_finish(&rw, snapid_a) == AMISNAP_OK);
+        amisnap_repo_writer_free(&rw);
+    }
+
+    {
+        amisnap_repo_writer rw;
+        amisnap_snap_meta snap;
+        amisnap_volume_meta vol;
+        amisnap_entry_meta e;
+
+        amisnap_repo_writer_init(&rw, &be, &sk);
+        memset(&snap, 0, sizeof(snap));
+        snap.created_days = 3001; snap.created_mins = 1; snap.created_ticks = 1;
+        TEST_CHECK(amisnap_repo_writer_snap(&rw, &snap) == AMISNAP_OK);
+        memset(&vol, 0, sizeof(vol));
+        vol.vol_root = (const uint8_t *)"Work:"; vol.vol_root_len = 5;
+        TEST_CHECK(amisnap_repo_writer_volume(&rw, &vol) == AMISNAP_OK);
+        memset(&e, 0, sizeof(e));
+        e.path = (const uint8_t *)"shared.txt"; e.path_len = 10;
+        e.type = AMISNAP_ETYPE_FILE; e.date_days = 3001;
+        TEST_CHECK(amisnap_repo_writer_file(&rw, &e, "same bytes", 10) == AMISNAP_OK);
+        memset(&e, 0, sizeof(e));
+        e.path = (const uint8_t *)"only_b.txt"; e.path_len = 10;
+        e.type = AMISNAP_ETYPE_FILE; e.date_days = 3001;
+        TEST_CHECK(amisnap_repo_writer_file(&rw, &e, "unique to b", 11) == AMISNAP_OK);
+        TEST_CHECK(amisnap_repo_writer_finish(&rw, snapid_b) == AMISNAP_OK);
+        amisnap_repo_writer_free(&rw);
+    }
+
+    /* Pruning with the wrong key fails closed on the mark pass (it
+     * can't decrypt snapshot b's manifest to know what's still
+     * referenced) -- confirmed by checking objects_deleted stayed 0:
+     * the sweep that would delete real objects never got to run.
+     * Target-manifest deletion happens first, unconditionally, and
+     * *does* go ahead here (prune.h's own documented contract: "*result
+     * reflects only what completed before the failure", i.e. partial
+     * progress is real, not rolled back) -- format.md's stated
+     * invariant is manifest-before-objects, not all-or-nothing, so a
+     * gone manifest with its objects not yet swept is exactly the
+     * "harmless garbage for the next prune run to collect" the header
+     * comment describes, not a bug. */
+    {
+        amisnap_repo_subkeys wrong_sk;
+        uint8_t wrong_key[32];
+        amisnap_prune_result presult;
+        const char *ids[1];
+
+        for (i = 0; i < 32; i++) wrong_key[i] = (uint8_t)(0xF0 + i);
+        amisnap_repo_derive_subkeys(wrong_key, &wrong_sk);
+        ids[0] = snapid_a;
+        TEST_CHECK(amisnap_prune_execute(&be, &wrong_sk, ids, 1, &presult) != AMISNAP_OK);
+        TEST_CHECK(presult.snapshots_deleted == 1); /* the target manifest, deleted before the failure */
+        TEST_CHECK(presult.objects_deleted == 0);   /* sweep never ran -- real objects untouched */
+    }
+
+    /* Retry with the real key: snapshot a's manifest is already gone
+     * (from the failed attempt above -- amisnap_backend_remove's own
+     * documented idempotence, not counted again), but the mark-sweep
+     * pass now succeeds and correctly identifies only_a.txt's object
+     * as orphaned (no surviving manifest references it) while
+     * shared.txt's object survives (still referenced by b). */
+    {
+        amisnap_prune_result presult;
+        const char *ids[1];
+        ids[0] = snapid_a;
+        TEST_CHECK(amisnap_prune_execute(&be, &sk, ids, 1, &presult) == AMISNAP_OK);
+        TEST_CHECK(presult.snapshots_deleted == 0); /* already gone */
+        TEST_CHECK(presult.objects_deleted == 1);   /* only_a.txt's object -- shared.txt's survives */
+    }
+
+    /* Snapshot b (the survivor) still verifies clean after the prune. */
+    {
+        char mf_key[40];
+        amisnap_buf mf;
+        amisnap_verify_result vresult;
+        snprintf(mf_key, sizeof(mf_key), "snapshots/%s.mf", snapid_b);
+        TEST_CHECK(amisnap_backend_get(&be, mf_key, &mf) == AMISNAP_OK);
+        TEST_CHECK(amisnap_verify_manifest(&be, &sk, snapid_b, mf.data, mf.len, 1, &vresult)
+                   == AMISNAP_OK);
+        TEST_CHECK(vresult.objects_checked == 2);
+        TEST_CHECK(vresult.objects_missing == 0);
+        TEST_CHECK(vresult.objects_corrupt == 0);
+        amisnap_buf_free(&mf);
+    }
+
     amisnap_backend_close(&be);
 }

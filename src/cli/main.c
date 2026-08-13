@@ -988,6 +988,7 @@ static LONG cmd_prune(const char *repo, const char *snapid_arg, const LONG *keep
 {
     amisnap_backend be;
     amisnap_prune_result result;
+    repo_key_ctx rk;
     int rc;
 
     if (!repo) {
@@ -1013,10 +1014,17 @@ static LONG cmd_prune(const char *repo, const char *snapid_arg, const LONG *keep
         return RETURN_FAIL;
     }
 
+    rc = open_repo_key(&be, &rk);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", repo, rc);
+        amisnap_backend_close(&be);
+        return RETURN_FAIL;
+    }
+
     if (snapid_arg) {
         const char *ids[1];
         ids[0] = snapid_arg;
-        rc = amisnap_prune_execute(&be, ids, 1, &result);
+        rc = amisnap_prune_execute(&be, rk.have ? &rk.sk : NULL, ids, 1, &result);
     } else {
         snapshot_list list;
         const char *delete_ids[MAX_SNAPSHOTS];
@@ -1034,7 +1042,8 @@ static LONG cmd_prune(const char *repo, const char *snapid_arg, const LONG *keep
         for (i = 0; i < delete_count; i++)
             delete_ids[i] = list.ids[i]; /* ascending order: the oldest come first */
 
-        rc = amisnap_prune_execute(&be, delete_ids, (size_t)delete_count, &result);
+        rc = amisnap_prune_execute(&be, rk.have ? &rk.sk : NULL, delete_ids,
+                                    (size_t)delete_count, &result);
     }
 
     amisnap_backend_close(&be);
