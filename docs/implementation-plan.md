@@ -1678,13 +1678,24 @@ protocol code against a local WebDAV container.
    `OpenAmiSSLTags()` fails with that same undocumented error 2 even
    with `AmiSSL:` assigned and `LIBS: AmiSSL:Libs ADD` set up by hand
    (matching the directory shape AmiSSL's own real installer produces).
-   Not chased further -- diminishing returns for what was actually
-   asked (does the crash still happen), and getting a fully *working*
-   from-scratch minimal AmiSSL boot is a distinct, deeper question from
-   "does init fail safely" that the real on-target work (below) will
-   need to resolve properly anyway, most likely by following AmiAuth's
-   own `amissl-bench.sh` approach of cloning a real Workbench install
-   with AmiSSL already installed via its own installer, rather than
+   **Ruled out one specific hypothesis rather than leaving it open**:
+   read AmiSSL's own real `Install-AmiSSL` installer script (Amiga
+   Installer syntax, from the upstream release archive) to check
+   whether the from-scratch boot was simply missing something the
+   installer sets up beyond the two library files -- it also creates
+   `AmiSSL:openssl.cnf`, `AmiSSL:UserCerts/`, and `AmiSSL:Private/`
+   alongside `Certs/`. Retested with that complete structure in place
+   (all four, via a real `AmiSSL:` assign) -- identical error 2, at the
+   identical point (`OpenAmiSSLTags()` itself, before certificate
+   loading is ever reached). Certificates/config files are not the
+   blocker. Not chased further beyond that -- diminishing returns for
+   what was actually asked (does the crash still happen), and getting a
+   fully *working* from-scratch minimal AmiSSL boot is a distinct,
+   deeper question from "does init fail safely" that the real
+   on-target work (below) will need to resolve properly anyway, most
+   likely by following AmiAuth's own `amissl-bench.sh` approach of
+   cloning a real Workbench install with AmiSSL already installed via
+   its own installer, rather than
    hand-assembling a minimal one.
 
    **Genuine on-target execution (a real, successful TLS connection)
