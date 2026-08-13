@@ -1797,7 +1797,19 @@ protocol code against a local WebDAV container.
    `SSL_connect()` design is now a confirmed, understood, real design
    flaw -- not a hang of unknown origin -- with a concrete, working
    reference design (the BIO-pair pump) to build the real fix from.
-   Not implemented here; tracked as open, not silently assumed working.
+
+   **`https://` is now deliberately disabled at the CLI level
+   (2026-08-13), not just left reachable with a known bug**: a backup
+   tool hanging indefinitely on a destination is a worse failure mode
+   than a clear refusal, so `open_backend()` (`main.c`) now refuses
+   every `https://` URL unconditionally, before ever touching
+   `amisnap_tls_lib_open()` -- `plain http://` is completely unaffected
+   (unchanged code path, still fully working). `tls.c`/`tls.h` and the
+   `make m68k` AmiSSL-SDK auto-fetch both stay in the tree exactly as
+   built and verified -- nothing here was reverted or deleted, only the
+   CLI dispatch that could reach the known-hanging call. Revisit once
+   `tls.c` is rebuilt around the non-blocking BIO-pair pump described
+   above.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below
