@@ -1515,14 +1515,27 @@ protocol code against a local WebDAV container.
    Copperline via `--hostsocket-net host`, item 2's own note) not done
    yet.
 
-   **Remaining for this item**: CLI wiring (a `DEST=`/`REPO=` URL
-   scheme -- `http://`/`https://` -- dispatched in `src/cli/main.c` to
-   `amisnap_backend_webdav_open()` instead of `amisnap_backend_dir_
-   open()`, plus wiring `src/amiga/socket.c`'s real
-   `amisnap_bsdsocket_transport_ops` in on the Amiga side); TLS
-   (`https://` needs item 4 first, per proposal.md's own per-destination
-   opt-in policy -- until then only `http://` is reachable from the
-   CLI).
+   **CLI wiring: done (2026-08-13).** `src/cli/main.c`'s new
+   `open_backend()` dispatches `REPO=`/`DEST=` by scheme prefix
+   (`http://`/`https://` -> `amisnap_backend_webdav_open()` with
+   `src/amiga/socket.c`'s real `amisnap_bsdsocket_transport_ops`;
+   anything else -> the existing `amisnap_backend_dir_open()`, unchanged
+   -- confirmed live on Copperline via `run.sh`, same PASS as before
+   this change). `amisnap_webdav_parse_url()` (`webdav.[ch]`) parses the
+   `http://[user[:pass]@]host[:port][/path]` form (percent-decoded
+   userinfo, default ports 80/443) -- host-tested
+   (`tests/test_webdav.c`), not just wired blind. `bsdsocket.library` is
+   opened *lazily*, only the first time a WebDAV destination is actually
+   used in a given run -- a pure mounted-volume backup (SMB/NFS/local,
+   the common case) must not require any TCP/IP stack installed at all.
+   An `https://` destination fails with a clear, explicit message
+   (`AMISNAP_ERR_IO`, "not implemented yet ... use an http://
+   destination instead") rather than silently downgrading to plaintext
+   -- proposal.md's own per-destination TLS opt-in policy, honored even
+   though TLS itself (item 4) doesn't exist yet. Real on-target exercise
+   of an actual `http://` destination (a live WebDAV server reachable
+   from Copperline via `--hostsocket-net host`) is still the one
+   remaining piece -- not done yet.
 4. `src/amiga/tls.c` -- soft-loaded AmiSSL, per-destination `TLS=YES`
    (absent library + TLS requested = clear failure, never a silent
    plaintext fallback). Not started.

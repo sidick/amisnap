@@ -608,10 +608,56 @@ static void run_auth_tests(void)
     mock_server_free(&srv);
 }
 
+static void run_url_parse_tests(void)
+{
+    amisnap_webdav_url u;
+
+    TEST_CHECK(amisnap_webdav_parse_url("http://example.com/dav/amisnap", &u) == AMISNAP_OK);
+    TEST_CHECK(strcmp(u.host, "example.com") == 0);
+    TEST_CHECK(u.port == 80);
+    TEST_CHECK(strcmp(u.base_path, "/dav/amisnap") == 0);
+    TEST_CHECK(u.username[0] == '\0');
+    TEST_CHECK(u.tls == 0);
+
+    TEST_CHECK(amisnap_webdav_parse_url("https://example.com/dav", &u) == AMISNAP_OK);
+    TEST_CHECK(u.port == 443);
+    TEST_CHECK(u.tls == 1);
+
+    TEST_CHECK(amisnap_webdav_parse_url("http://example.com:8080/x", &u) == AMISNAP_OK);
+    TEST_CHECK(u.port == 8080);
+    TEST_CHECK(strcmp(u.host, "example.com") == 0);
+    TEST_CHECK(strcmp(u.base_path, "/x") == 0);
+
+    TEST_CHECK(amisnap_webdav_parse_url("http://user:pass@example.com/x", &u) == AMISNAP_OK);
+    TEST_CHECK(strcmp(u.username, "user") == 0);
+    TEST_CHECK(strcmp(u.password, "pass") == 0);
+    TEST_CHECK(strcmp(u.host, "example.com") == 0);
+
+    TEST_CHECK(amisnap_webdav_parse_url("http://user@example.com:8080/x", &u) == AMISNAP_OK);
+    TEST_CHECK(strcmp(u.username, "user") == 0);
+    TEST_CHECK(u.password[0] == '\0');
+    TEST_CHECK(u.port == 8080);
+
+    /* no path at all -> base_path defaults to "" (server root) */
+    TEST_CHECK(amisnap_webdav_parse_url("http://example.com", &u) == AMISNAP_OK);
+    TEST_CHECK(u.base_path[0] == '\0');
+
+    /* percent-encoded userinfo */
+    TEST_CHECK(amisnap_webdav_parse_url("http://a%40b:p%3Ass@example.com/x", &u) == AMISNAP_OK);
+    TEST_CHECK(strcmp(u.username, "a@b") == 0);
+    TEST_CHECK(strcmp(u.password, "p:ss") == 0);
+
+    TEST_CHECK(amisnap_webdav_parse_url("ftp://example.com/x", &u) == AMISNAP_ERR_MALFORMED);
+    TEST_CHECK(amisnap_webdav_parse_url("http:///x", &u) == AMISNAP_ERR_MALFORMED); /* empty host */
+    TEST_CHECK(amisnap_webdav_parse_url("http://example.com:notaport/x", &u) == AMISNAP_ERR_MALFORMED);
+    TEST_CHECK(amisnap_webdav_parse_url("http://example.com:99999/x", &u) == AMISNAP_ERR_MALFORMED);
+}
+
 void run_webdav_tests(void)
 {
     run_basic_roundtrip_tests();
     run_list_tests();
     run_streaming_upload_tests();
     run_auth_tests();
+    run_url_parse_tests();
 }

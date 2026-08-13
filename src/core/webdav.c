@@ -312,6 +312,101 @@ static const char PROPFIND_BODY[] =
     "<?xml version=\"1.0\" encoding=\"utf-8\" ?>"
     "<D:propfind xmlns:D=\"DAV:\"><D:prop><D:resourcetype/></D:prop></D:propfind>";
 
+/* --- URL parsing (the CLI's own REPO=/DEST= form): reuses
+ * percent_decode() above for userinfo, same as any other percent-
+ * encoded text this file handles. --- */
+
+int amisnap_webdav_parse_url(const char *url, amisnap_webdav_url *out)
+{
+    const char *p = url;
+    const char *at = NULL;
+    const char *host_start, *host_end, *path_start;
+    const char *scan_end;
+    const char *colon;
+    size_t host_len;
+
+    memset(out, 0, sizeof(*out));
+
+    if (strncmp(p, "https://", 8) == 0) { out->tls = 1; p += 8; }
+    else if (strncmp(p, "http://", 7) == 0) { out->tls = 0; p += 7; }
+    else return AMISNAP_ERR_MALFORMED;
+
+    /* userinfo ("user[:pass]@"), only searched before the first '/' --
+     * a bare '@' inside the path (rare, but legal in a URL path
+     * component) must not be mistaken for one. */
+    path_start = strchr(p, '/');
+    scan_end = path_start ? path_start : p + strlen(p);
+    {
+        const char *q;
+        for (q = p; q < scan_end; q++) {
+            if (*q == '@') { at = q; break; }
+        }
+    }
+    if (at) {
+        colon = NULL;
+        {
+            const char *q;
+            for (q = p; q < at; q++) {
+                if (*q == ':') { colon = q; break; }
+            }
+        }
+        if (colon) {
+            size_t ulen = (size_t)(colon - p);
+            size_t plen = (size_t)(at - (colon + 1));
+
+            if (ulen >= sizeof(out->username) || plen >= sizeof(out->password))
+                return AMISNAP_ERR_MALFORMED;
+            percent_decode(p, ulen, out->username, sizeof(out->username));
+            percent_decode(colon + 1, plen, out->password, sizeof(out->password));
+        } else {
+            size_t ulen = (size_t)(at - p);
+
+            if (ulen >= sizeof(out->username)) return AMISNAP_ERR_MALFORMED;
+            percent_decode(p, ulen, out->username, sizeof(out->username));
+        }
+        p = at + 1;
+        path_start = strchr(p, '/'); /* re-derive: userinfo may have shifted where the path starts */
+    }
+
+    host_start = p;
+    scan_end = path_start ? path_start : p + strlen(p);
+    colon = NULL;
+    {
+        const char *q;
+        for (q = host_start; q < scan_end; q++) {
+            if (*q == ':') { colon = q; break; }
+        }
+    }
+    host_end = colon ? colon : scan_end;
+    host_len = (size_t)(host_end - host_start);
+    if (host_len == 0 || host_len >= sizeof(out->host)) return AMISNAP_ERR_MALFORMED;
+    memcpy(out->host, host_start, host_len);
+    out->host[host_len] = '\0';
+
+    if (colon) {
+        char portbuf[8];
+        size_t plen = (size_t)(scan_end - (colon + 1));
+        long portval;
+
+        if (plen == 0 || plen >= sizeof(portbuf)) return AMISNAP_ERR_MALFORMED;
+        memcpy(portbuf, colon + 1, plen);
+        portbuf[plen] = '\0';
+        portval = strtol(portbuf, NULL, 10);
+        if (portval <= 0 || portval > 65535) return AMISNAP_ERR_MALFORMED;
+        out->port = (uint16_t)portval;
+    } else {
+        out->port = out->tls ? 443 : 80;
+    }
+
+    if (path_start) {
+        size_t plen = strlen(path_start);
+
+        if (plen >= sizeof(out->base_path)) return AMISNAP_ERR_MALFORMED;
+        memcpy(out->base_path, path_start, plen + 1);
+    }
+    return AMISNAP_OK;
+}
+
 /* --- amisnap_backend_ops --- */
 
 static int webdav_put(amisnap_backend *be, const char *key, const void *data, size_t len)

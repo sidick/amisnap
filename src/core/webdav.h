@@ -57,4 +57,31 @@ typedef struct {
 int amisnap_backend_webdav_open(const amisnap_webdav_config *cfg, amisnap_transport *transport,
                                  amisnap_backend *out);
 
+/* Generous fixed bounds for amisnap_webdav_url's fields -- same
+ * "fails cleanly rather than overflows" convention as
+ * AMISNAP_WEBDAV_MAX_PATH above. */
+#define AMISNAP_WEBDAV_URL_HOST_MAX 256
+#define AMISNAP_WEBDAV_URL_CRED_MAX 128
+
+typedef struct {
+    char host[AMISNAP_WEBDAV_URL_HOST_MAX];
+    uint16_t port;
+    char base_path[AMISNAP_WEBDAV_MAX_PATH]; /* "" or "/dav/amisnap" form, no trailing slash */
+    char username[AMISNAP_WEBDAV_URL_CRED_MAX]; /* "" = no userinfo in the URL */
+    char password[AMISNAP_WEBDAV_URL_CRED_MAX];
+    int tls; /* 1 = the URL was https://, 0 = http:// */
+} amisnap_webdav_url;
+
+/* Parses a "http://[user[:pass]@]host[:port][/path]" or "https://..."
+ * URL (the CLI's own REPO=/DEST= form for a WebDAV destination,
+ * docs/proposal.md Tier 2) into `out`. Userinfo (username/password) is
+ * percent-decoded; the path is copied verbatim as `base_path` (already
+ * the exact form amisnap_webdav_config expects). Purely syntactic --
+ * does not open a connection or validate the host is reachable.
+ * Returns AMISNAP_OK, or AMISNAP_ERR_MALFORMED for anything that isn't
+ * a recognizable http(s) URL (including an unknown scheme, an empty
+ * host, or a field too long for the fixed buffers above) -- this is not
+ * a general URI parser. */
+int amisnap_webdav_parse_url(const char *url, amisnap_webdav_url *out);
+
 #endif /* AMISNAP_WEBDAV_H */

@@ -45,7 +45,9 @@
 #include "restore.h"
 #include "restore_meta.h"
 #include "scan.h"
+#include "socket.h"
 #include "stackswap.h"
+#include "webdav.h"
 #include "xxhash32.h"
 
 #ifndef VERSION
@@ -89,6 +91,71 @@ static void amilog_err(const char *fmt, ...)
     va_start(ap, fmt);
     vfprintf(g_log ? g_log : stderr, fmt, ap);
     va_end(ap);
+}
+
+/* --- backend dispatch: REPO=/DEST= is either a native AmigaDOS path
+ * (mounted volume / assign, docs/proposal.md Tier 1) or a
+ * "http://"/"https://" URL (Tier 2, WebDAV) -- decided purely by the
+ * scheme prefix, same convention curl/git use for the same ambiguity.
+ * bsdsocket.library is opened lazily, only the first time a WebDAV
+ * destination is actually used: a pure mounted-volume backup (the
+ * common case, e.g. a local NAS over SMB) must not require any TCP/IP
+ * stack to be installed at all. --------------------------------------- */
+
+static int g_socket_lib_open = 0;
+static amisnap_transport g_bsdsocket_transport;
+
+static int open_backend(const char *path, amisnap_backend *out)
+{
+    if (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0) {
+        amisnap_webdav_url url;
+        amisnap_webdav_config cfg;
+        int rc;
+
+        rc = amisnap_webdav_parse_url(path, &url);
+        if (rc != AMISNAP_OK) {
+            amilog_err("AmiSnap: malformed WebDAV URL \"%s\"\n", path);
+            return rc;
+        }
+        if (url.tls) {
+            /* proposal.md's per-destination TLS opt-in: an absent/
+             * unimplemented TLS layer must fail clearly, never fall
+             * back to plaintext silently (implementation-plan.md Phase
+             * 4 is what will make https:// real). */
+            amilog_err("AmiSnap: \"%s\" needs TLS (https://), not implemented yet "
+                       "(see implementation-plan.md Phase 4) -- use an http:// "
+                       "destination instead\n", path);
+            return AMISNAP_ERR_IO;
+        }
+
+        if (!g_socket_lib_open) {
+            rc = amisnap_socket_lib_open();
+            if (rc != AMISNAP_OK) {
+                amilog_err("AmiSnap: bsdsocket.library not available -- \"%s\" needs "
+                           "a running TCP/IP stack\n", path);
+                return rc;
+            }
+            g_bsdsocket_transport.ops = &amisnap_bsdsocket_transport_ops;
+            g_bsdsocket_transport.ctx = NULL;
+            g_socket_lib_open = 1;
+        }
+
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.host = url.host;
+        cfg.port = url.port;
+        cfg.base_path = url.base_path;
+        if (url.username[0]) {
+            cfg.username = url.username;
+            cfg.password = url.password;
+        }
+        /* amisnap_backend_webdav_open() copies every string out of cfg/
+         * url synchronously before returning (webdav.c's own dup_str()
+         * calls) -- url/cfg going out of scope right after this call is
+         * safe, same as backend_dir_open()'s own `root` parameter. */
+        return amisnap_backend_webdav_open(&cfg, &g_bsdsocket_transport, out);
+    }
+
+    return amisnap_backend_dir_open(path, out);
 }
 
 /* --- shared helpers --------------------------------------------------- */
@@ -478,7 +545,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
         return RETURN_ERROR;
     }
 
-    rc = amisnap_backend_dir_open(repo, &be);
+    rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
         return RETURN_FAIL;
@@ -654,7 +721,7 @@ static LONG cmd_list(const char *repo)
         return RETURN_ERROR;
     }
 
-    rc = amisnap_backend_dir_open(repo, &be);
+    rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
         return RETURN_FAIL;
@@ -719,7 +786,7 @@ static LONG cmd_verify(const char *repo, const char *snapid_arg, int full)
         return RETURN_ERROR;
     }
 
-    rc = amisnap_backend_dir_open(repo, &be);
+    rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
         return RETURN_FAIL;
@@ -794,7 +861,7 @@ static LONG cmd_prune(const char *repo, const char *snapid_arg, const LONG *keep
         return RETURN_ERROR;
     }
 
-    rc = amisnap_backend_dir_open(repo, &be);
+    rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
         return RETURN_FAIL;
@@ -886,12 +953,12 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
         return RETURN_ERROR;
     }
 
-    rc = amisnap_backend_dir_open(repo, &repo_be);
+    rc = open_backend(repo, &repo_be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
         return RETURN_FAIL;
     }
-    rc = amisnap_backend_dir_open(dest, &dest_be);
+    rc = open_backend(dest, &dest_be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot open destination \"%s\" (error %d)\n", dest, rc);
         amisnap_backend_close(&repo_be);
@@ -1034,6 +1101,10 @@ static int real_main(void *arg)
         rc = RETURN_ERROR;
     }
 
+    if (g_socket_lib_open) {
+        amisnap_socket_lib_close();
+        g_socket_lib_open = 0;
+    }
     if (g_log) {
         fclose(g_log);
         g_log = NULL;
