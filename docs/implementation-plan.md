@@ -1655,16 +1655,46 @@ protocol code against a local WebDAV container.
    Cross-build-verified for real: compiles and links clean against the
    actual AmiSSL 5.27 SDK headers and `libamisslstubs.a`, and the full
    `make m68k` build (now automatically fetching the SDK) produces a
-   working binary. **Genuine on-target execution is the one remaining
-   gap**: unlike `socket.c`'s own bsdsocket path (now Copperline-
+   working binary.
+
+   **Retested (2026-08-13) whether AmiAuth's documented ramlib crash
+   (`OpenAmiSSLTags()` on a from-scratch minimal boot lacking the
+   `AmiSSL:` assign) still applies -- it doesn't, on this Copperline
+   version.** Built two throwaway diagnostic fixtures (not committed,
+   same "never shipped" convention as `stage.c`/the since-deleted
+   `socktest.c`): one calling `amisnap_tls_lib_open()` directly, one
+   duplicating its init sequence step-by-step with a log line after
+   each call, both run under `copperline 0.15.0` on AmiSnap's own
+   existing minimal HOSTFS boot volume (no `AmiSSL:` assign, just
+   `amisslmaster.library` + `AmiSSL/68020-40/amissl_v362.library`
+   copied into `LIBS:`). `OpenAmiSSLTags()` returns cleanly with a real
+   non-zero error code (`2` -- undocumented in the SDK's own Autodocs,
+   meaning unspecified) instead of crashing ramlib, both with and
+   without the `AmiSSL:` assign additionally set up. No hang, no CPU
+   exception, confirmed across multiple runs.
+
+   This resolves the specific crash risk, but a **from-scratch minimal
+   boot still doesn't get AmiSSL all the way to a working state** --
+   `OpenAmiSSLTags()` fails with that same undocumented error 2 even
+   with `AmiSSL:` assigned and `LIBS: AmiSSL:Libs ADD` set up by hand
+   (matching the directory shape AmiSSL's own real installer produces).
+   Not chased further -- diminishing returns for what was actually
+   asked (does the crash still happen), and getting a fully *working*
+   from-scratch minimal AmiSSL boot is a distinct, deeper question from
+   "does init fail safely" that the real on-target work (below) will
+   need to resolve properly anyway, most likely by following AmiAuth's
+   own `amissl-bench.sh` approach of cloning a real Workbench install
+   with AmiSSL already installed via its own installer, rather than
+   hand-assembling a minimal one.
+
+   **Genuine on-target execution (a real, successful TLS connection)
+   is still the one remaining gap**, but the specific "will this crash
+   the emulator" risk that made it look expensive to even attempt is
+   gone -- unlike `socket.c`'s own bsdsocket path (now Copperline-
    verified, Phase 3 item 3), AmiSSL needs a boot volume with AmiSSL
-   actually *installed* (the `AmiSSL:` assign + `LIBS:AmiSSL/` setup
-   its own installer performs) to even initialize -- AmiAuth's own
-   `amissl-bench.sh` documents that `OpenAmiSSLTags()` reliably crashes
-   ramlib on a from-scratch minimal boot lacking that assign, the same
-   kind of minimal HOSTFS boot this project's own Copperline harness
-   otherwise uses throughout. Not solved here; tracked as open, not
-   silently assumed working the way it would be to skip mentioning it.
+   fully *installed*, not just its library files copied in, to
+   actually succeed; not solved here, tracked as open, not silently
+   assumed working the way it would be to skip mentioning it.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below
