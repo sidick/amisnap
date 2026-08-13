@@ -1890,11 +1890,23 @@ derivation, nonce discipline, and the WRAPPED_KEY layout precisely).
    reference on real hardware, so there's nothing to dispatch to yet.
    `make test`: 673/673.
 2. Vendor AmiAuth's HMAC-DRBG (`src/core/drbg.c`) and Amiga entropy
-   pool (`src/amiga/random.c`/`entropy.h`, incl. `amiga_read_passphrase()`
-   and `amiga_millis()` for PBKDF2 calibration below) — the repository
+   pool (`src/amiga/random.c`/`entropy.h`, incl. `amisnap_read_passphrase()`
+   and `amisnap_millis()` for PBKDF2 calibration below) — the repository
    key, its wrap nonce, and the KDF salt all need real randomness, not
    just the deterministic subkey derivation docs/format.md's Encryption
-   section covers.
+   section covers. **Done (2026-08-13)**. The DRBG itself is adapted to
+   run over HMAC-SHA256 rather than AmiAuth's HMAC-SHA1 (same reasoning
+   as item 1's HMAC trim: SHA-1 would otherwise be vendored solely for
+   this one caller), verified against an independent Python
+   HMAC-DRBG-over-SHA256 oracle in tests/test_drbg.c. `random.c`'s
+   entropy-gathering, timer.device handling, and RAW-mode passphrase
+   reading are otherwise unchanged from AmiAuth's, only its running
+   accumulator hash moved from SHA-1 to the already-vendored SHA-256.
+   Cross-build-verified only so far (`make m68k-docker` compiles and
+   links clean); no host build exists for this file to run under vamos
+   or Copperline (m68k-only, uses timer.device/RAW console mode with no
+   vamos dos.library equivalent) — same on-target-only verification
+   status AmiAuth's own random.c carries.
 3. `init --passphrase`: generate the repository key and salt, calibrate
    PBKDF2 iterations with a short timing probe against `amiga_millis()`
    (target ~1-2s wall clock, same pattern as AmiAuth's own vault KDF
