@@ -38,10 +38,13 @@
 
 #include "amipath.h"
 #include "backend_dir.h"
+#include "entropy.h"
 #include "index.h"
 #include "applyuaem.h"
+#include "pbkdf2.h"
 #include "prune.h"
 #include "repo.h"
+#include "repo_header.h"
 #include "restore.h"
 #include "restore_meta.h"
 #include "scan.h"
@@ -246,6 +249,95 @@ static int fetch_manifest(amisnap_backend *be, const char *snapid, amisnap_buf *
     char key[32];
     snprintf(key, sizeof(key), "snapshots/%s.mf", snapid);
     return amisnap_backend_get(be, key, mf_out);
+}
+
+/* --- repository key: amisnap.repo (repo_header.h) + passphrase
+ * unwrap (repo_crypto.h) -- every command that opens a repository
+ * calls this once, right after open_backend(), and threads the
+ * resulting subkeys (or NULL) into whichever of repo.h/restore.h's
+ * now-encryption-aware entry points it uses. -------------------- */
+
+typedef struct {
+    amisnap_repo_subkeys sk;
+    int have; /* 0 = CIPHER 0 (or no amisnap.repo at all -- see below) */
+} repo_key_ctx;
+
+#define AMISNAP_REPO_HEADER_KEY "amisnap.repo"
+
+/* No amisnap.repo at all is NOT an error here: `init` has always been
+ * optional for a plain repository (repo.c's own writer creates
+ * snapshots/objects straight away, no header needed) -- only
+ * encrypted repositories need one, and only INIT PASSPHRASE writes
+ * it. Prompts interactively via amisnap_read_passphrase() when the
+ * header says CIPHER != 0; a non-interactive run (no console) or a
+ * wrong passphrase both fail closed (a real AMISNAP_ERR_* code, never
+ * a silent fall-through to unencrypted access). */
+static int open_repo_key(amisnap_backend *be, repo_key_ctx *out)
+{
+    amisnap_buf raw;
+    amisnap_repo_header hdr;
+    int rc;
+
+    out->have = 0;
+
+    rc = amisnap_backend_get(be, AMISNAP_REPO_HEADER_KEY, &raw);
+    if (rc == AMISNAP_ERR_NOT_FOUND) return AMISNAP_OK;
+    if (rc != AMISNAP_OK) return rc;
+
+    rc = amisnap_repo_header_decode(raw.data, raw.len, &hdr);
+    amisnap_buf_free(&raw); /* hdr's salt/wrapped_key borrows expire here -- copy what's needed below */
+    if (rc != AMISNAP_OK) return rc;
+
+    if (hdr.cipher == 0) return AMISNAP_OK;
+
+    {
+        char passphrase[256];
+        uint8_t salt[64];
+        uint8_t wrapped[AMISNAP_WRAPPED_KEY_SIZE];
+        uint8_t k_wrap[32];
+        uint8_t repo_key[AMISNAP_REPO_KEY_SIZE];
+
+        if (hdr.salt_len > sizeof(salt)) return AMISNAP_ERR_TOO_LONG;
+        memcpy(salt, hdr.salt, hdr.salt_len);
+        memcpy(wrapped, hdr.wrapped_key, AMISNAP_WRAPPED_KEY_SIZE);
+
+        if (amisnap_read_passphrase("AmiSnap passphrase: ", passphrase, sizeof(passphrase)) != 0) {
+            return AMISNAP_ERR_IO;
+        }
+
+        amisnap_pbkdf2_hmac_sha256((const uint8_t *)passphrase, strlen(passphrase),
+                                    salt, hdr.salt_len, hdr.kdf_iters, k_wrap, sizeof(k_wrap));
+        memset(passphrase, 0, sizeof(passphrase));
+
+        rc = amisnap_repo_unwrap_key(k_wrap, wrapped, repo_key);
+        memset(k_wrap, 0, sizeof(k_wrap));
+        memset(wrapped, 0, sizeof(wrapped));
+        if (rc != AMISNAP_OK) {
+            memset(repo_key, 0, sizeof(repo_key));
+            return rc; /* wrong passphrase (AMISNAP_ERR_HASH_MISMATCH) or a corrupt header */
+        }
+
+        amisnap_repo_derive_subkeys(repo_key, &out->sk);
+        memset(repo_key, 0, sizeof(repo_key));
+        out->have = 1;
+    }
+    return AMISNAP_OK;
+}
+
+/* Fetches the raw manifest file for `snapid` and decrypts it (if
+ * CIPHER 1) in one call -- for the call sites that feed manifest bytes
+ * straight to amisnap_manifest_decode()/amisnap_index_build() rather
+ * than through repo.h's already-encryption-aware verify/restore entry
+ * points. Caller frees *plaintext_out. */
+static int fetch_and_open_manifest(amisnap_backend *be, const repo_key_ctx *rk,
+                                    const char *snapid, amisnap_buf *plaintext_out)
+{
+    amisnap_buf raw;
+    int rc = fetch_manifest(be, snapid, &raw);
+    if (rc != AMISNAP_OK) return rc;
+    rc = amisnap_repo_open_manifest(rk->have ? &rk->sk : NULL, snapid, raw.data, raw.len, plaintext_out);
+    amisnap_buf_free(&raw);
+    return rc;
 }
 
 /* --- snapshot ----------------------------------------------------------- */
@@ -568,6 +660,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     char snapid[17];
     amisnap_index prev_index;
     int have_prev_index = 0;
+    repo_key_ctx rk;
     int rc;
 
     if (!source || !repo) {
@@ -578,6 +671,13 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        return RETURN_FAIL;
+    }
+
+    rc = open_repo_key(&be, &rk);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", repo, rc);
+        amisnap_backend_close(&be);
         return RETURN_FAIL;
     }
 
@@ -606,7 +706,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
         return RETURN_FAIL;
     }
 
-    amisnap_repo_writer_init(&rw, &be, NULL);
+    amisnap_repo_writer_init(&rw, &be, rk.have ? &rk.sk : NULL);
 
     DateStamp(&now);
     memset(&snap, 0, sizeof(snap));
@@ -658,7 +758,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
         int prc = resolve_snapid(&be, NULL, prev_snapid);
         if (prc == AMISNAP_OK) {
             amisnap_buf prev_mf;
-            prc = fetch_manifest(&be, prev_snapid, &prev_mf);
+            prc = fetch_and_open_manifest(&be, &rk, prev_snapid, &prev_mf);
             if (prc == AMISNAP_OK) {
                 prc = amisnap_index_build(prev_mf.data, prev_mf.len, &prev_index);
                 amisnap_buf_free(&prev_mf);
@@ -744,6 +844,7 @@ static LONG cmd_list(const char *repo)
 {
     amisnap_backend be;
     snapshot_list list;
+    repo_key_ctx rk;
     int rc, i;
 
     if (!repo) {
@@ -754,6 +855,13 @@ static LONG cmd_list(const char *repo)
     rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        return RETURN_FAIL;
+    }
+
+    rc = open_repo_key(&be, &rk);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", repo, rc);
+        amisnap_backend_close(&be);
         return RETURN_FAIL;
     }
 
@@ -772,7 +880,7 @@ static LONG cmd_list(const char *repo)
         list_summary_ctx ctx;
         amisnap_manifest_visitor v;
 
-        rc = fetch_manifest(&be, list.ids[i], &mf);
+        rc = fetch_and_open_manifest(&be, &rk, list.ids[i], &mf);
         if (rc != AMISNAP_OK) {
             amilog("%s  (manifest unreadable, error %d)\n", list.ids[i], rc);
             continue;
@@ -809,6 +917,7 @@ static LONG cmd_verify(const char *repo, const char *snapid_arg, int full)
     char snapid[17];
     amisnap_buf mf;
     amisnap_verify_result result;
+    repo_key_ctx rk;
     int rc;
 
     if (!repo) {
@@ -819,6 +928,13 @@ static LONG cmd_verify(const char *repo, const char *snapid_arg, int full)
     rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        return RETURN_FAIL;
+    }
+
+    rc = open_repo_key(&be, &rk);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", repo, rc);
+        amisnap_backend_close(&be);
         return RETURN_FAIL;
     }
 
@@ -836,7 +952,7 @@ static LONG cmd_verify(const char *repo, const char *snapid_arg, int full)
         return RETURN_FAIL;
     }
 
-    rc = amisnap_verify_manifest(&be, NULL, NULL, mf.data, mf.len, full, &result);
+    rc = amisnap_verify_manifest(&be, rk.have ? &rk.sk : NULL, snapid, mf.data, mf.len, full, &result);
     amisnap_buf_free(&mf);
     amisnap_backend_close(&be);
     if (rc != AMISNAP_OK) {
@@ -976,6 +1092,7 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
     amisnap_restore_options opts;
     amisnap_restore_result result;
     amisnap_restore_meta_ctx meta_ctx;
+    repo_key_ctx rk;
     int rc;
 
     if (!repo || !dest) {
@@ -992,6 +1109,14 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot open destination \"%s\" (error %d)\n", dest, rc);
         amisnap_backend_close(&repo_be);
+        return RETURN_FAIL;
+    }
+
+    rc = open_repo_key(&repo_be, &rk);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", repo, rc);
+        amisnap_backend_close(&repo_be);
+        amisnap_backend_close(&dest_be);
         return RETURN_FAIL;
     }
 
@@ -1022,7 +1147,8 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
     opts.on_entry_restored = amisnap_restore_meta_on_entry;
     opts.user = &meta_ctx;
 
-    rc = amisnap_restore_manifest(&repo_be, &dest_be, NULL, NULL, mf.data, mf.len, &opts, &result);
+    rc = amisnap_restore_manifest(&repo_be, &dest_be, rk.have ? &rk.sk : NULL, snapid,
+                                   mf.data, mf.len, &opts, &result);
     amisnap_buf_free(&mf);
     amisnap_backend_close(&repo_be);
     amisnap_backend_close(&dest_be);
@@ -1056,6 +1182,172 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
     return RETURN_OK;
 }
 
+/* --- init ------------------------------------------------------------- */
+
+/* INIT REPO=<path> PASSPHRASE: creates amisnap.repo with a fresh,
+ * randomly-generated repository key, wrapped under the given
+ * passphrase (docs/format.md "Encryption (CIPHER 1)"). A plain
+ * (CIPHER 0) repository has never needed this step -- repo.c's writer
+ * creates snapshots/objects the first time it's used, no header
+ * required -- so INIT only exists for the encrypted case; there is
+ * nothing else useful for it to do. Refuses to run against a
+ * repository that already has an amisnap.repo, encrypted or not --
+ * this is a one-time setup step, not an idempotent one (re-running it
+ * would either silently keep the old key under a new passphrase's
+ * wrapping, which is fine, or generate a brand new key that makes
+ * every already-written object/manifest permanently unreadable, which
+ * is not -- refusing outright avoids the caller ever needing to know
+ * which case they're in). */
+#define AMISNAP_INIT_PBKDF2_CALIBRATION_ITERS 20000u
+#define AMISNAP_INIT_PBKDF2_TARGET_MS 1500u
+#define AMISNAP_INIT_PBKDF2_FALLBACK_ITERS 200000u
+#define AMISNAP_INIT_SALT_LEN 16u
+
+static LONG cmd_init(const char *repo, int want_passphrase)
+{
+    amisnap_backend be;
+    amisnap_repo_header hdr;
+    amisnap_buf hdr_bytes;
+    int rc;
+
+    if (!repo) {
+        amilog_err("AmiSnap: INIT needs REPO=<path>\n");
+        return RETURN_ERROR;
+    }
+    if (!want_passphrase) {
+        amilog_err("AmiSnap: INIT only does something useful with PASSPHRASE -- "
+                   "a plain repository needs no init step at all, just SNAPSHOT "
+                   "straight to REPO=\"%s\"\n", repo);
+        return RETURN_ERROR;
+    }
+
+    rc = open_backend(repo, &be);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        return RETURN_FAIL;
+    }
+
+    rc = amisnap_backend_exists(&be, AMISNAP_REPO_HEADER_KEY);
+    if (rc != 0) {
+        if (rc > 0)
+            amilog_err("AmiSnap: \"%s\" is already initialized (amisnap.repo exists)\n", repo);
+        else
+            amilog_err("AmiSnap: cannot check for an existing amisnap.repo (error %d)\n", rc);
+        amisnap_backend_close(&be);
+        return RETURN_FAIL;
+    }
+
+    {
+        char pass1[256], pass2[256];
+        uint8_t repo_key[AMISNAP_REPO_KEY_SIZE];
+        uint8_t salt[AMISNAP_INIT_SALT_LEN];
+        uint8_t wrap_nonce[AMISNAP_REPO_NONCE_SIZE];
+        uint8_t k_wrap[32];
+        uint8_t wrapped[AMISNAP_WRAPPED_KEY_SIZE];
+        uint32_t iters;
+        uint32_t t0, elapsed;
+
+        if (amisnap_read_passphrase("New passphrase: ", pass1, sizeof(pass1)) != 0 ||
+            pass1[0] == '\0') {
+            amilog_err("AmiSnap: no passphrase entered (need an interactive console)\n");
+            amisnap_backend_close(&be);
+            return RETURN_ERROR;
+        }
+        if (amisnap_read_passphrase("Confirm passphrase: ", pass2, sizeof(pass2)) != 0 ||
+            strcmp(pass1, pass2) != 0) {
+            amilog_err("AmiSnap: passphrases did not match\n");
+            memset(pass1, 0, sizeof(pass1));
+            memset(pass2, 0, sizeof(pass2));
+            amisnap_backend_close(&be);
+            return RETURN_ERROR;
+        }
+        memset(pass2, 0, sizeof(pass2));
+
+        if (amisnap_random(repo_key, sizeof(repo_key)) != 0 ||
+            amisnap_random(salt, sizeof(salt)) != 0 ||
+            amisnap_random(wrap_nonce, sizeof(wrap_nonce)) != 0) {
+            amilog_err("AmiSnap: could not gather entropy for the repository key\n");
+            memset(pass1, 0, sizeof(pass1));
+            amisnap_backend_close(&be);
+            return RETURN_FAIL;
+        }
+
+        /* Calibrate PBKDF2 iterations: time a fixed-size run against
+         * this machine's real speed, then scale to land near a
+         * TARGET_MS wall-clock cost -- implementation-plan.md Phase 4
+         * item 3, same pattern AmiAuth's own vault KDF calibration
+         * uses. amisnap_millis() returning 0 (no timer available)
+         * falls back to a fixed, conservative iteration count rather
+         * than under-costing the KDF or looping to calibrate against
+         * nothing. */
+        t0 = amisnap_millis();
+        {
+            uint8_t scratch[32];
+            amisnap_pbkdf2_hmac_sha256((const uint8_t *)pass1, strlen(pass1), salt, sizeof(salt),
+                                        AMISNAP_INIT_PBKDF2_CALIBRATION_ITERS, scratch, sizeof(scratch));
+            memset(scratch, 0, sizeof(scratch));
+        }
+        elapsed = amisnap_millis() - t0; /* unsigned: safe even across an EClock wrap mid-calibration */
+
+        if (t0 == 0 || elapsed == 0) {
+            iters = AMISNAP_INIT_PBKDF2_FALLBACK_ITERS;
+        } else {
+            uint64_t scaled = (uint64_t)AMISNAP_INIT_PBKDF2_CALIBRATION_ITERS
+                             * (uint64_t)AMISNAP_INIT_PBKDF2_TARGET_MS / (uint64_t)elapsed;
+            if (scaled < 1) scaled = 1;
+            if (scaled > 0xFFFFFFFFu) scaled = 0xFFFFFFFFu;
+            iters = (uint32_t)scaled;
+        }
+
+        amisnap_pbkdf2_hmac_sha256((const uint8_t *)pass1, strlen(pass1), salt, sizeof(salt),
+                                    iters, k_wrap, sizeof(k_wrap));
+        memset(pass1, 0, sizeof(pass1));
+
+        amisnap_repo_wrap_key(k_wrap, wrap_nonce, repo_key, wrapped);
+        memset(k_wrap, 0, sizeof(k_wrap));
+        memset(repo_key, 0, sizeof(repo_key));
+
+        memset(&hdr, 0, sizeof(hdr));
+        if (amisnap_random(hdr.repo_id, AMISNAP_REPO_ID_SIZE) != 0) {
+            amilog_err("AmiSnap: could not gather entropy for REPO_ID\n");
+            memset(wrapped, 0, sizeof(wrapped));
+            amisnap_backend_close(&be);
+            return RETURN_FAIL;
+        }
+        hdr.cipher = 1;
+        hdr.has_chunk_size = 1;
+        hdr.chunk_size = AMISNAP_DEFAULT_CHUNK_SIZE;
+        hdr.kdf_id = AMISNAP_KDF_PBKDF2_HMAC_SHA256;
+        hdr.kdf_iters = iters;
+        hdr.salt = salt;
+        hdr.salt_len = sizeof(salt);
+        hdr.wrapped_key = wrapped;
+        hdr.has_format_app = 1;
+        hdr.format_app = (const uint8_t *)"AmiSnap";
+        hdr.format_app_len = 7;
+
+        rc = amisnap_repo_header_encode(&hdr, &hdr_bytes);
+        memset(wrapped, 0, sizeof(wrapped));
+        if (rc != AMISNAP_OK) {
+            amilog_err("AmiSnap: could not encode the repository header (error %d)\n", rc);
+            amisnap_backend_close(&be);
+            return RETURN_FAIL;
+        }
+
+        rc = amisnap_backend_put(&be, AMISNAP_REPO_HEADER_KEY, hdr_bytes.data, hdr_bytes.len);
+        amisnap_buf_free(&hdr_bytes);
+        amisnap_backend_close(&be);
+        if (rc != AMISNAP_OK) {
+            amilog_err("AmiSnap: could not write amisnap.repo (error %d)\n", rc);
+            return RETURN_FAIL;
+        }
+
+        amilog("AmiSnap: initialized encrypted repository \"%s\" (%lu PBKDF2 iterations)\n",
+               repo, (unsigned long)iters);
+        return RETURN_OK;
+    }
+}
+
 /* --- dispatch --------------------------------------------------------- */
 
 static int str_ieq(const char *a, const char *b)
@@ -1069,9 +1361,9 @@ static int str_ieq(const char *a, const char *b)
     return *a == '\0' && *b == '\0';
 }
 
-#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S"
+#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S"
 enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_LOG,
-       ARG_KEEP_LAST, ARG_PARANOID, ARG_COUNT };
+       ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_COUNT };
 
 static int real_main(void *arg)
 {
@@ -1133,9 +1425,11 @@ static int real_main(void *arg)
                         (const LONG *)args[ARG_KEEP_LAST]);
     } else if (str_ieq(action, "APPLYUAEM")) {
         rc = cmd_applyuaem((const char *)args[ARG_SOURCE]);
+    } else if (str_ieq(action, "INIT")) {
+        rc = cmd_init((const char *)args[ARG_REPO], args[ARG_PASSPHRASE] != 0);
     } else {
         amilog_err("AmiSnap: unknown ACTION \"%s\" -- expected SNAPSHOT, RESTORE, LIST, VERIFY, "
-                       "PRUNE, or APPLYUAEM\n",
+                       "PRUNE, APPLYUAEM, or INIT\n",
                    action ? action : "");
         rc = RETURN_ERROR;
     }
@@ -1144,6 +1438,13 @@ static int real_main(void *arg)
         amisnap_socket_lib_close();
         g_socket_lib_open = 0;
     }
+    /* Closes the shared timer.device port opened by amisnap_random()/
+     * amisnap_read_passphrase()/amisnap_millis() (entropy.h's own
+     * documented contract: "the CLI front-end must call this on exit").
+     * A run that never touched an encrypted repository never opened
+     * it, and this is safe to call regardless (entropy.h: "safe to
+     * call when nothing was ever opened"). */
+    amisnap_entropy_cleanup();
     if (g_log) {
         fclose(g_log);
         g_log = NULL;

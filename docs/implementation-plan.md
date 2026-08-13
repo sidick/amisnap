@@ -1922,10 +1922,34 @@ derivation, nonce discipline, and the WRAPPED_KEY layout precisely).
    `src/core/repo_header.c` (amisnap.repo / REC_REPO TLV read/write,
    `repo.h`'s previously-out-of-scope repository-level state --
    round-trip and validation tests only so far, not yet wired into
-   `amisnap_repo_writer_finish()` or any reader). Still open: the
-   `init --passphrase` CLI command itself (real entropy via
-   `amisnap_random()`/PBKDF2 calibration via `amisnap_millis()`, both
-   m68k-only so untestable on host) and re-key.
+   `amisnap_repo_writer_finish()` or any reader).
+   **`INIT REPO=<path> PASSPHRASE` CLI command done (2026-08-13)**
+   (`src/cli/main.c`'s `cmd_init()`): prompts twice for a passphrase
+   (`amisnap_read_passphrase()`, RAW no-echo), generates the repository
+   key/salt/WRAPPED_KEY nonce via `amisnap_random()`, calibrates PBKDF2
+   iterations with a short timing probe against `amisnap_millis()`
+   (target 1.5s, falling back to a fixed conservative iteration count
+   if no timer is available), wraps the key, and writes
+   `CIPHER`/`KDF`/`WRAPPED_KEY` into a fresh `amisnap.repo`. Refuses to
+   run against a repository that already has one (a one-time setup
+   step, not idempotent -- see `cmd_init()`'s own comment on why
+   re-running it against an existing header is unsafe to allow blindly
+   rather than merely unimplemented). Every other command
+   (`SNAPSHOT`/`LIST`/`VERIFY`/`RESTORE`) now calls a shared
+   `open_repo_key()` right after `open_backend()`: no `amisnap.repo` at
+   all still means CIPHER 0 (unchanged, still the default -- `init` was
+   never required for a plain repository and still isn't), `CIPHER=0`
+   in the header is a no-op, `CIPHER=1` prompts for the passphrase and
+   unwraps the key, failing closed (a real error, not silent plaintext
+   fallback) on a wrong passphrase or corrupt header. Cross-build-
+   verified (`make m68k-docker`: compiles and links clean; `vamos`:
+   confirmed `ACTION=INIT`'s argument validation and the
+   PASSPHRASE-required refusal message both work under emulation --
+   the real entropy-gathering/passphrase-prompt path itself needs a
+   real console and RTC, so it's on-target-only like the rest of
+   `random.c`, per item 2 above). **Re-key (new passphrase, same
+   repository key) is NOT implemented** -- `cmd_init()` only handles
+   first-time setup.
 4. Wire `K`/`K_enc`/`K_mac` through `repo.c`'s object writer/reader and
    `manifest.c`'s manifest writer/reader for the nonce/ciphertext/mac
    framing docs/format.md specifies. `tools/amisnap_reader.py` (the
@@ -1957,14 +1981,30 @@ derivation, nonce discipline, and the WRAPPED_KEY layout precisely).
    repository-header wiring (item 3's `init --passphrase`) and CLI
    passphrase handling (item 5), are what's left before an encrypted
    repository is usable end-to-end from the actual CLI.
-5. CLI: passphrase prompt (`amiga_read_passphrase()`) or key-file
-   option for every command that opens an encrypted repository; a
-   wrong passphrase must fail closed with a clear message (MAC check
-   on `WRAPPED_KEY`), never silently produce garbage plaintext.
+5. CLI: passphrase prompt (`amiga_read_passphrase()`) for every
+   command that opens an encrypted repository; a wrong passphrase must
+   fail closed with a clear message (MAC check on `WRAPPED_KEY`),
+   never silently produce garbage plaintext. **Done (2026-08-13)** as
+   part of item 3's `cmd_init()`/`open_repo_key()` work above -- no
+   separate key-file option ended up needed (the original one-line
+   Phase 4 blurb's "key file with optional passphrase wrap" is exactly
+   what `WRAPPED_KEY` inside `amisnap.repo` already *is*, once
+   format.md's design was worked out in full -- there was never a
+   second on-disk key file to design). `PRUNE` is a known, deliberate
+   gap: it still decodes manifests directly (`prune.c`'s own
+   mark-and-sweep pass, unlike list/verify/restore) without a
+   subkeys/snapid parameter, so it fails closed with a decode error
+   against a CIPHER=1 repository rather than corrupting anything --
+   safe, but not yet wired.
 6. End-to-end test: snapshot/restore/verify cycle against a CIPHER=1
-   repository (host `backend_dir`), plus the cross-check above. On
-   real hardware, confirm `init --passphrase`'s calibration lands in
-   the target range on at least one real (non-emulated) CPU speed.
+   repository (host `backend_dir`), plus the cross-check above.
+   **Core-level round-trip done (2026-08-13)**:
+   `tests/test_repo_encrypted.c` (see item 4). **Still open**: a
+   `tools/amisnap_reader.py` update (it still refuses any CIPHER != 0
+   repository outright, so `cross-check` doesn't yet exercise CIPHER=1
+   at all) and, on real hardware, confirming `cmd_init()`'s PBKDF2
+   calibration lands in the target range on at least one real
+   (non-emulated) CPU speed.
 
 **Phase 5 — S3.** SigV4 with `UNSIGNED-PAYLOAD`, large objects, tested
 against MinIO in CI and B2 manually.
