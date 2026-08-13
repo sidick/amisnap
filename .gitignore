@@ -1,6 +1,10 @@
 # Build output
 /build/
 
+# Locally-cached AmiSSL SDK (scripts/fetch-amissl-sdk.sh) -- pinned
+# outside $(BUILD) so it survives `make clean`, but never committed.
+/.amissl-cache/
+
 # Object files
 *.o
 

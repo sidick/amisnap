@@ -247,8 +247,43 @@ $(BUILD)/run-tests: $(CORE_SRCS) $(TEST_SRCS) $(CORE_HDRS) $(TEST_HDRS) | $(BUIL
 	$(CC) $(CFLAGS) $(CORE_INC) -Itests $(CORE_SRCS) $(TEST_SRCS) -o $@
 
 # --- m68k: Amiga CLI binary (amiga-gcc on PATH) ---
+#
+# src/amiga/tls.c (Phase 3 item 4) needs AmiSSL's own headers to
+# compile against -- amisslmaster.library itself stays a soft,
+# runtime-only dependency (proposal.md's "the tool has no hard AmiSSL
+# dependency"), but the C code that calls its API still needs real
+# declarations to compile, the same way any library's headers are a
+# build-time need distinct from the library itself being installed at
+# runtime. scripts/fetch-amissl-sdk.sh is the same pinned/hashed,
+# locally-cached fetch tests/copperline/'s own AmiSSL work already
+# uses -- idempotent, so this costs nothing beyond the first real
+# build on a given machine/CI cache. libamisslstubs.a resolves the
+# link-time symbols for AmiSSL's own out-of-line call stubs (unlike
+# bsdsocket.library's plain inline-asm LVO stubs, AmiSSL's varargs-tag
+# API needs real stub functions) -- this is still link-time-only
+# resolution against a jump table populated at runtime by
+# OpenAmiSSLTags(), not a hard runtime dependency either.
+# Cache dir pinned inside the repo checkout (git-ignored, survives
+# `make clean` since that only wipes $(BUILD)), NOT the fetch script's
+# own $HOME-based default -- a docker cross-build run with
+# --user "$(id -u):$(id -g)" (this project's own standard invocation,
+# used to avoid root-owned output) has no sane $HOME for that numeric
+# UID, which silently broke this the first time it was wired in: the
+# fetch script produced an empty path, `-I` got no argument, and the
+# real error only surfaced three lines later as a confusing "header not
+# found". Pinning the cache dir sidesteps that class of problem
+# entirely rather than special-casing docker.
+AMISSL_CACHE_DIR ?= $(CURDIR)/.amissl-cache
+
 m68k: | $(BUILD)/.dir
-	$(M68K_CC) $(M68K_CFLAGS) $(CORE_SRCS) $(AMIGA_SRCS) $(CLI_SRCS) \
+	@sdk_dev=$$(AMISSL_CACHE_DIR="$(AMISSL_CACHE_DIR)" sh scripts/fetch-amissl-sdk.sh | sed -n '1p'); \
+	if [ -z "$$sdk_dev" ]; then \
+		echo "m68k: scripts/fetch-amissl-sdk.sh did not produce an SDK path -- see its own output above" >&2; \
+		exit 1; \
+	fi; \
+	echo "$(M68K_CC) $(M68K_CFLAGS) -I$$sdk_dev/include $(CORE_SRCS) $(AMIGA_SRCS) $(CLI_SRCS) -L$$sdk_dev/lib/AmigaOS3 -lamisslstubs -o $(BUILD)/AmiSnap"; \
+	$(M68K_CC) $(M68K_CFLAGS) -I"$$sdk_dev/include" $(CORE_SRCS) $(AMIGA_SRCS) $(CLI_SRCS) \
+		-L"$$sdk_dev/lib/AmigaOS3" -lamisslstubs \
 		-o $(BUILD)/AmiSnap
 
 m68k-docker:

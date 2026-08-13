@@ -47,6 +47,7 @@
 #include "scan.h"
 #include "socket.h"
 #include "stackswap.h"
+#include "tls.h"
 #include "webdav.h"
 #include "xxhash32.h"
 
@@ -103,13 +104,16 @@ static void amilog_err(const char *fmt, ...)
  * stack to be installed at all. --------------------------------------- */
 
 static int g_socket_lib_open = 0;
+static int g_tls_lib_open = 0;
 static amisnap_transport g_bsdsocket_transport;
+static amisnap_transport g_tls_transport;
 
 static int open_backend(const char *path, amisnap_backend *out)
 {
     if (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0) {
         amisnap_webdav_url url;
         amisnap_webdav_config cfg;
+        amisnap_transport *transport;
         int rc;
 
         rc = amisnap_webdav_parse_url(path, &url);
@@ -117,17 +121,11 @@ static int open_backend(const char *path, amisnap_backend *out)
             amilog_err("AmiSnap: malformed WebDAV URL \"%s\"\n", path);
             return rc;
         }
-        if (url.tls) {
-            /* proposal.md's per-destination TLS opt-in: an absent/
-             * unimplemented TLS layer must fail clearly, never fall
-             * back to plaintext silently (implementation-plan.md Phase
-             * 4 is what will make https:// real). */
-            amilog_err("AmiSnap: \"%s\" needs TLS (https://), not implemented yet "
-                       "(see implementation-plan.md Phase 4) -- use an http:// "
-                       "destination instead\n", path);
-            return AMISNAP_ERR_IO;
-        }
 
+        /* TLS always rides on top of a real bsdsocket connection
+         * (tls.c's own amisnap_tls_lib_open() shares bsdsocket.
+         * library's SocketBase with AmiSSL via the AmiSSL_SocketBase
+         * tag) -- open that first regardless of scheme. */
         if (!g_socket_lib_open) {
             rc = amisnap_socket_lib_open();
             if (rc != AMISNAP_OK) {
@@ -138,6 +136,28 @@ static int open_backend(const char *path, amisnap_backend *out)
             g_bsdsocket_transport.ops = &amisnap_bsdsocket_transport_ops;
             g_bsdsocket_transport.ctx = NULL;
             g_socket_lib_open = 1;
+        }
+
+        if (url.tls) {
+            /* proposal.md's per-destination TLS opt-in: an absent
+             * AmiSSL install, or a cert-store/verification setup that
+             * can't be established, must fail clearly -- never fall
+             * back to plaintext silently. */
+            if (!g_tls_lib_open) {
+                rc = amisnap_tls_lib_open();
+                if (rc != AMISNAP_OK) {
+                    amilog_err("AmiSnap: AmiSSL not available or its certificate "
+                               "store (\"AmiSSL:Certs\") could not be loaded -- "
+                               "\"%s\" needs a working AmiSSL install\n", path);
+                    return rc;
+                }
+                g_tls_transport.ops = &amisnap_tls_transport_ops;
+                g_tls_transport.ctx = NULL;
+                g_tls_lib_open = 1;
+            }
+            transport = &g_tls_transport;
+        } else {
+            transport = &g_bsdsocket_transport;
         }
 
         memset(&cfg, 0, sizeof(cfg));
@@ -152,7 +172,7 @@ static int open_backend(const char *path, amisnap_backend *out)
          * url synchronously before returning (webdav.c's own dup_str()
          * calls) -- url/cfg going out of scope right after this call is
          * safe, same as backend_dir_open()'s own `root` parameter. */
-        return amisnap_backend_webdav_open(&cfg, &g_bsdsocket_transport, out);
+        return amisnap_backend_webdav_open(&cfg, transport, out);
     }
 
     return amisnap_backend_dir_open(path, out);
@@ -1126,6 +1146,13 @@ static int real_main(void *arg)
         rc = RETURN_ERROR;
     }
 
+    /* TLS teardown first -- it depends on bsdsocket.library staying
+     * open while it cleans up (AmiSSL_SocketBase was handed to it at
+     * open time). */
+    if (g_tls_lib_open) {
+        amisnap_tls_lib_close();
+        g_tls_lib_open = 0;
+    }
     if (g_socket_lib_open) {
         amisnap_socket_lib_close();
         g_socket_lib_open = 0;

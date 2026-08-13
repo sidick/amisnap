@@ -406,7 +406,10 @@ src/amiga/          m68k build only
                       host, confirmed via sibling amirfb), just not
                       wired into a harness until item 3 needs it
                       (see Phase 3 item 2)                    [done]
-  tls.c               soft-loaded AmiSSL, per-destination  [phase 3]
+  tls.c               soft-loaded AmiSSL, real cert+hostname
+                      verification -- cross-build-verified against the
+                      real SDK, on-target execution still open, see
+                      Phase 3 item 4                              [done]
 
 src/cli/            AmiSnap front-end: one ReadArgs template
                     ("ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,
@@ -1589,7 +1592,79 @@ protocol code against a local WebDAV container.
    this bisection slower than it needed to be the first time through.
 4. `src/amiga/tls.c` -- soft-loaded AmiSSL, per-destination `TLS=YES`
    (absent library + TLS requested = clear failure, never a silent
-   plaintext fallback). Not started.
+   plaintext fallback). **Core implementation, CLI wiring, and
+   cross-build verification done (2026-08-13); real on-target
+   execution not done yet.**
+
+   `src/amiga/tls.c`/`tls.h`: a real `amisnap_transport_ops`
+   implementation (same interface `src/amiga/socket.c`'s bsdsocket
+   transport already implements) that opens a plain TCP connection via
+   `amisnap_socket_connect()` and wraps it in a real TLS session via
+   AmiSSL v5's `OpenAmiSSLTagList()` soft-load. Every AmiSSL/OpenSSL
+   call signature was verified against the real AmiSSL 5.27 SDK
+   (`scripts/fetch-amissl-sdk.sh`, same pinned/hashed release sibling
+   AmiAuth already validated for its own dev-only PBKDF2-vs-AmiSSL
+   benchmark, `tests/copperline/amisslbench.c` -- the soft-load
+   sequence itself (`OpenLibrary("amisslmaster.library", 5)` then
+   `OpenAmiSSLTags` with `AmiSSL_UsesOpenSSLStructs=FALSE` and an
+   `AmiSSLBase`/`AmiSSLExtBase` pair) mirrors that proven pattern
+   rather than being re-derived from scratch. `webdav.c` itself needed
+   zero changes -- it was already built against `transport.h`'s
+   abstract interface for exactly this reason (Phase 3 item 3's own
+   design note).
+
+   Real, not placeholder, certificate verification: `SSL_VERIFY_PEER` +
+   `SSL_CTX_load_verify_locations` against `"AmiSSL:Certs"` (the
+   standard OpenSSL `c_rehash`-format hashed CA directory AmiSSL's own
+   installer sets up), plus per-connection hostname verification via
+   `SSL_set1_host()` (chain trust alone is not enough -- confirmed this
+   is a distinct check, not implied by chain verification, before
+   relying on it). Fails closed if the cert store can't be loaded at
+   `amisnap_tls_lib_open()` time, rather than silently connecting with
+   no way to check who's on the other end -- "trust is everything".
+
+   **A real build-system question this surfaced, not just an
+   implementation detail**: `tls.c` needs AmiSSL's own headers to
+   *compile* even though `amisslmaster.library` itself stays a
+   soft, runtime-only dependency (proposal.md's own framing) -- a
+   library's headers being a build-time need is a separate concern
+   from the library being installed on the machine that later runs the
+   binary, but `make m68k` had no path to those headers at all before
+   this. Asked directly rather than assumed: fetch the real AmiSSL SDK
+   automatically as part of `make m68k` (reusing
+   `scripts/fetch-amissl-sdk.sh`'s already-pinned/hashed download, the
+   same one `tests/copperline/`'s own future AmiSSL work will need) was
+   the chosen approach over vendoring a header subset or making TLS
+   support an opt-in build flag. `AMISSL_CACHE_DIR` is pinned to
+   `.amissl-cache/` inside the repo checkout (git-ignored, survives
+   `make clean`), not the fetch script's own `$HOME`-based default --
+   found live that this project's own standard
+   `docker run --user "$(id -u):$(id -g)"` cross-build invocation has
+   no sane `$HOME` for that numeric UID, which silently produced an
+   empty SDK path and a confusing "header not found" three lines later
+   before this fix.
+
+   `SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL)` trips semgrep's
+   `openssl-disabled-cert-validation` rule on sight (it flags the
+   `NULL` third argument without distinguishing the verify-callback
+   parameter, which is genuinely optional and correctly `NULL` here,
+   from the verify*mode*, which is `SSL_VERIFY_PEER` -- real
+   verification, not `SSL_VERIFY_NONE`) -- a documented, reasoned
+   `nosemgrep` suppression, not a silenced real finding.
+
+   Cross-build-verified for real: compiles and links clean against the
+   actual AmiSSL 5.27 SDK headers and `libamisslstubs.a`, and the full
+   `make m68k` build (now automatically fetching the SDK) produces a
+   working binary. **Genuine on-target execution is the one remaining
+   gap**: unlike `socket.c`'s own bsdsocket path (now Copperline-
+   verified, Phase 3 item 3), AmiSSL needs a boot volume with AmiSSL
+   actually *installed* (the `AmiSSL:` assign + `LIBS:AmiSSL/` setup
+   its own installer performs) to even initialize -- AmiAuth's own
+   `amissl-bench.sh` documents that `OpenAmiSSLTags()` reliably crashes
+   ramlib on a from-scratch minimal boot lacking that assign, the same
+   kind of minimal HOSTFS boot this project's own Copperline harness
+   otherwise uses throughout. Not solved here; tracked as open, not
+   silently assumed working the way it would be to skip mentioning it.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below
