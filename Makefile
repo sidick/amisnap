@@ -73,7 +73,7 @@ all: test
 # own build steps rather than assuming a prior job ran.
 build: m68k
 
-test-host: test stackswap-vamos-test cross-check
+test-host: test stackswap-vamos-test cross-check webdav-check
 
 # --- stackswap-vamos-test: Phase 1 item 7's vamos regression test ---------
 # Confirms amisnap_stackswap_run() genuinely swaps to a new stack -- see
@@ -110,6 +110,19 @@ $(CROSS_GEN_BIN): $(CROSS_GEN_SRC) src/core/backend_dir.c src/core/repo.c src/co
 
 cross-check: $(CROSS_GEN_BIN)
 	sh tests/cross/run.sh
+
+# --- webdav-check: Phase 3 item 5's own host-CI check ----------------------
+# "Host CI runs the protocol code against a local WebDAV container"
+# (implementation-plan.md Phase 3 blurb) -- tests/webdav/run.sh builds
+# the portable webdav.c/http.c against a real POSIX transport
+# (tests/webdav/posix_transport.c, host-only -- never part of CORE_SRCS,
+# see that file's own header for why) and drives it against
+# mini_webdav_server.py, a minimal stdlib-only, INDEPENDENT WebDAV
+# server implementation -- deliberately not the in-memory mock
+# tests/test_webdav.c already covers, since a self-consistent mock can
+# never catch a real interop bug the way a separate implementation can.
+webdav-check:
+	sh tests/webdav/run.sh
 
 # --- copperline-fixtures: test-only stage/readback helpers (Phase 1 item 8) -
 # Never shipped -- same convention as AmiPilot's own fixtures/. Kept out of

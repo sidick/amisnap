@@ -1540,13 +1540,63 @@ protocol code against a local WebDAV container.
    (absent library + TLS requested = clear failure, never a silent
    plaintext fallback). Not started.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
-   container -- needs a POSIX `amisnap_transport_ops` implementation
-   under `tests/` (not yet written; `src/core/` itself must stay free of
-   platform-specific transport code, since `CORE_SRCS` is a blanket
-   wildcard shared by both the host test build and the m68k cross-build,
-   and libnix `-noixemul` has no POSIX sockets at all -- confirmed the
-   hard way while designing `transport.h`, which is exactly why this
-   item needs its own separate, non-wildcarded home). Not started.
+   container. **Done (2026-08-13)**, though "container" ended up meaning
+   a real local server *process*, not a Docker container -- see below
+   for why that's the more useful check, not a shortcut.
+
+   `tests/webdav/posix_transport.[ch]` -- a real POSIX-sockets
+   `amisnap_transport_ops` implementation, living under `tests/`, not
+   `src/core/` (`CORE_SRCS` is a blanket wildcard shared by both the
+   host test build and the m68k cross-build, and libnix `-noixemul` has
+   no POSIX sockets at all -- confirmed while designing `transport.h`
+   itself, which is exactly why this needed its own separate,
+   non-wildcarded home).
+
+   `tests/webdav/mini_webdav_server.py` -- a minimal, stdlib-only WebDAV
+   server (PUT/GET/DELETE/MKCOL/PROPFIND, both Content-Length and
+   chunked-Transfer-Encoding request bodies, decoded by hand since
+   `BaseHTTPRequestHandler` doesn't do this itself) backed by a real
+   directory. Deliberately a genuinely **independent** implementation,
+   not this project's own in-memory mock (`tests/test_webdav.c`) run a
+   second way -- a self-consistent mock can only ever confirm "my client
+   agrees with my own assumptions about the wire format", never catch a
+   real interop bug the way a separate implementation (a real server, a
+   real HTTP/1.1 parser, on a real TCP loopback connection) can. This is
+   *more* useful than pointing at an actual off-the-shelf WebDAV
+   container image would have been for exactly the same reason curl's
+   own successful chunked PUT against this same server (used mid-
+   debugging, see below) was reassuring: this server has zero shared
+   code or assumptions with AmiSnap's own.
+
+   `tests/webdav/live_test.c` + `run.sh` drive the same operations
+   `tests/test_webdav.c`'s mock-based tests already cover (put/get/
+   exists/list/mkcol/remove, the chunked streaming upload including
+   `put_abort`, 404-vs-real-error) against the real server instead,
+   wired into `make webdav-check` (and `test-host`, so CI runs it on
+   every push -- no Docker/container runtime needed, just `cc` and
+   `python3`, both already required elsewhere in this repo's own
+   tooling).
+
+   **A real, genuine bug this found that the mock never could**: the
+   very first run hung indefinitely on the first chunked upload.
+   Root-caused by capturing the exact bytes on the wire (a small
+   throwaway TCP-tee proxy, not guesswork) and confirming they were
+   byte-for-byte correct chunked framing -- ruling out the client before
+   suspecting the server. The bug was in `mini_webdav_server.py` itself:
+   it used a plain single-threaded `socketserver.TCPServer`, but
+   `webdav.c` legitimately holds one HTTP/1.1 keep-alive connection open
+   across several requests (`webdav_exchange()`'s own connection reuse)
+   while its streaming `put_begin`/`put_append`/`put_finish` trio opens
+   a *second, concurrent* connection for the chunked upload -- exactly
+   the real-world connection pattern a real multi-connection-capable
+   WebDAV server has to support, which a single-threaded test server
+   cannot: it was permanently blocked inside the first (still-open,
+   idle) connection's next-request read, unable to ever accept the
+   second. Fixed by switching to `socketserver.ThreadingMixIn`. A useful
+   confirmation of `webdav_exchange()`'s own real-world connection
+   pattern, not just a test-infra footnote -- it's exactly the kind of
+   concurrent-connection behavior a real WebDAV server (Apache mod_dav,
+   Nextcloud, ...) already has to handle as a matter of course.
 
 **Phase 4 — Encryption.** Vendor ChaCha20/PBKDF2/HMAC from AmiAuth
 v1.0; key file with optional passphrase wrap; BLAKE2s joins AmiAuth's
