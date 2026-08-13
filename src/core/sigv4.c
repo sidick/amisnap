@@ -162,6 +162,15 @@ int amisnap_sigv4_canonical_request(const char *method, const char *canonical_ur
     if (rc == AMISNAP_OK) rc = amisnap_buf_bytes(out, payload_hash_hex, strlen(payload_hash_hex));
 
     if (rc != AMISNAP_OK) { amisnap_buf_free(out); amisnap_buf_free(signed_headers_out); return rc; }
+
+    /* NUL-terminate signed_headers_out -- callers (amisnap_sigv4_
+     * authorization_header(), and any caller building the SignedHeaders=
+     * part of an Authorization header directly) use it as a C string,
+     * not via its own .len. */
+    rc = amisnap_buf_bytes(signed_headers_out, "", 1);
+    if (rc != AMISNAP_OK) { amisnap_buf_free(out); amisnap_buf_free(signed_headers_out); return rc; }
+    signed_headers_out->len--; /* the NUL is real storage, but not part of the string's own length */
+
     return AMISNAP_OK;
 }
 
@@ -242,5 +251,13 @@ int amisnap_sigv4_authorization_header(const char *access_key, const char *scope
     if (rc == AMISNAP_OK) rc = amisnap_buf_bytes(out, signature_hex, strlen(signature_hex));
 
     if (rc != AMISNAP_OK) { amisnap_buf_free(out); return rc; }
+
+    /* NUL-terminate -- this is used as a C string (an HTTP header
+     * value passed straight to amisnap_http_build_request()'s own
+     * "%s" formatting), not via its own .len. */
+    rc = amisnap_buf_bytes(out, "", 1);
+    if (rc != AMISNAP_OK) { amisnap_buf_free(out); return rc; }
+    out->len--;
+
     return AMISNAP_OK;
 }

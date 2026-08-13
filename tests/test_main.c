@@ -29,6 +29,7 @@ void run_repo_header_tests(void);
 void run_repo_encrypted_tests(void);
 void run_prune_encrypted_tests(void);
 void run_sigv4_tests(void);
+void run_s3_tests(void);
 
 int main(void)
 {
@@ -58,6 +59,7 @@ int main(void)
     run_repo_encrypted_tests();
     run_prune_encrypted_tests();
     run_sigv4_tests();
+    run_s3_tests();
 
     fprintf(stderr, "passed=%d failed=%d pending=%d\n",
             g_test.passed, g_test.failed, g_test.pending);

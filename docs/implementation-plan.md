@@ -2088,15 +2088,57 @@ needed).
    sign, *and* final signature all matched AWS's published values
    on the first run. `make test`: 798/798 (exact CI container);
    `make build` (m68k) clean.
-2. S3 protocol layer (`src/core/s3.c`) + backend
-   (`src/core/backend_s3.c`): PUT/GET/HEAD(`exists`)/DELETE plus
-   `ListObjectsV2` (a small XML response parser — no full XML library,
-   S3's response shape is simple and fixed) for `list()`, built on
-   `http.c` exactly like `webdav.c` is, differing only in headers
-   (SigV4 `Authorization` + `x-amz-date`/`x-amz-content-sha256`
-   instead of WebDAV's Basic auth/`Depth`) and body handling
-   (`UNSIGNED-PAYLOAD`, no XML request bodies needed for basic
-   object CRUD).
+2. S3 protocol layer + backend, built on `http.c` exactly like
+   `webdav.c` is, differing only in headers (SigV4 `Authorization` +
+   `x-amz-date`/`x-amz-content-sha256` instead of WebDAV's Basic
+   auth/`Depth`) and body handling (`UNSIGNED-PAYLOAD`, no XML request
+   bodies needed for basic object CRUD). **Done (2026-08-13)**: one
+   file, `src/core/s3.c` (+ `s3.h`) -- combining protocol and backend
+   the same way `webdav.c` itself does (transport.h's own header
+   comment already anticipated this exact split: "webdav.c, s3.c
+   protocol clients over a socket abstraction"), so the originally-
+   planned separate `backend_s3.c` never ended up needed.
+   PUT/GET/HEAD(`exists`)/DELETE, `mkcol` as the documented no-op, and
+   `ListObjectsV2` (a small hand-rolled XML scan, paginated via
+   `NextContinuationToken`, bounded at 100000 pages against a broken/
+   hostile server that never stops claiming `IsTruncated` -- same
+   defensive-bound reasoning `prune.c`'s own snapid-collision loop
+   uses) for `list()`. `remove()` does a `HEAD` before `DELETE` --
+   real S3's own `DELETE` is unconditionally "successful" (204
+   whether or not the key ever existed), which would otherwise
+   silently break `backend.h`'s documented `AMISNAP_ERR_NOT_FOUND`
+   contract that `prune.c` and other callers rely on for accurate
+   counts; a real, deliberate extra request, not an oversight.
+   `put_begin`/`append`/`finish`/`abort` buffer the whole chunk in
+   memory and issue one ordinary signed PUT at `finish` (unlike
+   WebDAV's real chunked-Transfer-Encoding stream) -- SigV4's
+   `UNSIGNED-PAYLOAD` still needs a definite `Content-Length`, and S3
+   doesn't accept arbitrary `Transfer-Encoding: chunked` request
+   bodies the way a generic WebDAV server does; real S3 multipart
+   upload is deliberately out of scope (item 4 below). SigV4 needs a
+   real wall-clock UTC timestamp per request (`amisnap_s3_now()`,
+   plain ISO C `time()`/`gmtime()` -- confirmed working under libnix
+   `-noixemul` on the real m68k cross-build, not just assumed), the
+   one non-deterministic seam in an otherwise fully portable,
+   host-testable module.
+
+   Tested against a mock `amisnap_transport` (`tests/test_s3.c`,
+   smaller than `test_webdav.c`'s own mock since S3 needs no chunked-
+   request decoding or MKCOL bootstrapping): PUT/GET/HEAD/DELETE
+   round-trip, streaming upload + abort, `ListObjectsV2` including a
+   real multi-page pagination scenario, and URL parsing. Building this
+   mock surfaced (and fixed) three real bugs the unit-level SigV4 tests
+   couldn't have caught, since they only exercise the signing math, not
+   full request assembly: `amisnap_sigv4_canonical_request()`'s
+   `signed_headers_out` and `amisnap_sigv4_authorization_header()`'s
+   own output were never NUL-terminated, so using them as C strings
+   (exactly what `amisnap_http_build_request()`'s own `%s` formatting
+   needs) read past the end of their buffers; and `s3_list()`'s
+   pagination loop could spin forever if a server's `NextContinuation
+   Token` extraction ever came back empty while `IsTruncated` stayed
+   true (now bounded, see above, independent of the specific bug that
+   first surfaced it in the mock). `make test`: 884/884 (exact CI
+   container). `make build` (m68k): clean.
 3. CLI wiring: `s3://` URL dispatch in `open_backend()`
    (`src/cli/main.c`), same pattern as the existing `http://`/`https://`
    dispatch — access key/secret/region/bucket parsed from the URL and
