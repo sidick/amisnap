@@ -2144,7 +2144,20 @@ needed).
    dispatch — access key/secret/region/bucket parsed from the URL and
    `S3_*`-style config, TLS following the same per-destination opt-in
    `tls.c` already provides (proposal: plaintext against a LAN MinIO,
-   `TLS=YES` required for public providers).
+   `TLS=YES` required for public providers). **Done (2026-08-13)**,
+   TLS aside: `s3://<access_key>:<secret_key>@host[:port]/<bucket>
+   [/prefix][?region=<region>]` dispatches to
+   `amisnap_backend_s3_open()`, lazily opening bsdsocket.library the
+   same way the WebDAV path already does (shared `g_bsdsocket_transport`/
+   `g_socket_lib_open` state — no TCP/IP stack requirement for a pure
+   directory-backend backup). There is no separate `s3s://`/TLS-enabled
+   scheme yet — `s3://` is plaintext-only, same known AmiSSL blocking-
+   handshake issue that disabled `https://` for WebDAV (item 4 in Phase
+   3); revisit both together once `tls.c` is rebuilt around the
+   non-blocking BIO-pair pump. Cross-build-verified (`make m68k-docker`
+   clean; `vamos` confirms both the malformed-URL refusal and the
+   no-TCP/IP-stack refusal work under emulation — reaching a real MinIO
+   endpoint needs real hardware/network, item 6 below).
 4. "Large objects to minimise request count": proposal's own stated
    S3 strategy is bigger chunks, not S3 multipart upload — repo.c's
    existing `amisnap_repo_writer_file_chunked()`/`AMISNAP_DEFAULT_CHUNK_SIZE`

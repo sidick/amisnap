@@ -45,6 +45,7 @@
 #include "prune.h"
 #include "repo.h"
 #include "repo_header.h"
+#include "s3.h"
 #include "restore.h"
 #include "restore_meta.h"
 #include "scan.h"
@@ -170,6 +171,49 @@ static int open_backend(const char *path, amisnap_backend *out)
          * calls) -- url/cfg going out of scope right after this call is
          * safe, same as backend_dir_open()'s own `root` parameter. */
         return amisnap_backend_webdav_open(&cfg, &g_bsdsocket_transport, out);
+    }
+
+    if (strncmp(path, "s3://", 5) == 0) {
+        amisnap_s3_url url;
+        amisnap_s3_config cfg;
+        int rc;
+
+        rc = amisnap_s3_parse_url(path, &url);
+        if (rc != AMISNAP_OK) {
+            amilog_err("AmiSnap: malformed S3 URL \"%s\" -- expected "
+                       "s3://<access_key>:<secret_key>@host[:port]/<bucket>[/prefix]"
+                       "[?region=<region>]\n", path);
+            return rc;
+        }
+
+        /* TLS: s3.h's own doc comment -- not yet supported (no separate
+         * "s3s://" scheme to fail into), same known AmiSSL blocking-
+         * handshake issue that disabled https:// above. */
+
+        if (!g_socket_lib_open) {
+            rc = amisnap_socket_lib_open();
+            if (rc != AMISNAP_OK) {
+                amilog_err("AmiSnap: bsdsocket.library not available -- \"%s\" needs "
+                           "a running TCP/IP stack\n", path);
+                return rc;
+            }
+            g_bsdsocket_transport.ops = &amisnap_bsdsocket_transport_ops;
+            g_bsdsocket_transport.ctx = NULL;
+            g_socket_lib_open = 1;
+        }
+
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.host = url.host;
+        cfg.port = url.port;
+        cfg.bucket = url.bucket;
+        cfg.base_path = url.base_path;
+        cfg.region = url.region;
+        cfg.access_key = url.access_key;
+        cfg.secret_key = url.secret_key;
+        /* amisnap_backend_s3_open() copies every string out of cfg/url
+         * synchronously before returning -- url/cfg going out of scope
+         * right after this call is safe, same as the WebDAV case above. */
+        return amisnap_backend_s3_open(&cfg, &g_bsdsocket_transport, out);
     }
 
     return amisnap_backend_dir_open(path, out);
