@@ -1698,14 +1698,56 @@ protocol code against a local WebDAV container.
    its own installer, rather than
    hand-assembling a minimal one.
 
-   **Genuine on-target execution (a real, successful TLS connection)
-   is still the one remaining gap**, but the specific "will this crash
-   the emulator" risk that made it look expensive to even attempt is
-   gone -- unlike `socket.c`'s own bsdsocket path (now Copperline-
-   verified, Phase 3 item 3), AmiSSL needs a boot volume with AmiSSL
-   fully *installed*, not just its library files copied in, to
-   actually succeed; not solved here, tracked as open, not silently
-   assumed working the way it would be to skip mentioning it.
+   **Retested again (2026-08-13) against a real Workbench install with
+   AmiSSL genuinely installed** -- sibling AmiAuth's own known-good WB
+   3.2 clone (`AMIAUTH_WB_HDD`, cloned copy-on-write, never mutated;
+   its `S:User-Startup` already has the real `Assign AmiSSL: "SYS:
+   AmiSSL"` + `LIBS:` setup its own installer produced), mounted as an
+   AmiSnap-style `[[filesys]]` with a real boot priority rather than
+   `[ide]` (the directory-mount form documented in Copperline's own
+   `copperline.example.toml`, not a raw `.hdf` image, so no reason to
+   reach for the disk-image-specific mechanism). A throwaway diagnostic
+   fixture (not committed) staged into `S:Startup-Sequence` right after
+   `User-Startup`, before `LoadWB` (matching AmiAuth's own
+   `amissl-bench.sh` placement).
+
+   **`OpenAmiSSLTags()` now succeeds completely** (`rc=0`, real
+   `AmiSSLBase`/`AmiSSLExtBase`), `SSL_CTX_new()` succeeds,
+   `SSL_CTX_load_verify_locations("AmiSSL:Certs")` succeeds (`rc=1`),
+   and a real `amisnap_socket_connect()` to `example.com:443` succeeds
+   -- confirming `tls.c`'s own init sequence, exactly as written, is
+   correct end to end once AmiSSL is actually installed properly. This
+   fully resolves item 4's previously-open "does AmiSSL init even work
+   on real hardware" question, not just "does it avoid crashing".
+
+   **A new, narrower issue surfaced past that point**: `SSL_connect()`
+   itself returns cleanly (confirmed by isolating it -- a log line
+   immediately after the call, with an explicit `fflush()`, prints in
+   full), but the *very next* statement -- a trivial `fprintf(..., "ok=
+   %d\n", ok)` on a plain local `int`, no further AmiSSL or network
+   calls involved at all -- truncates at the exact same byte position
+   across repeated runs (deterministic core), never completing the `%d`
+   conversion. Isolated by splitting one combined log line into four
+   separate `fprintf()` + `fflush()` calls until the exact failure
+   point was pinned down to *after* `SSL_connect()` returns but *before*
+   the next libc call can format a plain integer. Not a hang in
+   `SSL_connect()`/`SSL_get_error()` themselves (ruled out directly,
+   not assumed) -- the pattern (everything fine up to a point, then the
+   next unrelated libc call misbehaves) is most consistent with
+   corrupted register/stack state surviving the AmiSSL library call
+   boundary (e.g. a register the Amiga library calling convention
+   requires a callee to preserve not actually being preserved by
+   AmiSSL's own `SSL_connect()` implementation), not investigated
+   further at the assembly level -- that's a genuinely different, much
+   deeper debugging task than what this retest set out to answer.
+
+   **Net status**: `tls.c`'s own soft-load, cert-verification, and
+   connection-setup logic is now confirmed correct against a real
+   AmiSSL install, end to end through a completed TLS handshake
+   attempt. What's left is a specific, narrowly-isolated one open
+   question -- state corruption somewhere around `SSL_connect()`'s own
+   return -- not a vague "on-target execution incomplete." Tracked as
+   open, not silently assumed working.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below
