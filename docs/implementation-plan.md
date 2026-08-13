@@ -2174,10 +2174,39 @@ needed).
    stronger than the WebDAV case's own from-scratch Python server) --
    `tests/s3/` mirroring `tests/webdav/`'s shape (a host-only POSIX
    transport, a `*-check` Makefile target wired into `test-host`).
+   **Done (2026-08-13)**, "MinIO instance" ended up meaning a
+   from-scratch, stdlib-only Python S3 server (`tests/s3/
+   mini_s3_server.py`) rather than a real MinIO binary or container --
+   the same "ended up meaning a real local server process, not a
+   Docker container" reasoning `webdav-check`'s own comment gives (no
+   docker-in-docker in the CI runner), but pulling in a real ~100MB
+   third-party binary download every CI run for this purpose was a
+   worse trade than writing an independent implementation directly,
+   especially since the actually-interesting thing to verify --
+   **whether a genuinely separate SigV4 implementation accepts a
+   signature `s3.c` produced** -- needed *some* real verification code
+   regardless of whether the server wrapping it was MinIO or hand-
+   written. `mini_s3_server.py` recomputes the canonical request/
+   string-to-sign/signature from the actually-received request
+   (headers, method, path, query string) and rejects a mismatch with
+   403 -- independent Python `hmac`/`hashlib`, not a copy of
+   `src/core/sigv4.c`. This is strictly stronger than AWS's own
+   published test vectors (`tests/test_sigv4.c`): those prove the
+   *signing* math is right in isolation; this proves a *live* request
+   s3.c actually builds and sends is accepted by someone else's
+   verification, over a real TCP loopback connection
+   (`tests/webdav/posix_transport.c`, reused as-is -- no S3-specific
+   logic in it to duplicate). `tests/s3/live_test.c` mirrors
+   `tests/webdav/live_test.c`'s own checks (put/get, exists, streaming
+   upload + abort, list, remove's `NOT_FOUND` contract) and passed on
+   the first real run. Wired into `test-host` as `make s3-check`.
+   Verified against the exact CI container: `test-host` (including
+   `s3-check`) and `make build` (m68k) both clean.
 6. On-target (Copperline/Amiberry) smoke test against the same MinIO
    instance, and a manual (non-CI, documented) run against a real B2
    bucket with `TLS=YES` — proposal's own "tested against MinIO in CI
-   and B2 manually".
+   and B2 manually". **Still open** — needs real hardware/network and
+   TLS support (blocked on the same AmiSSL fix noted in item 3).
 
 **Phase 6 — Release.** AmigaGuide + MkDocs user docs (add `userdocs/` +
 `make guide` following the siblings), honest per-tier performance

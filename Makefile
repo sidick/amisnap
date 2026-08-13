@@ -73,7 +73,7 @@ all: test
 # own build steps rather than assuming a prior job ran.
 build: m68k
 
-test-host: test stackswap-vamos-test cross-check webdav-check
+test-host: test stackswap-vamos-test cross-check webdav-check s3-check
 
 # --- stackswap-vamos-test: Phase 1 item 7's vamos regression test ---------
 # Confirms amisnap_stackswap_run() genuinely swaps to a new stack -- see
@@ -127,6 +127,18 @@ cross-check: $(CROSS_GEN_BIN)
 # never catch a real interop bug the way a separate implementation can.
 webdav-check:
 	sh tests/webdav/run.sh
+
+# --- s3-check: Phase 5's own host-CI check ---------------------------------
+# "Host CI: a real MinIO instance (container or process...)" (implementation-
+# plan.md Phase 5 blurb) -- ended up meaning a from-scratch, independent S3
+# server implementation instead, same reasoning webdav-check's own comment
+# gives (and stronger here: mini_s3_server.py also independently re-verifies
+# every SigV4 signature s3.c produces, not just the wire format). Builds the
+# portable s3.c/sigv4.c/http.c against tests/webdav/posix_transport.c
+# (reused as-is -- generic POSIX sockets, no WebDAV-specific logic) and
+# drives it against mini_s3_server.py.
+s3-check:
+	sh tests/s3/run.sh
 
 # --- copperline-fixtures: test-only stage/readback helpers (Phase 1 item 8) -
 # Never shipped -- same convention as AmiPilot's own fixtures/. Kept out of
