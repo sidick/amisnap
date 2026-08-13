@@ -19,6 +19,10 @@ void run_chunked_tests(void);
 void run_http_tests(void);
 void run_base64_tests(void);
 void run_webdav_tests(void);
+void run_sha256_tests(void);
+void run_chacha20_tests(void);
+void run_hmac_sha256_tests(void);
+void run_pbkdf2_tests(void);
 
 int main(void)
 {
@@ -38,6 +42,10 @@ int main(void)
     run_http_tests();
     run_base64_tests();
     run_webdav_tests();
+    run_sha256_tests();
+    run_chacha20_tests();
+    run_hmac_sha256_tests();
+    run_pbkdf2_tests();
 
     fprintf(stderr, "passed=%d failed=%d pending=%d\n",
             g_test.passed, g_test.failed, g_test.pending);
