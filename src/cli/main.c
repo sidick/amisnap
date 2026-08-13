@@ -1212,6 +1212,84 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
 #define AMISNAP_INIT_PBKDF2_FALLBACK_ITERS 200000u
 #define AMISNAP_INIT_SALT_LEN 16u
 
+/* Prompts for (and confirms) a fresh passphrase into `pass_out`
+ * (>= 256 bytes), scrubbing every intermediate buffer. Shared by
+ * cmd_init() and cmd_rekey() -- both need exactly this same "type it
+ * twice, refuse a mismatch or an empty line" step. Returns AMISNAP_OK,
+ * AMISNAP_ERR_IO (no interactive console), or AMISNAP_ERR_MALFORMED
+ * (mismatch/empty) -- the caller logs a specific message either way,
+ * this just reports which case. */
+static int prompt_new_passphrase(char pass_out[256])
+{
+    char pass1[256], pass2[256];
+
+    if (amisnap_read_passphrase("New passphrase: ", pass1, sizeof(pass1)) != 0 ||
+        pass1[0] == '\0') {
+        memset(pass1, 0, sizeof(pass1));
+        return AMISNAP_ERR_IO;
+    }
+    if (amisnap_read_passphrase("Confirm passphrase: ", pass2, sizeof(pass2)) != 0 ||
+        strcmp(pass1, pass2) != 0) {
+        memset(pass1, 0, sizeof(pass1));
+        memset(pass2, 0, sizeof(pass2));
+        return AMISNAP_ERR_MALFORMED;
+    }
+    memset(pass2, 0, sizeof(pass2));
+    memcpy(pass_out, pass1, 256);
+    memset(pass1, 0, sizeof(pass1));
+    return AMISNAP_OK;
+}
+
+/* Generates a fresh salt+wrap-nonce, calibrates PBKDF2 iterations
+ * against this machine's real speed (a short timed run scaled to land
+ * near a TARGET_MS wall-clock cost -- implementation-plan.md Phase 4
+ * item 3, same pattern AmiAuth's own vault KDF calibration uses;
+ * amisnap_millis() returning 0, no timer available, falls back to a
+ * fixed conservative count rather than under-costing the KDF), and
+ * wraps `repo_key` under the result. Shared by cmd_init() (a brand new
+ * repo_key) and cmd_rekey() (the same repo_key, unwrapped under the
+ * OLD passphrase, rewrapped under a new one). `*iters_out` is
+ * reported back so the caller can log it. */
+static int calibrate_and_wrap(const char *passphrase,
+                               const uint8_t repo_key[AMISNAP_REPO_KEY_SIZE],
+                               uint8_t salt_out[AMISNAP_INIT_SALT_LEN], uint32_t *iters_out,
+                               uint8_t wrapped_out[AMISNAP_WRAPPED_KEY_SIZE])
+{
+    uint8_t wrap_nonce[AMISNAP_REPO_NONCE_SIZE];
+    uint8_t k_wrap[32];
+    uint32_t t0, elapsed;
+
+    if (amisnap_random(salt_out, AMISNAP_INIT_SALT_LEN) != 0 ||
+        amisnap_random(wrap_nonce, sizeof(wrap_nonce)) != 0)
+        return AMISNAP_ERR_IO;
+
+    t0 = amisnap_millis();
+    {
+        uint8_t scratch[32];
+        amisnap_pbkdf2_hmac_sha256((const uint8_t *)passphrase, strlen(passphrase),
+                                    salt_out, AMISNAP_INIT_SALT_LEN,
+                                    AMISNAP_INIT_PBKDF2_CALIBRATION_ITERS, scratch, sizeof(scratch));
+        memset(scratch, 0, sizeof(scratch));
+    }
+    elapsed = amisnap_millis() - t0; /* unsigned: safe even across an EClock wrap mid-calibration */
+
+    if (t0 == 0 || elapsed == 0) {
+        *iters_out = AMISNAP_INIT_PBKDF2_FALLBACK_ITERS;
+    } else {
+        uint64_t scaled = (uint64_t)AMISNAP_INIT_PBKDF2_CALIBRATION_ITERS
+                         * (uint64_t)AMISNAP_INIT_PBKDF2_TARGET_MS / (uint64_t)elapsed;
+        if (scaled < 1) scaled = 1;
+        if (scaled > 0xFFFFFFFFu) scaled = 0xFFFFFFFFu;
+        *iters_out = (uint32_t)scaled;
+    }
+
+    amisnap_pbkdf2_hmac_sha256((const uint8_t *)passphrase, strlen(passphrase),
+                                salt_out, AMISNAP_INIT_SALT_LEN, *iters_out, k_wrap, sizeof(k_wrap));
+    amisnap_repo_wrap_key(k_wrap, wrap_nonce, repo_key, wrapped_out);
+    memset(k_wrap, 0, sizeof(k_wrap));
+    return AMISNAP_OK;
+}
+
 static LONG cmd_init(const char *repo, int want_passphrase)
 {
     amisnap_backend be;
@@ -1247,74 +1325,36 @@ static LONG cmd_init(const char *repo, int want_passphrase)
     }
 
     {
-        char pass1[256], pass2[256];
+        char passphrase[256];
         uint8_t repo_key[AMISNAP_REPO_KEY_SIZE];
         uint8_t salt[AMISNAP_INIT_SALT_LEN];
-        uint8_t wrap_nonce[AMISNAP_REPO_NONCE_SIZE];
-        uint8_t k_wrap[32];
         uint8_t wrapped[AMISNAP_WRAPPED_KEY_SIZE];
         uint32_t iters;
-        uint32_t t0, elapsed;
 
-        if (amisnap_read_passphrase("New passphrase: ", pass1, sizeof(pass1)) != 0 ||
-            pass1[0] == '\0') {
-            amilog_err("AmiSnap: no passphrase entered (need an interactive console)\n");
+        rc = prompt_new_passphrase(passphrase);
+        if (rc != AMISNAP_OK) {
+            amilog_err(rc == AMISNAP_ERR_IO
+                       ? "AmiSnap: no passphrase entered (need an interactive console)\n"
+                       : "AmiSnap: passphrases did not match\n");
             amisnap_backend_close(&be);
             return RETURN_ERROR;
         }
-        if (amisnap_read_passphrase("Confirm passphrase: ", pass2, sizeof(pass2)) != 0 ||
-            strcmp(pass1, pass2) != 0) {
-            amilog_err("AmiSnap: passphrases did not match\n");
-            memset(pass1, 0, sizeof(pass1));
-            memset(pass2, 0, sizeof(pass2));
-            amisnap_backend_close(&be);
-            return RETURN_ERROR;
-        }
-        memset(pass2, 0, sizeof(pass2));
 
-        if (amisnap_random(repo_key, sizeof(repo_key)) != 0 ||
-            amisnap_random(salt, sizeof(salt)) != 0 ||
-            amisnap_random(wrap_nonce, sizeof(wrap_nonce)) != 0) {
+        if (amisnap_random(repo_key, sizeof(repo_key)) != 0) {
             amilog_err("AmiSnap: could not gather entropy for the repository key\n");
-            memset(pass1, 0, sizeof(pass1));
+            memset(passphrase, 0, sizeof(passphrase));
             amisnap_backend_close(&be);
             return RETURN_FAIL;
         }
 
-        /* Calibrate PBKDF2 iterations: time a fixed-size run against
-         * this machine's real speed, then scale to land near a
-         * TARGET_MS wall-clock cost -- implementation-plan.md Phase 4
-         * item 3, same pattern AmiAuth's own vault KDF calibration
-         * uses. amisnap_millis() returning 0 (no timer available)
-         * falls back to a fixed, conservative iteration count rather
-         * than under-costing the KDF or looping to calibrate against
-         * nothing. */
-        t0 = amisnap_millis();
-        {
-            uint8_t scratch[32];
-            amisnap_pbkdf2_hmac_sha256((const uint8_t *)pass1, strlen(pass1), salt, sizeof(salt),
-                                        AMISNAP_INIT_PBKDF2_CALIBRATION_ITERS, scratch, sizeof(scratch));
-            memset(scratch, 0, sizeof(scratch));
-        }
-        elapsed = amisnap_millis() - t0; /* unsigned: safe even across an EClock wrap mid-calibration */
-
-        if (t0 == 0 || elapsed == 0) {
-            iters = AMISNAP_INIT_PBKDF2_FALLBACK_ITERS;
-        } else {
-            uint64_t scaled = (uint64_t)AMISNAP_INIT_PBKDF2_CALIBRATION_ITERS
-                             * (uint64_t)AMISNAP_INIT_PBKDF2_TARGET_MS / (uint64_t)elapsed;
-            if (scaled < 1) scaled = 1;
-            if (scaled > 0xFFFFFFFFu) scaled = 0xFFFFFFFFu;
-            iters = (uint32_t)scaled;
-        }
-
-        amisnap_pbkdf2_hmac_sha256((const uint8_t *)pass1, strlen(pass1), salt, sizeof(salt),
-                                    iters, k_wrap, sizeof(k_wrap));
-        memset(pass1, 0, sizeof(pass1));
-
-        amisnap_repo_wrap_key(k_wrap, wrap_nonce, repo_key, wrapped);
-        memset(k_wrap, 0, sizeof(k_wrap));
+        rc = calibrate_and_wrap(passphrase, repo_key, salt, &iters, wrapped);
+        memset(passphrase, 0, sizeof(passphrase));
         memset(repo_key, 0, sizeof(repo_key));
+        if (rc != AMISNAP_OK) {
+            amilog_err("AmiSnap: could not gather entropy for the repository salt/nonce\n");
+            amisnap_backend_close(&be);
+            return RETURN_FAIL;
+        }
 
         memset(&hdr, 0, sizeof(hdr));
         if (amisnap_random(hdr.repo_id, AMISNAP_REPO_ID_SIZE) != 0) {
@@ -1353,6 +1393,174 @@ static LONG cmd_init(const char *repo, int want_passphrase)
 
         amilog("AmiSnap: initialized encrypted repository \"%s\" (%lu PBKDF2 iterations)\n",
                repo, (unsigned long)iters);
+        return RETURN_OK;
+    }
+}
+
+/* --- rekey -------------------------------------------------------------- */
+
+/* REKEY REPO=<path>: changes the passphrase wrapping an already-
+ * encrypted repository's key, WITHOUT changing the repository key
+ * itself -- every already-written object/manifest stays exactly as it
+ * is (docs/format.md "Encryption": "the 32-byte repository key ...
+ * never changes -- so losing/changing the passphrase re-wraps one
+ * header field, not the repository"). Requires the CURRENT passphrase
+ * to unwrap the existing key before re-wrapping it, same fail-closed
+ * contract as every other command's open_repo_key(). Refuses against
+ * a plain (CIPHER 0) repository -- there is no key to re-key -- and
+ * against one with no amisnap.repo at all (needs INIT PASSPHRASE
+ * first). REPO_ID/CHUNK_SIZE/FORMAT_APP are carried over unchanged
+ * from the existing header; only KDF (salt, recalibrated iterations)
+ * and WRAPPED_KEY actually change. */
+static LONG cmd_rekey(const char *repo)
+{
+    amisnap_backend be;
+    amisnap_buf raw;
+    amisnap_repo_header old_hdr;
+    uint8_t old_repo_id[AMISNAP_REPO_ID_SIZE];
+    int old_has_chunk_size;
+    uint32_t old_chunk_size;
+    uint8_t old_salt[64];
+    size_t old_salt_len;
+    uint8_t old_wrapped[AMISNAP_WRAPPED_KEY_SIZE];
+    uint32_t old_iters;
+    int rc;
+
+    if (!repo) {
+        amilog_err("AmiSnap: REKEY needs REPO=<path>\n");
+        return RETURN_ERROR;
+    }
+
+    rc = open_backend(repo, &be);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        return RETURN_FAIL;
+    }
+
+    rc = amisnap_backend_get(&be, AMISNAP_REPO_HEADER_KEY, &raw);
+    if (rc == AMISNAP_ERR_NOT_FOUND) {
+        amilog_err("AmiSnap: \"%s\" has no amisnap.repo -- REKEY needs an already-"
+                   "encrypted repository (INIT PASSPHRASE first)\n", repo);
+        amisnap_backend_close(&be);
+        return RETURN_FAIL;
+    }
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: cannot read amisnap.repo (error %d)\n", rc);
+        amisnap_backend_close(&be);
+        return RETURN_FAIL;
+    }
+    rc = amisnap_repo_header_decode(raw.data, raw.len, &old_hdr);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: amisnap.repo is corrupt (error %d)\n", rc);
+        amisnap_buf_free(&raw);
+        amisnap_backend_close(&be);
+        return RETURN_FAIL;
+    }
+    if (old_hdr.cipher == 0) {
+        amilog_err("AmiSnap: \"%s\" is a plain repository -- there is no key to REKEY\n", repo);
+        amisnap_buf_free(&raw);
+        amisnap_backend_close(&be);
+        return RETURN_FAIL;
+    }
+    if (old_hdr.salt_len > sizeof(old_salt)) {
+        amilog_err("AmiSnap: amisnap.repo's salt is implausibly long -- refusing\n");
+        amisnap_buf_free(&raw);
+        amisnap_backend_close(&be);
+        return RETURN_FAIL;
+    }
+
+    /* Copy everything this call still needs out of `old_hdr` (which
+     * borrows into `raw`) before freeing `raw` -- same lifetime rule
+     * repo_header.h documents. */
+    memcpy(old_repo_id, old_hdr.repo_id, AMISNAP_REPO_ID_SIZE);
+    old_has_chunk_size = old_hdr.has_chunk_size;
+    old_chunk_size = old_hdr.chunk_size;
+    memcpy(old_salt, old_hdr.salt, old_hdr.salt_len);
+    old_salt_len = old_hdr.salt_len;
+    memcpy(old_wrapped, old_hdr.wrapped_key, AMISNAP_WRAPPED_KEY_SIZE);
+    old_iters = old_hdr.kdf_iters;
+    amisnap_buf_free(&raw);
+
+    {
+        char old_pass[256], new_pass[256];
+        uint8_t k_wrap[32];
+        uint8_t repo_key[AMISNAP_REPO_KEY_SIZE];
+        uint8_t new_salt[AMISNAP_INIT_SALT_LEN];
+        uint8_t new_wrapped[AMISNAP_WRAPPED_KEY_SIZE];
+        uint32_t new_iters;
+        amisnap_repo_header new_hdr;
+        amisnap_buf hdr_bytes;
+
+        if (amisnap_read_passphrase("Current passphrase: ", old_pass, sizeof(old_pass)) != 0) {
+            amilog_err("AmiSnap: no passphrase entered (need an interactive console)\n");
+            amisnap_backend_close(&be);
+            return RETURN_ERROR;
+        }
+        amisnap_pbkdf2_hmac_sha256((const uint8_t *)old_pass, strlen(old_pass),
+                                    old_salt, old_salt_len, old_iters, k_wrap, sizeof(k_wrap));
+        memset(old_pass, 0, sizeof(old_pass));
+
+        rc = amisnap_repo_unwrap_key(k_wrap, old_wrapped, repo_key);
+        memset(k_wrap, 0, sizeof(k_wrap));
+        if (rc != AMISNAP_OK) {
+            amilog_err("AmiSnap: wrong passphrase (or a corrupt amisnap.repo)\n");
+            memset(repo_key, 0, sizeof(repo_key));
+            amisnap_backend_close(&be);
+            return RETURN_FAIL;
+        }
+
+        rc = prompt_new_passphrase(new_pass);
+        if (rc != AMISNAP_OK) {
+            amilog_err(rc == AMISNAP_ERR_IO
+                       ? "AmiSnap: no passphrase entered (need an interactive console)\n"
+                       : "AmiSnap: passphrases did not match\n");
+            memset(repo_key, 0, sizeof(repo_key));
+            amisnap_backend_close(&be);
+            return RETURN_ERROR;
+        }
+
+        rc = calibrate_and_wrap(new_pass, repo_key, new_salt, &new_iters, new_wrapped);
+        memset(new_pass, 0, sizeof(new_pass));
+        memset(repo_key, 0, sizeof(repo_key));
+        if (rc != AMISNAP_OK) {
+            amilog_err("AmiSnap: could not gather entropy for the new salt/nonce\n");
+            amisnap_backend_close(&be);
+            return RETURN_FAIL;
+        }
+
+        memset(&new_hdr, 0, sizeof(new_hdr));
+        memcpy(new_hdr.repo_id, old_repo_id, AMISNAP_REPO_ID_SIZE);
+        new_hdr.cipher = 1;
+        new_hdr.has_chunk_size = old_has_chunk_size;
+        new_hdr.chunk_size = old_chunk_size;
+        new_hdr.kdf_id = AMISNAP_KDF_PBKDF2_HMAC_SHA256;
+        new_hdr.kdf_iters = new_iters;
+        new_hdr.salt = new_salt;
+        new_hdr.salt_len = sizeof(new_salt);
+        new_hdr.wrapped_key = new_wrapped;
+        new_hdr.has_format_app = 1;
+        new_hdr.format_app = (const uint8_t *)"AmiSnap";
+        new_hdr.format_app_len = 7;
+
+        rc = amisnap_repo_header_encode(&new_hdr, &hdr_bytes);
+        memset(new_wrapped, 0, sizeof(new_wrapped));
+        if (rc != AMISNAP_OK) {
+            amilog_err("AmiSnap: could not encode the repository header (error %d)\n", rc);
+            amisnap_backend_close(&be);
+            return RETURN_FAIL;
+        }
+
+        rc = amisnap_backend_put(&be, AMISNAP_REPO_HEADER_KEY, hdr_bytes.data, hdr_bytes.len);
+        amisnap_buf_free(&hdr_bytes);
+        amisnap_backend_close(&be);
+        if (rc != AMISNAP_OK) {
+            amilog_err("AmiSnap: could not write amisnap.repo (error %d)\n", rc);
+            return RETURN_FAIL;
+        }
+
+        amilog("AmiSnap: re-keyed \"%s\" (%lu PBKDF2 iterations) -- the repository key "
+               "itself is unchanged, every existing snapshot stays readable\n",
+               repo, (unsigned long)new_iters);
         return RETURN_OK;
     }
 }
@@ -1436,9 +1644,11 @@ static int real_main(void *arg)
         rc = cmd_applyuaem((const char *)args[ARG_SOURCE]);
     } else if (str_ieq(action, "INIT")) {
         rc = cmd_init((const char *)args[ARG_REPO], args[ARG_PASSPHRASE] != 0);
+    } else if (str_ieq(action, "REKEY")) {
+        rc = cmd_rekey((const char *)args[ARG_REPO]);
     } else {
         amilog_err("AmiSnap: unknown ACTION \"%s\" -- expected SNAPSHOT, RESTORE, LIST, VERIFY, "
-                       "PRUNE, APPLYUAEM, or INIT\n",
+                       "PRUNE, APPLYUAEM, INIT, or REKEY\n",
                    action ? action : "");
         rc = RETURN_ERROR;
     }

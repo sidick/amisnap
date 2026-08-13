@@ -1947,9 +1947,23 @@ derivation, nonce discipline, and the WRAPPED_KEY layout precisely).
    PASSPHRASE-required refusal message both work under emulation --
    the real entropy-gathering/passphrase-prompt path itself needs a
    real console and RTC, so it's on-target-only like the rest of
-   `random.c`, per item 2 above). **Re-key (new passphrase, same
-   repository key) is NOT implemented** -- `cmd_init()` only handles
-   first-time setup.
+   `random.c`, per item 2 above). **Re-key done (2026-08-13)**:
+   `ACTION=REKEY REPO=<path>` (`cmd_rekey()`) changes the passphrase
+   without touching the repository key itself -- unwraps the existing
+   `WRAPPED_KEY` under the CURRENT passphrase first (failing closed on
+   a wrong one, same as `open_repo_key()`), prompts for and confirms a
+   new one, recalibrates PBKDF2 (a repository's KDF cost should track
+   the machine re-keying it, not stay frozen at init time), and
+   rewrites `KDF`/`WRAPPED_KEY` in `amisnap.repo` -- `REPO_ID`/
+   `CHUNK_SIZE`/`FORMAT_APP` and, critically, the repository key itself
+   (so every already-written object/manifest stays readable) are
+   carried over unchanged. `cmd_init()` and `cmd_rekey()` share two new
+   helpers (`prompt_new_passphrase()`, `calibrate_and_wrap()`) rather
+   than duplicating the "type it twice, calibrate, wrap" sequence.
+   Cross-build-verified the same way as `INIT` (`make m68k-docker`
+   clean; `vamos` confirms `REKEY`'s argument validation and its
+   two distinct refusals -- no `amisnap.repo` at all, and a plain
+   CIPHER=0 repository -- both work under emulation).
 4. Wire `K`/`K_enc`/`K_mac` through `repo.c`'s object writer/reader and
    `manifest.c`'s manifest writer/reader for the nonce/ciphertext/mac
    framing docs/format.md specifies. `tools/amisnap_reader.py` (the
