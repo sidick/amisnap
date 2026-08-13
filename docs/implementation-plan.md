@@ -1561,15 +1561,20 @@ protocol code against a local WebDAV container.
      ROM/dispatch (`guest/hostsocket/hostsocket_board.h`'s `CALL_*`
      list) that **no `CALL_INET_ATON` exists at all** -- only
      `CALL_INET_ADDR` -- so the LVO stub jumps into an unimplemented
-     slot and the guest hangs forever, not a clean failure. Sibling
-     project amipilot independently reached the identical conclusion
-     for a *different* bsdsocket emulator (a real CPU trap there, not a
-     hang) and hand-rolls its own dotted-quad parser for the same
-     reason -- not a one-off Copperline quirk, a real "don't assume
-     every bsdsocket.library implements every Roadshow-era extension"
-     lesson. Fixed with a small hand-rolled `parse_dotted_quad()`
-     (digit-by-digit, no `sscanf`), avoiding both this gap and
-     `inet_addr()`'s own well-known `255.255.255.255` ambiguity.
+     slot and the guest hangs forever, not a clean failure. Not an
+     oversight: HostSocket's own guest-side wire protocol only covers
+     the classic AmiTCP v3 API surface, and `inet_aton()` is a
+     Roadshow-era addition on top of that -- the same reason it's a
+     newer, non-universal function to lean on at all, not merely a
+     Copperline-specific gap. Sibling project amipilot independently
+     reached the identical conclusion for a *different* bsdsocket
+     emulator (a real CPU trap there, not a hang) and hand-rolls its
+     own dotted-quad parser for the same reason -- not a one-off
+     Copperline quirk either way, a real "don't assume every
+     bsdsocket.library implements every Roadshow-era extension" lesson.
+     Fixed with a small hand-rolled `parse_dotted_quad()` (digit-by-
+     digit, no `sscanf`), avoiding both this gap and `inet_addr()`'s
+     own well-known `255.255.255.255` ambiguity.
    - `cmd_snapshot`'s `snapshot_source_repo_overlap()` guard (the
      self-backup check, `main.c`) called `Lock()` on `REPO=` unconditionally
      -- fine for a real AmigaDOS path, but for a WebDAV URL string
@@ -1733,10 +1738,21 @@ protocol code against a local WebDAV container.
    was invoked at ~17 emulated seconds in, and by the full 900-second
    mark -- 883 more emulated seconds later -- nothing further had
    completed, not even a `ReadEClock()` + `fprintf()` of a plain integer
-   immediately after the call returns (or doesn't). No real TLS
-   handshake, even fully unaccelerated on a 14MHz 68020, plausibly takes
-   14+ minutes; this rules out "just slow" and confirms a genuine stall,
-   not merely a slow one.
+   immediately after the call returns (or doesn't).
+
+   Asked directly whether this could just be slow, unaccelerated
+   handshake math rather than a real stall (a fair challenge -- RSA/
+   ECDHE bignum work on a 14MHz 68020 genuinely could be slow) --
+   settled it empirically rather than by argument: reran the identical
+   test at `--cpu-clock 200` (a 14x clock increase over the stock
+   14MHz) with `--jit` (Copperline's batch/trace JIT, "not cycle-exact,
+   accelerator-style timing", explicitly meant to approximate a real
+   accelerator card's throughput). If the 900-second cutoff were purely
+   compute-bound, a 14x faster clock plus JIT should have finished the
+   same handshake in a small fraction of the emulated time. It didn't
+   move at all -- identical truncation point, same 900-second run.
+   Genuinely decisive: this rules out "just slow" conclusively, not
+   merely by inference from wall-clock reasoning as the first pass did.
 
    Found the *why*, not just the *that*, by reading a second independent
    AmiSSL client on the same platform: `~/src/micropython/ports/amiga/
