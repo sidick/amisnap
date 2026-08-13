@@ -2052,7 +2052,77 @@ derivation, nonce discipline, and the WRAPPED_KEY layout precisely).
    itself (item 2).
 
 **Phase 5 — S3.** SigV4 with `UNSIGNED-PAYLOAD`, large objects, tested
-against MinIO in CI and B2 manually.
+against MinIO in CI and B2 manually. Builds on Phase 3's `http.c`
+(transport-agnostic HTTP/1.1 request/response layer -- S3 needs a
+different *auth* scheme and body shape than WebDAV, not a different
+socket/TLS story) and Phase 4's vendored HMAC-SHA256/SHA-256 (SigV4's
+signing chain is HMAC-SHA256 throughout, no new hash primitive
+needed).
+
+1. SigV4 signing primitive (`src/core/sigv4.c`): canonical request,
+   string-to-sign, the four-step HMAC-SHA256 signing-key derivation
+   (date -> region -> service -> `aws4_request`), and the final
+   signature/`Authorization` header, per
+   docs/proposal.md's "Tier 3" (`UNSIGNED-PAYLOAD` — S3 lets the
+   payload hash be that literal string instead of a real SHA-256,
+   avoiding a second body pass or buffering the whole object just to
+   hash it first). Vectors: AWS's own published
+   `aws-sig-v4-test-suite` (fetched live from
+   `github.com/saibotsivad/aws-sig-v4-test-suite`, a mirror of the
+   suite AWS's docs link to — canonical request, string-to-sign, *and*
+   final signature for each case, not just intermediate values),
+   never transcribed from memory. No new hash primitive: built
+   entirely on the already-vendored `hmac_sha256.c`/`sha256.c`.
+   **Done (2026-08-13)**: `src/core/sigv4.[ch]` -- canonical-request
+   assembly (internal header lowercasing/sorting and value
+   canonicalization: trim + collapse internal whitespace runs to one
+   space, confirmed against the `get-header-value-trim` vector, which
+   collapses whitespace even inside a quoted value), string-to-sign,
+   the 4-step signing-key derivation, final signature, `Authorization`
+   header assembly, and a standalone `UriEncode()` primitive
+   (uppercase-hex, space as `%20`, `/` encoded only when the caller
+   says to -- query strings vs. path components). `tests/test_sigv4.c`
+   checks four real AWS vectors (`get-vanilla`,
+   `get-vanilla-query-unreserved`, `get-header-value-trim`,
+   `post-vanilla`) end to end -- canonical request text, string-to-
+   sign, *and* final signature all matched AWS's published values
+   on the first run. `make test`: 798/798 (exact CI container);
+   `make build` (m68k) clean.
+2. S3 protocol layer (`src/core/s3.c`) + backend
+   (`src/core/backend_s3.c`): PUT/GET/HEAD(`exists`)/DELETE plus
+   `ListObjectsV2` (a small XML response parser — no full XML library,
+   S3's response shape is simple and fixed) for `list()`, built on
+   `http.c` exactly like `webdav.c` is, differing only in headers
+   (SigV4 `Authorization` + `x-amz-date`/`x-amz-content-sha256`
+   instead of WebDAV's Basic auth/`Depth`) and body handling
+   (`UNSIGNED-PAYLOAD`, no XML request bodies needed for basic
+   object CRUD).
+3. CLI wiring: `s3://` URL dispatch in `open_backend()`
+   (`src/cli/main.c`), same pattern as the existing `http://`/`https://`
+   dispatch — access key/secret/region/bucket parsed from the URL and
+   `S3_*`-style config, TLS following the same per-destination opt-in
+   `tls.c` already provides (proposal: plaintext against a LAN MinIO,
+   `TLS=YES` required for public providers).
+4. "Large objects to minimise request count": proposal's own stated
+   S3 strategy is bigger chunks, not S3 multipart upload — repo.c's
+   existing `amisnap_repo_writer_file_chunked()`/`AMISNAP_DEFAULT_CHUNK_SIZE`
+   mechanism already does exactly this or needs a larger *default*
+   chunk size for S3 destinations specifically (SigV4 signs one whole
+   request at a time, so a chunk is one PUT either way); real S3
+   multipart upload (`CreateMultipartUpload`/`UploadPart`/
+   `CompleteMultipartUpload`) is out of scope for v1 unless a single
+   PUT's practical size ceiling turns out to force it.
+5. Host CI: a real MinIO instance (container or process, same
+   "independent implementation, not this project's own mock a second
+   way" reasoning `tests/webdav/mini_webdav_server.py` documents —
+   MinIO is a real, independent S3 implementation, so this is even
+   stronger than the WebDAV case's own from-scratch Python server) --
+   `tests/s3/` mirroring `tests/webdav/`'s shape (a host-only POSIX
+   transport, a `*-check` Makefile target wired into `test-host`).
+6. On-target (Copperline/Amiberry) smoke test against the same MinIO
+   instance, and a manual (non-CI, documented) run against a real B2
+   bucket with `TLS=YES` — proposal's own "tested against MinIO in CI
+   and B2 manually".
 
 **Phase 6 — Release.** AmigaGuide + MkDocs user docs (add `userdocs/` +
 `make guide` following the siblings), honest per-tier performance
