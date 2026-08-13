@@ -1914,6 +1914,18 @@ derivation, nonce discipline, and the WRAPPED_KEY layout precisely).
    write `CIPHER`/`KDF`/`WRAPPED_KEY` into `REC_REPO`. A `re-key`
    path (new passphrase, same repository key) only touches
    `WRAPPED_KEY` — the point of keeping the repository key stable.
+   **Crypto glue and header framing done (2026-08-13)**:
+   `src/core/repo_crypto.c` (subkey derivation, deterministic object/
+   manifest nonces, the encrypt/decrypt frame, key wrap/unwrap --
+   vectors cross-checked against an independent from-spec Python
+   reimplementation, not derived from this C code) and
+   `src/core/repo_header.c` (amisnap.repo / REC_REPO TLV read/write,
+   `repo.h`'s previously-out-of-scope repository-level state --
+   round-trip and validation tests only so far, not yet wired into
+   `amisnap_repo_writer_finish()` or any reader). Still open: the
+   `init --passphrase` CLI command itself (real entropy via
+   `amisnap_random()`/PBKDF2 calibration via `amisnap_millis()`, both
+   m68k-only so untestable on host) and re-key.
 4. Wire `K`/`K_enc`/`K_mac` through `repo.c`'s object writer/reader and
    `manifest.c`'s manifest writer/reader for the nonce/ciphertext/mac
    framing docs/format.md specifies. `tools/amisnap_reader.py` (the
