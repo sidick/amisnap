@@ -13,7 +13,15 @@
  * both the host test build and the m68k cross-build) never picks it up
  * -- libnix -noixemul has no POSIX sockets at all, confirmed while
  * designing transport.h itself (see that file's own header comment).
+ *
+ * `-std=c99` alone hides getaddrinfo()/struct addrinfo behind glibc's
+ * strict feature-test gate (macOS libc exposes them regardless, which
+ * is why this built locally but failed in CI's Linux container until
+ * this define was added) -- _POSIX_C_SOURCE 200809L is what RFC 3493's
+ * getaddrinfo() actually needs.
  */
+#define _POSIX_C_SOURCE 200809L
+
 #include <netdb.h>
 #include <stdio.h>
 #include <string.h>

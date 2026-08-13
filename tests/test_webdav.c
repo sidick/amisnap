@@ -260,6 +260,24 @@ static void mock_serve(mock_server *srv, const char *method, const char *path,
     amisnap_buf_free(&resp_body);
 }
 
+/* memmem() is a GNU/BSD extension (needs _GNU_SOURCE on glibc, absent
+ * by default on the CI container's toolchain though present on macOS
+ * libc without it -- confirmed the hard way when CI failed here and a
+ * local `make test` didn't) -- a plain 4-byte needle search avoids the
+ * portability dependency entirely rather than fighting feature-test
+ * macros. */
+static const unsigned char *find_crlfcrlf(const unsigned char *buf, size_t len)
+{
+    size_t i;
+    if (len < 4) return NULL;
+    for (i = 0; i + 4 <= len; i++) {
+        if (buf[i] == '\r' && buf[i + 1] == '\n' &&
+            buf[i + 2] == '\r' && buf[i + 3] == '\n')
+            return buf + i;
+    }
+    return NULL;
+}
+
 static void mock_process_if_ready(amisnap_transport *t, mock_conn *c)
 {
     mock_server *srv = (mock_server *)t->ctx;
@@ -275,7 +293,7 @@ static void mock_process_if_ready(amisnap_transport *t, mock_conn *c)
 
     if (c->have_response) return;
 
-    hdr_end = (const unsigned char *)memmem(req, req_len, "\r\n\r\n", 4);
+    hdr_end = find_crlfcrlf(req, req_len);
     if (!hdr_end) return; /* headers not fully arrived yet */
 
     p = req;
