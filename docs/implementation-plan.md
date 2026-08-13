@@ -1720,34 +1720,68 @@ protocol code against a local WebDAV container.
    fully resolves item 4's previously-open "does AmiSSL init even work
    on real hardware" question, not just "does it avoid crashing".
 
-   **A new, narrower issue surfaced past that point**: `SSL_connect()`
-   itself returns cleanly (confirmed by isolating it -- a log line
-   immediately after the call, with an explicit `fflush()`, prints in
-   full), but the *very next* statement -- a trivial `fprintf(..., "ok=
-   %d\n", ok)` on a plain local `int`, no further AmiSSL or network
-   calls involved at all -- truncates at the exact same byte position
-   across repeated runs (deterministic core), never completing the `%d`
-   conversion. Isolated by splitting one combined log line into four
-   separate `fprintf()` + `fflush()` calls until the exact failure
-   point was pinned down to *after* `SSL_connect()` returns but *before*
-   the next libc call can format a plain integer. Not a hang in
-   `SSL_connect()`/`SSL_get_error()` themselves (ruled out directly,
-   not assumed) -- the pattern (everything fine up to a point, then the
-   next unrelated libc call misbehaves) is most consistent with
-   corrupted register/stack state surviving the AmiSSL library call
-   boundary (e.g. a register the Amiga library calling convention
-   requires a callee to preserve not actually being preserved by
-   AmiSSL's own `SSL_connect()` implementation), not investigated
-   further at the assembly level -- that's a genuinely different, much
-   deeper debugging task than what this retest set out to answer.
+   **A real hang past that point, not a slow handshake -- and a known,
+   independently-documented AmiSSL fragility, not a mystery.** First
+   pass (see below) mis-attributed this to register/stack corruption
+   from a truncated log line; that guess didn't survive a harder test
+   and is retracted here rather than left uncorrected.
+
+   Retested with real `timer.device` EClock timestamps bracketing
+   `SSL_connect()` and a much longer `--benchmark-until 900` window
+   (deterministic core, so this genuinely lets the guest run 900
+   emulated seconds, not just a longer wall-clock budget): `SSL_connect()`
+   was invoked at ~17 emulated seconds in, and by the full 900-second
+   mark -- 883 more emulated seconds later -- nothing further had
+   completed, not even a `ReadEClock()` + `fprintf()` of a plain integer
+   immediately after the call returns (or doesn't). No real TLS
+   handshake, even fully unaccelerated on a 14MHz 68020, plausibly takes
+   14+ minutes; this rules out "just slow" and confirms a genuine stall,
+   not merely a slow one.
+
+   Found the *why*, not just the *that*, by reading a second independent
+   AmiSSL client on the same platform: `~/src/micropython/ports/amiga/
+   modssl.c`'s own header comment (a real, shipped, working
+   implementation) documents exactly this failure mode and why it was
+   abandoned:
+
+   > "An earlier revision had a second 'fd path' that handed AmiSSL the
+   > raw descriptor via `SSL_set_fd` for blocking clients. It was
+   > dropped: its ioctl couldn't report poll readiness (so it was
+   > unusable from asyncio), and its single blocking `SSL_connect` was
+   > the more fragile of the two -- **it intermittently broke the pipe
+   > under the Amiga's slow handshakes**, where the BIO pump (with
+   > proper EAGAIN handling) succeeds."
+
+   `tls.c`'s current `tls_connect()` uses exactly the pattern that
+   quote describes as fragile: `SSL_set_fd()` followed by one blocking
+   `SSL_connect()` call, letting AmiSSL's own internal socket I/O drive
+   the handshake. micropython's fix (their `modssl.c`, `make_ssl_socket`/
+   `ssl_socket_pump`) is a real, proven, working alternative on this
+   exact platform: `BIO_new_bio_pair()` + `SSL_set_bio()` to give
+   OpenSSL a memory BIO instead of a raw fd, `SSL_set_connect_state()` +
+   a manual `SSL_do_handshake()` loop checking `SSL_get_error()` for
+   `SSL_ERROR_WANT_READ`/`SSL_ERROR_WANT_WRITE`, and hand-rolled ciphertext
+   pumping between the BIO and the real socket (their own I/O, with real
+   `EAGAIN` handling) instead of trusting AmiSSL's own blocking fd path
+   to do it correctly. Also worth adopting regardless of the BIO-pair
+   change: micropython's `amiga_ssl_open()` passes `AmiSSL_ErrNoPtr`,
+   which `tls.c`'s own `amisnap_tls_lib_open()` currently omits (reasoned
+   at the time as optional since nothing here reads `errno` directly) --
+   `amissl.doc`'s own `InitAmiSSLA` entry warns "You should always
+   specify this tag or errno error detection in your program will not
+   work reliably", and AmiSSL's *own* internal socket calls (exactly the
+   ones driving the now-confirmed-fragile blocking path) depend on it
+   to interpret retry conditions correctly, independent of whether this
+   codebase ever reads that pointer itself.
 
    **Net status**: `tls.c`'s own soft-load, cert-verification, and
-   connection-setup logic is now confirmed correct against a real
-   AmiSSL install, end to end through a completed TLS handshake
-   attempt. What's left is a specific, narrowly-isolated one open
-   question -- state corruption somewhere around `SSL_connect()`'s own
-   return -- not a vague "on-target execution incomplete." Tracked as
-   open, not silently assumed working.
+   connection-setup logic is confirmed correct against a real AmiSSL
+   install (item 4's original "does AmiSSL init even work on real
+   hardware" question, fully resolved). The blocking `SSL_set_fd()` +
+   `SSL_connect()` design is now a confirmed, understood, real design
+   flaw -- not a hang of unknown origin -- with a concrete, working
+   reference design (the BIO-pair pump) to build the real fix from.
+   Not implemented here; tracked as open, not silently assumed working.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below
