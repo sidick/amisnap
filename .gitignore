@@ -49,6 +49,9 @@ __pycache__/
 # run-webdav.sh -- same story, its own self-contained work directory.
 /tests/copperline/webdav-work/
 
+# run-s3.sh -- same story, its own self-contained work directory.
+/tests/copperline/s3-work/
+
 # Emulator-generated Workbench/UAE mount metadata when the repo root is
 # mounted as an Amiga volume for on-target testing -- not source.
 /Disk.info

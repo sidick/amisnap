@@ -651,23 +651,28 @@ static int lock_is_ancestor_or_self(BPTR ancestor, BPTR descendant)
  * this guard only needs to fire when both locks are real and it can
  * prove an overlap.
  *
- * A WebDAV `repo` (a "http://"/"https://" URL, open_backend()'s own
- * scheme dispatch) is skipped outright, not just left to fail Lock()
- * "normally": a URL can never alias a local AmigaDOS path (categorically
- * different address space, no shared Lock()/SameLock() identity
- * possible), so the check is meaningless there -- and, confirmed live
- * under Copperline, calling `Lock()` on a URL string doesn't fail
- * cleanly the way a merely-unmounted device name would; it hangs
- * indefinitely instead. Not investigated further (a real AmigaDOS
- * bug/quirk parsing a string shaped nothing like a device:path, not
- * this codebase's own to fix) -- avoided entirely instead, same
- * "degrade explicitly rather than chase an unrelated hang" instinct as
- * every other honest gap in this codebase. */
+ * A WebDAV or S3 `repo` (a "http://"/"https://"/"s3://" URL,
+ * open_backend()'s own scheme dispatch) is skipped outright, not just
+ * left to fail Lock() "normally": a URL can never alias a local
+ * AmigaDOS path (categorically different address space, no shared
+ * Lock()/SameLock() identity possible), so the check is meaningless
+ * there -- and, confirmed live under Copperline, calling `Lock()` on a
+ * URL string doesn't fail cleanly the way a merely-unmounted device
+ * name would; it hangs indefinitely instead (Phase 3's own finding for
+ * "http://"/"https://"; Phase 5's on-target S3 smoke test hit the
+ * identical hang for "s3://" -- a real "Please insert volume s3 in any
+ * drive" requester -- because this check's scheme list was never
+ * extended when the S3 backend was added). Not investigated further (a
+ * real AmigaDOS bug/quirk parsing a string shaped nothing like a
+ * device:path, not this codebase's own to fix) -- avoided entirely
+ * instead, same "degrade explicitly rather than chase an unrelated
+ * hang" instinct as every other honest gap in this codebase. */
 static int snapshot_source_repo_overlap(const char *source, const char *repo)
 {
     BPTR source_lock, repo_lock;
 
-    if (strncmp(repo, "http://", 7) == 0 || strncmp(repo, "https://", 8) == 0)
+    if (strncmp(repo, "http://", 7) == 0 || strncmp(repo, "https://", 8) == 0 ||
+        strncmp(repo, "s3://", 5) == 0)
         return 0;
     int overlap = 0;
 

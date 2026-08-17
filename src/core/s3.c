@@ -981,13 +981,24 @@ int amisnap_s3_parse_url(const char *url, amisnap_s3_url *out)
     /* userinfo (required: access_key:secret_key@) -- same parsing
      * shape as amisnap_webdav_parse_url()'s own optional userinfo,
      * just mandatory here (an S3 destination with no credentials
-     * makes no sense). */
-    path_start = strchr(p, '/');
-    scan_end = path_start ? path_start : p + strlen(p);
+     * makes no sense). Scanned unbounded by any '/' in the remaining
+     * string (unlike the host/bucket searches below, which bound
+     * themselves by the next '/' on purpose): a real S3 secret key is
+     * base64-alphabet and routinely contains a literal '/' (about a
+     * 1-in-32 chance per character, no escaping required by this
+     * scheme's own documented syntax) -- bounding this search by the
+     * first '/' anywhere in the URL, including one inside the secret
+     * key itself, misidentifies the userinfo/host boundary and was
+     * confirmed live to reject exactly this shape of real-world
+     * credential ("bad arguments"/"malformed S3 URL" against AWS's own
+     * published example secret key, which contains a '/'). '@' cannot
+     * legitimately appear in the host or bucket/prefix components that
+     * follow, so the first '@' in the whole remaining string is always
+     * the real boundary. */
     at = NULL;
     {
         const char *q;
-        for (q = p; q < scan_end; q++) if (*q == '@') { at = q; break; }
+        for (q = p; *q; q++) if (*q == '@') { at = q; break; }
     }
     if (!at) return AMISNAP_ERR_MALFORMED;
 

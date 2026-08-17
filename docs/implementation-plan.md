@@ -2232,11 +2232,80 @@ needed).
    the first real run. Wired into `test-host` as `make s3-check`.
    Verified against the exact CI container: `test-host` (including
    `s3-check`) and `make build` (m68k) both clean.
-6. On-target (Copperline/Amiberry) smoke test against the same MinIO
-   instance, and a manual (non-CI, documented) run against a real B2
-   bucket with `TLS=YES` — proposal's own "tested against MinIO in CI
-   and B2 manually". **Still open** — needs real hardware/network and
-   TLS support (blocked on the same AmiSSL fix noted in item 3).
+6. On-target (Copperline) smoke test against the same independent S3
+   server used by item 5's host-CI check. **Plaintext half done
+   (2026-08-17)**: `tests/copperline/run-s3.sh`, mirroring
+   `run-webdav.sh`'s own shape exactly (`--hostsocket-net host`,
+   `mini_s3_server.py` reachable over real loopback TCP out of the
+   guest) — a real SNAPSHOT/LIST/VERIFY/RESTORE cycle against a real,
+   independent, signature-verifying S3 server, all under real 68020
+   execution. The manual real-B2-bucket run with `TLS=YES` is still
+   open, same AmiSSL blocker as item 3/Phase 3 item 4.
+
+   This was the first real on-target exercise of *anything* linked
+   against `libamisslstubs.a` (Phase 4 added the link, but no on-target
+   Copperline test had been re-run since) and it surfaced three
+   genuine, previously-undiscovered bugs no host-only testing could
+   have caught:
+
+   - **Every** on-target Copperline test, not just S3's, was silently
+     broken since Phase 4: `libamisslstubs.a` carries an unresolved
+     reference to `LocaleBase`, which libnix's linker resolves by
+     pulling its own auto-open glue out of `libstubs.a` -- and that
+     glue makes `__initlibraries()` hard-require `locale.library` at
+     startup, aborting the whole program (RC 20, before `main()` runs)
+     if it's absent, which it is on the minimal Copperline boot volume
+     (`locale.library` is a Workbench-disk module, not a ROM
+     component). Confirmed live: `AmiSnap failed returncode 20` /
+     "locale.library failed to load" on a plain boot, no network
+     involved. Fixed with `src/amiga/no_locale.c`, a single
+     `struct Library *LocaleBase = NULL;` definition linked ahead of
+     `libstubs.a` in the documented link order -- satisfies
+     amisslstubs.a's reference directly, so ld never pulls in the
+     auto-open glue, and `LocaleBase` simply stays NULL the same way a
+     real "no locale.library installed" system would leave it (not a
+     crash: nothing in this codebase's own call graph dereferences it).
+   - `amisnap_s3_parse_url()` (`src/core/s3.c`) located the userinfo/
+     host boundary by searching for the first '/' anywhere in the URL
+     before ever looking for '@' -- broken for any real AWS-shaped
+     secret key, which is base64-alphabet and routinely contains a
+     literal '/' with no escaping required by this scheme's own
+     documented syntax. Confirmed live against AWS's own published
+     SigV4 test-vector secret key (which contains a '/'). Fixed by
+     scanning for '@' unbounded instead (it can't legitimately appear
+     in the host/bucket/prefix components that follow, so the first
+     one in the whole remaining string is always the real boundary);
+     regression test added to `tests/test_s3.c`'s own URL-parsing
+     block using that exact secret key.
+   - `snapshot_source_repo_overlap()` (`src/cli/main.c`)'s own
+     documented Phase-3 finding -- calling `Lock()` on a URL string
+     doesn't fail cleanly, it hangs the guest on a real "Please insert
+     volume ... in any drive" requester -- was only ever guarded for
+     `http://`/`https://`; Phase 5 added the `s3://` scheme but never
+     extended this check's skip list, so every on-target S3 SNAPSHOT
+     hung indefinitely at this exact spot. Fixed by adding `s3://` to
+     the same skip condition.
+
+   Also confirmed live, not a bug: a `REPO=` URL value containing a
+   second, embedded `=` (e.g. a `?region=` query string) is genuinely
+   unparseable by AmigaDOS `ReadArgs()` as a bare, unquoted keyword
+   value -- `ReadItem()`'s own documented contract delimits *any*
+   unquoted argument on the first space/tab/semicolon/equals-sign it
+   meets, not just the one `ReadArgs` itself consumes for `KEY=`.
+   Wrapping the value in double quotes does not help either: a quote
+   immediately following that consumed `=` is not "at the start of the
+   line or preceded by a blank/tab" (`ReadItem`'s own precise
+   quote-recognition rule), so it isn't treated as opening a quoted
+   string, and the resulting literal quote character breaks `s3.c`'s
+   own `"s3://"` prefix check in `open_backend()` instead (confirmed
+   live: falls through to the mounted-volume backend, reproducing the
+   same "insert volume" hang as the bug above, from a different cause).
+   `run-s3.sh` avoids the whole class of problem by never appending
+   `?region=` at all -- `us-east-1` is already
+   `amisnap_s3_parse_url()`'s own built-in default -- rather than
+   fighting AmigaDOS quoting edge cases for it; real deployments
+   targeting a non-default region need to be aware `REPO=` can't
+   safely carry a second `=` unquoted on an AmigaDOS command line.
 
 **Phase 6 — Release.** AmigaGuide + MkDocs user docs (add `userdocs/` +
 `make guide` following the siblings), honest per-tier performance

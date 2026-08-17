@@ -571,6 +571,26 @@ static void run_url_parse_tests(void)
     TEST_CHECK(amisnap_s3_parse_url("s3://minio.local/mybucket", &u) == AMISNAP_ERR_MALFORMED);
     TEST_CHECK(amisnap_s3_parse_url("s3://AKID:SECRET@minio.local", &u) == AMISNAP_ERR_MALFORMED);
     TEST_CHECK(amisnap_s3_parse_url("http://AKID:SECRET@minio.local/bucket", &u) == AMISNAP_ERR_MALFORMED);
+
+    /* A real AWS-shaped secret key: base64-alphabet, so it routinely
+     * contains a literal '/' with no escaping required by this
+     * scheme's own documented syntax (AWS's own published SigV4 test
+     * vector secret -- confirmed live via the Copperline on-target
+     * harness to be rejected as "malformed" before this was fixed,
+     * because an earlier version of this parser located the userinfo/
+     * host boundary by searching for the first '/' anywhere in the
+     * URL rather than the first '@', misreading a '/' inside the
+     * secret key itself as the start of the path). */
+    TEST_CHECK(amisnap_s3_parse_url(
+        "s3://AKIDEXAMPLE:wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY@127.0.0.1:18791"
+        "/amisnap-test-bucket/repo?region=us-east-1", &u) == AMISNAP_OK);
+    TEST_CHECK(strcmp(u.access_key, "AKIDEXAMPLE") == 0);
+    TEST_CHECK(strcmp(u.secret_key, "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY") == 0);
+    TEST_CHECK(strcmp(u.host, "127.0.0.1") == 0);
+    TEST_CHECK(u.port == 18791);
+    TEST_CHECK(strcmp(u.bucket, "amisnap-test-bucket") == 0);
+    TEST_CHECK(strcmp(u.base_path, "repo") == 0);
+    TEST_CHECK(strcmp(u.region, "us-east-1") == 0);
 }
 
 void run_s3_tests(void)
