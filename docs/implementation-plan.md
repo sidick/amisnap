@@ -1810,6 +1810,79 @@ protocol code against a local WebDAV container.
    CLI dispatch that could reach the known-hanging call. Revisit once
    `tls.c` is rebuilt around the non-blocking BIO-pair pump described
    above.
+
+   **New evidence (2026-08-17) that meaningfully narrows the failure,
+   without yet fully explaining it.** Built `tests/copperline/
+   tlsbench.c` (dev-only, not linked into AmiSnap -- reimplements
+   `tls.c`'s exact soft-load + blocking `SSL_set_fd()`+`SSL_connect()`
+   sequence directly rather than modifying it, so cipher list/protocol
+   version can be freely swapped per run) and
+   `tests/copperline/run-tls-bench.sh` (mirrors sibling AmiAuth's own
+   `amissl-bench.sh`: boots the same real, known-good WB 3.2 + AmiSSL
+   clone via `--hostsocket-net host`, `make`-cross-built, not wired
+   into `test-target` since CI has no such WB image). Isolated the two
+   suspects the original `example.com:443` hang left conflated -- real
+   internet RTT/jitter, and handshake compute cost -- by testing a
+   LOCAL `openssl s_server` (a real, independent TLS implementation,
+   same "not our own mock" reasoning as every other host-CI check in
+   this tree) starting from the cheapest possible real cipher:
+
+   - `PSK-NULL-SHA` (no asymmetric key exchange, no certificate, no
+     bulk encryption at all): rejected outright, `SSL_connect()`
+     returning in 0.04s with "no ciphers available" -- not a hang, a
+     real, fast, correctly-diagnosed refusal. Root cause found via
+     `ERR_get_error()`/`SSL_CTX_set_cipher_list()`'s own return value
+     plus the SDK's `opensslconf.h`: this AmiSSL build defines
+     `OPENSSL_NO_WEAK_SSL_CIPHERS`, which deliberately excludes
+     NULL-encryption suites. Not a PSK-support gap (nothing defines
+     `OPENSSL_NO_PSK`).
+   - `PSK-AES128-CBC-SHA` (still no asymmetric key exchange or
+     certificate, one real AES-128 op): **a full, genuine PASS** --
+     real TLS 1.2 handshake, real `SSL_write`/`SSL_read` HTTP exchange
+     against `-www`, clean `SSL_shutdown()` (independently confirmed
+     via the server's own log showing a real `close_notify` exchange),
+     in **0.81 seconds**, using `tls.c`'s exact unmodified blocking
+     design.
+   - `PSK-AES256-GCM-SHA384` (heavier PSK): also a full PASS, 0.85s.
+   - `ECDHE-RSA-AES128-GCM-SHA256` against a local self-signed cert
+     (`CERT=`/`KEY=` in `run-tls-bench.sh`, auto-generated if unset) --
+     the realistic cipher a production destination would actually
+     negotiate, real asymmetric key exchange and certificate signature
+     verification included: **also a full PASS**, in 7.56 seconds (the
+     extra cost is exactly the ECDHE/RSA compute the cheap-cipher
+     passes above didn't have to do -- consistent with, not
+     contradicting, "not fundamentally broken").
+
+   So the existing blocking design, completely unmodified, reliably
+   completes a real handshake plus real data exchange against a LOCAL
+   server, at every cipher weight tried, cheap or realistic. This
+   directly supports (not yet proves) that the original hang is
+   specific to something about the real-internet path, not a
+   cipher-independent AmiSSL/blocking-I/O defect as the "under the
+   Amiga's slow handshakes" framing alone would suggest.
+
+   **Retested the original target directly, with one variable
+   isolated**: `example.com:443`, `SNI` now set (`tlsbench.c` didn't
+   set it in the very first pass here and got an unrelated, SNI-shaped
+   rejection first -- fixed before drawing any conclusion from that
+   run), TLS capped to max version 1.2 (the original hang's own
+   `tls.c` had no such cap, so this changes two things not one --
+   noted, not yet separated). Result, reproduced identically twice:
+   **`SSL_connect()` returns in ~13.1 seconds with "unexpected eof
+   while reading"** -- a real, clean, fast failure (the remote side
+   closing the connection), categorically different from the original
+   900-second non-return. Not yet a full explanation (still don't know
+   whether the 13s failure is itself TLS-1.2-cap-specific, an artifact
+   of `tlsbench.c`'s own narrower `SSL_CTX` setup vs. `tls.c`'s real
+   one, or something about this host's specific path to
+   `example.com`), but it further undercuts "AmiSSL blocking I/O
+   simply cannot complete a handshake here" as the whole story --
+   worth a follow-up pass (try TLS 1.3 uncapped against the local
+   server; try `tls.c`'s own real `SSL_CTX` setup verbatim, not
+   `tlsbench.c`'s narrower one, against `example.com`) before touching
+   the `https://` CLI-level refusal itself, which stays in place
+   unchanged for now -- this is new evidence to build the next
+   experiment from, not yet grounds to reverse a safety decision.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below
