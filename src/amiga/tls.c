@@ -239,6 +239,14 @@ typedef struct {
     SSL *ssl;
     BIO *net_bio; /* our side of the pair; SSL owns the other side (internal_bio)
                     * once SSL_set_bio() runs -- freed automatically by SSL_free(). */
+    /* Bytes already read off the real socket but not yet fully handed
+     * to net_bio -- see tls_flush_in()'s own comment for why this
+     * stash exists (a short BIO_write() into the pair's bounded
+     * buffer is a real, legitimate outcome, unlike a blocking socket
+     * send()). [off, len) is the unwritten remainder. */
+    char pending_in[4096];
+    size_t pending_in_len;
+    size_t pending_in_off;
 } tls_handle;
 
 /* Buffer size for both directions of tls_pump() below -- comfortably
@@ -248,7 +256,9 @@ typedef struct {
  * limit -- SSL_do_handshake()/SSL_read()/SSL_write() each drain
  * whatever's already in internal_bio before ever reporting
  * WANT_READ/WANT_WRITE again, so tls_pump() is always called again for
- * more before the pair can back up. */
+ * more before the pair can back up. Must match tls_handle's own
+ * `pending_in` size above (one buffer's worth of unwritten input is
+ * the most tls_flush_in() ever needs to stash at once). */
 #define TLS_PUMP_CHUNK 4096
 
 /* Pushes every byte AmiSSL currently has queued in net_bio (its
@@ -291,17 +301,55 @@ static int tls_flush_out(tls_handle *h)
  * WANT_WRITE by definition has output to flush. Only blocks on a real
  * recv() when `want_read` is set -- otherwise this call is pure
  * output-flushing and returns as soon as that's done. */
+
+/* Pushes h->pending_in[off..len) into net_bio, as much as fits.
+ * BIO_write() into a BIO pair is NOT the same as the always-loops-to-
+ * completion amisnap_socket_send() this file's own header comment
+ * contrasts it with: the pair's buffer is a fixed, bounded size
+ * (~17KB/side, this file's own BIO_new_bio_pair() call), so a short
+ * write is a real, legitimate outcome whenever AmiSSL hasn't yet
+ * drained everything already queued on its side (plausible mid a
+ * real certificate-chain-heavy handshake, or any record large enough
+ * to need more than one pump round) -- not a bug in AmiSSL, a genuine
+ * capacity limit this file must handle. Advances h->pending_in_off as
+ * progress is made; stops (without error) on a retryable short write
+ * so tls_run()'s own loop gets a chance to call the SSL op again and
+ * drain the pair before the next tls_pump() tries to push more. A
+ * non-retryable failure (BIO_should_retry() false) is a real error. */
+static int tls_flush_in(tls_handle *h)
+{
+    while (h->pending_in_off < h->pending_in_len) {
+        int n = BIO_write(h->net_bio, h->pending_in + h->pending_in_off,
+                           (int)(h->pending_in_len - h->pending_in_off));
+
+        if (n > 0) {
+            h->pending_in_off += (size_t)n;
+            continue;
+        }
+        if (BIO_should_retry(h->net_bio)) return AMISNAP_OK; /* pair full for now, try again later */
+        return AMISNAP_ERR_IO; /* real, non-retryable BIO error */
+    }
+    return AMISNAP_OK;
+}
+
 static int tls_pump(tls_handle *h, int want_read)
 {
     int rc = tls_flush_out(h);
 
     if (rc != AMISNAP_OK) return rc;
 
-    if (want_read) {
-        char buf[TLS_PUMP_CHUNK];
+    rc = tls_flush_in(h);
+    if (rc != AMISNAP_OK) return rc;
+
+    /* Never read more off the socket while a previous chunk is still
+     * only partly delivered into net_bio -- pending_in has room for
+     * exactly one chunk, and tls_run()'s retry loop will call this
+     * again (after giving the SSL op a chance to drain the pair)
+     * before any new data is needed. */
+    if (want_read && h->pending_in_off >= h->pending_in_len) {
         size_t got = 0;
 
-        rc = amisnap_socket_recv(h->sock, buf, sizeof(buf), &got);
+        rc = amisnap_socket_recv(h->sock, h->pending_in, sizeof(h->pending_in), &got);
         if (rc != AMISNAP_OK) return AMISNAP_ERR_IO;
         /* The real TCP connection closing while AmiSSL is still
          * waiting for more bytes is never a clean outcome at this
@@ -309,7 +357,10 @@ static int tls_pump(tls_handle *h, int want_read)
          * SSL_ERROR_ZERO_RETURN check (a real, in-protocol
          * close_notify) is the only path a clean EOF can take. */
         if (got == 0) return AMISNAP_ERR_IO;
-        if (BIO_write(h->net_bio, buf, (int)got) <= 0) return AMISNAP_ERR_IO;
+        h->pending_in_len = got;
+        h->pending_in_off = 0;
+        rc = tls_flush_in(h);
+        if (rc != AMISNAP_OK) return rc;
     }
     return AMISNAP_OK;
 }
@@ -400,6 +451,8 @@ static int tls_connect(amisnap_transport *t, const char *host, uint16_t port, vo
     }
     h->sock = sock;
     h->net_bio = NULL;
+    h->pending_in_len = 0;
+    h->pending_in_off = 0;
 
     h->ssl = SSL_new(g_tls_ctx);
     if (!h->ssl) {

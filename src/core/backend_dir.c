@@ -22,10 +22,46 @@
 #include <sys/types.h>
 
 #include "backend_dir.h"
+#include "xxhash32.h"
 
 typedef struct {
     char *root; /* no trailing '/' */
 } dir_ctx;
+
+/* Builds the tmp/ staging filename for `key`: "<basename>.<8 hex
+ * digits>", the hex digits being xxHash32 of the FULL key (not just
+ * the basename). format.md's own commit protocol only documents
+ * "tmp/<hex64>" and "tmp/<snapid>.mf" for the repository backend's own
+ * writes (repo.c), where the basename alone is already unique --
+ * content hashes and snapshot IDs never collide in practice -- so
+ * this suffix is a no-op collision risk there. It matters for the
+ * OTHER real caller of this same backend: RESTORE's destination
+ * (main.c's open_backend() opens amisnap_backend_dir_open() for any
+ * non-http(s)/s3 DEST=, i.e. every local-path restore), where the key
+ * is a real user file path and two different subdirectories commonly
+ * share a filename (two "readme.txt", two "index.html", ...) -- an
+ * earlier version of this function used the bare basename alone,
+ * which meant two such entries collided on the identical tmp path.
+ * Not exploitable today given restore.c's strictly-sequential one-
+ * entry-at-a-time processing (each entry's own rename() completes
+ * before the next tmp file is opened), but a crash mid-restore
+ * leaving a stale tmp file, or any future concurrent/prefetching
+ * restore path, would have silently corrupted or lost data -- fixed
+ * at the root instead of documented as a constraint to remember.
+ * xxHash32 (not a cryptographic hash -- this project's own "CPU
+ * budget" default per proposal.md) is more than sufficient for a
+ * scratch/staging filename: a collision only matters if it also
+ * matches the OTHER colliding key's basename AND both are in flight
+ * at the same time, an astronomically unlikely conjunction for a
+ * 32-bit hash at backup-repository scale. */
+static int tmp_name_for_key(const char *key, const char *base, char *out, size_t outsize)
+{
+    uint32_t h = amisnap_xxh32(key, strlen(key), 0);
+
+    if (snprintf(out, outsize, "%s.%08lx", base, (unsigned long)h) >= (int)outsize)
+        return AMISNAP_ERR_MALFORMED;
+    return AMISNAP_OK;
+}
 
 static int join_path(const dir_ctx *ctx, const char *key, char *buf, size_t bufsize)
 {
@@ -106,6 +142,7 @@ static int dir_put(amisnap_backend *be, const char *key, const void *data, size_
     dir_ctx *ctx = (dir_ctx *)be->ctx;
     char final_path[AMISNAP_BACKEND_DIR_MAX_PATH];
     char tmp_dir[AMISNAP_BACKEND_DIR_MAX_PATH];
+    char tmp_name[AMISNAP_BACKEND_DIR_MAX_PATH];
     char tmp_path[AMISNAP_BACKEND_DIR_MAX_PATH];
     const char *base;
     FILE *f;
@@ -118,13 +155,19 @@ static int dir_put(amisnap_backend *be, const char *key, const void *data, size_
      * target's own basename (tmp/<hex64> for objects, tmp/<snapid>.mf
      * for manifests) -- matched here for a human poking around a
      * live repository mid-write, though only the atomicity (not the
-     * exact temp name) is load-bearing. */
+     * exact temp name) is load-bearing. tmp_name_for_key()'s own
+     * comment has the "why a hash suffix" reasoning -- collision-free
+     * across differently-pathed same-basename keys (the actual
+     * destination-restore case; the repo's own hex64/snapid.mf keys
+     * are already unique on the basename alone). */
     base = strrchr(key, '/');
     base = base ? base + 1 : key;
+    rc = tmp_name_for_key(key, base, tmp_name, sizeof(tmp_name));
+    if (rc != AMISNAP_OK) return rc;
 
     rc = join_path(ctx, "tmp", tmp_dir, sizeof(tmp_dir));
     if (rc != AMISNAP_OK) return rc;
-    if (snprintf(tmp_path, sizeof(tmp_path), "%s/%s", tmp_dir, base) >= (int)sizeof(tmp_path))
+    if (snprintf(tmp_path, sizeof(tmp_path), "%s/%s", tmp_dir, tmp_name) >= (int)sizeof(tmp_path))
         return AMISNAP_ERR_MALFORMED;
 
     rc = mkdir_p(tmp_dir);
@@ -163,6 +206,7 @@ static int dir_put_begin(amisnap_backend *be, const char *key, void **handle_out
     dir_ctx *ctx = (dir_ctx *)be->ctx;
     dir_put_handle *h;
     char tmp_dir[AMISNAP_BACKEND_DIR_MAX_PATH];
+    char tmp_name[AMISNAP_BACKEND_DIR_MAX_PATH];
     const char *base;
     int rc;
 
@@ -172,12 +216,15 @@ static int dir_put_begin(amisnap_backend *be, const char *key, void **handle_out
     rc = join_path(ctx, key, h->final_path, sizeof(h->final_path));
     if (rc != AMISNAP_OK) { free(h); return rc; }
 
+    /* See dir_put()'s own identical comment / tmp_name_for_key(). */
     base = strrchr(key, '/');
     base = base ? base + 1 : key;
+    rc = tmp_name_for_key(key, base, tmp_name, sizeof(tmp_name));
+    if (rc != AMISNAP_OK) { free(h); return rc; }
 
     rc = join_path(ctx, "tmp", tmp_dir, sizeof(tmp_dir));
     if (rc != AMISNAP_OK) { free(h); return rc; }
-    if (snprintf(h->tmp_path, sizeof(h->tmp_path), "%s/%s", tmp_dir, base) >= (int)sizeof(h->tmp_path)) {
+    if (snprintf(h->tmp_path, sizeof(h->tmp_path), "%s/%s", tmp_dir, tmp_name) >= (int)sizeof(h->tmp_path)) {
         free(h);
         return AMISNAP_ERR_MALFORMED;
     }

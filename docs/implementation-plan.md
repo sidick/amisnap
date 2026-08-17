@@ -2212,6 +2212,56 @@ protocol code against a local WebDAV container.
    substantially more on-target iteration than is practical without
    it; picking this back up should start from the diagnostics above
    rather than re-deriving the ruled-out hypotheses.
+
+   **Follow-up (2026-08-17, same day): independent review found two
+   real bugs; neither explains this corruption.** A fresh, independent
+   code review of the code paths this bug touches (`tls.c`, `webdav.c`,
+   `http.c`, `restore.c`, `restore_meta.c`, `main.c`'s `open_backend()`/
+   `cmd_restore()`) -- deliberately not given this investigation's own
+   ruled-out hypotheses first, to avoid anchoring -- found two genuine,
+   independently-confirmed correctness bugs, both now fixed:
+     - `tls.c`'s `tls_pump()` checked `BIO_write()` into the BIO pair
+       only for `<= 0`, never for a **short write** (`0 < n < got`).
+       `BIO_new_bio_pair()`'s buffers are bounded (~17KB/side); if
+       AmiSSL hasn't fully drained previously-queued data when more
+       arrives, `BIO_write()` can legitimately write fewer bytes than
+       requested, and the remainder -- real ciphertext already read off
+       the socket -- was silently dropped, never retried. Fixed by
+       giving `tls_handle` a one-chunk `pending_in` stash and a new
+       `tls_flush_in()` that retries the write (distinguishing a
+       retryable short write, `BIO_should_retry()`, from a real error)
+       across however many `tls_pump()` calls it takes for AmiSSL to
+       drain the pair, mirroring the producer/consumer pattern the BIO
+       pair is designed around. A real bug, plausible in principle for
+       cipher-dependent handshake/record sizing, but see below.
+     - `backend_dir.c`'s atomic-write temp path was named after the
+       key's bare basename only (`tmp/<basename>`), dropping the
+       directory prefix. Two keys with the same filename in different
+       directories collided on an identical temp path. Not exploitable
+       for the repository's own writes (object/manifest keys are
+       already basename-unique -- content hashes, snapshot IDs) but
+       real for RESTORE's destination, which goes through this same
+       backend (`main.c`'s `open_backend()` for any non-http(s)/s3
+       path) with arbitrary user file paths, where same-named files in
+       different subdirectories are common. Fixed with a
+       `tmp_name_for_key()` helper appending an 8-hex-digit xxHash32 of
+       the *full* key, keeping `tmp/` flat (`prune.c`'s own sweep lists
+       it non-recursively) while making the name collision-free.
+
+   Both fixes are real, independently verified (899/899 host tests,
+   clean m68k cross-build) and kept regardless of the outcome below --
+   they're correct on their own merits, not contingent on explaining
+   this specific bug. **Re-tested against the real CIPHERS= repro with
+   both fixes in place: still reproduces.** Three consecutive real
+   `run-webdav-tls.sh` runs with `CIPHERS=ECDHE-RSA-AES128-GCM-SHA256`
+   (CLI wiring temporarily restored for this test only, then reverted
+   again) all failed identically -- RESTORE reports full success,
+   readback's `Lock()` fails on every file -- if anything a higher
+   observed rate on this small sample than the original ~1-in-3
+   estimate, not lower. The `tls_pump()` short-write bug was the best
+   candidate the independent review produced, but the evidence now
+   says it isn't (or isn't solely) the mechanism. `CIPHERS=` remains
+   withdrawn from the CLI; the actual root cause is still unknown.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below

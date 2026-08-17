@@ -130,24 +130,22 @@ static int g_tls_allow_13 = 0;
 static int g_tls_insecure = 0;
 /* CIPHERS= is NOT wired up here -- see implementation-plan.md Phase 3
  * item 4's "CIPHERS= cipher-list override" entry. A real, intermittent
- * (roughly 1-in-3 across repeated identical runs, not a one-off flake)
  * corruption was found: real https:// RESTORE with an explicit
  * cipher_list set completes and self-verifies successfully, yet a
  * LATER, unrelated process can no longer Lock() the files it just
  * wrote. Extensive isolated on-target repro attempts (cipherlockdiag.c,
  * cipherconndiag.c, lockchecker.c under tests/copperline/) ruled out
- * several specific hypotheses -- SSL_CTX_set_cipher_list() itself,
- * stack overflow (reproduced identically at 8x the normal stack),
- * simple repeated tls_lib_open()/connect() exhaustion under the actual
- * production call pattern (single lib_open, connection-reuse) -- but
- * did not find the mechanism; the bug reproduces only under the full,
- * real webdav.c/restore.c pipeline, and only intermittently. Per this
- * project's own "a data-losing bug is fatal" principle, an
- * intermittent corruption is worse than a deterministic one (harder
- * for a user to ever notice or trust), so this stays CLI-inert -- the
- * cipher_list parameter itself stays on amisnap_tls_lib_open() (tls.c/
- * tls.h), ready for whichever fix eventually lands, but nothing here
- * ever calls it non-NULL. */
+ * several specific hypotheses. Two independently-review-found real
+ * bugs were fixed as a result (a short-write bug in tls.c's own
+ * tls_pump(), a temp-filename collision in backend_dir.c) but neither
+ * explains this corruption -- re-tested against the real repro after
+ * both fixes landed and it still reproduces, if anything at a higher
+ * rate across the small sample retested. Per this project's own "a
+ * data-losing bug is fatal" principle, an intermittent corruption is
+ * worse than a deterministic one (harder for a user to ever notice or
+ * trust), so this stays CLI-inert -- the cipher_list parameter itself
+ * stays on amisnap_tls_lib_open() (tls.c/tls.h), ready for whichever
+ * fix eventually lands, but nothing here ever calls it non-NULL. */
 
 static int open_backend(const char *path, amisnap_backend *out)
 {
