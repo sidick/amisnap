@@ -96,6 +96,11 @@ struct Library *AmiSSLBase = NULL;
 struct Library *AmiSSLExtBase = NULL;
 
 static SSL_CTX *g_tls_ctx = NULL;
+/* Mirrors the `insecure` argument amisnap_tls_lib_open() ran with --
+ * tls_connect() below needs it too (to skip SSL_set1_host()), and
+ * there's exactly one SSL_CTX/session policy live at a time in this
+ * codebase, same reasoning g_tls_ctx itself is a module global. */
+static int g_tls_insecure = 0;
 
 void amisnap_tls_lib_close(void)
 {
@@ -116,9 +121,11 @@ void amisnap_tls_lib_close(void)
     }
 }
 
-int amisnap_tls_lib_open(int allow_tls13)
+int amisnap_tls_lib_open(int allow_tls13, int insecure)
 {
     LONG rc;
+
+    g_tls_insecure = insecure;
 
     AmiSSLMasterBase = OpenLibrary((CONST_STRPTR)"amisslmaster.library", 5);
     if (!AmiSSLMasterBase) return AMISNAP_ERR_IO;
@@ -167,6 +174,23 @@ int amisnap_tls_lib_open(int allow_tls13)
     SSL_CTX_set_min_proto_version(g_tls_ctx, TLS1_2_VERSION);
     SSL_CTX_set_max_proto_version(g_tls_ctx, allow_tls13 ? TLS1_3_VERSION : TLS1_2_VERSION);
 
+    if (insecure) {
+        /* Explicit, deliberate opt-in (CLI: TLSINSECURE switch, never
+         * the default) -- a home-lab NAS/WebDAV server with a
+         * self-signed or otherwise untrusted certificate is a common,
+         * legitimate destination this project has no business
+         * refusing outright just because it can't build a chain to a
+         * public CA. No callback, no AmiSSL:Certs load (skipped
+         * entirely -- this mode has no use for it, and it means
+         * TLSINSECURE also works on a system with no real CA store set
+         * up at all, another common home-lab case). tls_connect()
+         * below also skips SSL_set1_host() when this is set, per its
+         * own comment. */
+        // nosemgrep: cpp.lang.security.crypto.certificate.openssl-disabled-cert-validation.openssl-disabled-cert-validation
+        SSL_CTX_set_verify(g_tls_ctx, SSL_VERIFY_NONE, NULL);
+        return AMISNAP_OK;
+    }
+
     /* Real verification, not a placeholder: chain trust against AmiSSL's
      * own bundled, pre-hashed CA directory (the standard OpenSSL c_rehash
      * layout -- confirmed present under the OS3 runtime package's own
@@ -174,7 +198,9 @@ int amisnap_tls_lib_open(int allow_tls13)
      * directory isn't set up (AmiSSL not actually installed on this
      * system, just amisslmaster.library present), fail closed here
      * rather than silently connecting without any way to check who's on
-     * the other end -- "trust is everything". Hostname verification
+     * the other end -- "trust is everything" (TLSINSECURE above is the
+     * explicit, opt-in escape hatch from that policy; this is the
+     * default path, and it stays strict). Hostname verification
      * against the connected host happens per-connection in
      * tls_connect() below (SSL_set1_host()), not here.
      *
@@ -381,8 +407,17 @@ static int tls_connect(amisnap_transport *t, const char *host, uint16_t port, vo
 
     /* SNI (the server-side name selection extension) and the client-side
      * hostname-match check are two distinct things -- both point at the
-     * same `host`, but setting one never implies the other. */
-    if (!SSL_set_tlsext_host_name(h->ssl, host) || !SSL_set1_host(h->ssl, host)) {
+     * same `host`, but setting one never implies the other. SNI stays
+     * on even in TLSINSECURE mode (it just helps the server pick the
+     * right vhost/cert, harmless with no verification happening on our
+     * end); SSL_set1_host() is skipped entirely when g_tls_insecure --
+     * a self-signed home-lab cert's CN/SAN commonly doesn't match the
+     * server's real address anyway, and with SSL_VERIFY_NONE already
+     * set in amisnap_tls_lib_open() a hostname mismatch wouldn't abort
+     * the connection regardless, so setting it would only be
+     * misleading, not protective. */
+    if (!SSL_set_tlsext_host_name(h->ssl, host) ||
+        (!g_tls_insecure && !SSL_set1_host(h->ssl, host))) {
         SSL_free(h->ssl); /* frees internal_bio too */
         BIO_free(h->net_bio);
         amisnap_socket_close(sock);

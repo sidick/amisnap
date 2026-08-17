@@ -120,6 +120,14 @@ static amisnap_transport g_tls_transport;
  * every cmd_*() -> open_backend() call site (REPO= and DEST= can each
  * trigger one, e.g. RESTORE). */
 static int g_tls_allow_13 = 0;
+/* Set once from the TLSINSECURE switch, same lifecycle as
+ * g_tls_allow_13 above. Disables certificate verification entirely
+ * for every https:// destination this process touches -- an explicit,
+ * deliberate opt-out of "trust is everything" (tls.h's own doc
+ * comment on amisnap_tls_lib_open()'s `insecure` parameter has the
+ * full reasoning) for a self-signed or otherwise untrusted
+ * certificate, the common case for a home-lab NAS/WebDAV server. */
+static int g_tls_insecure = 0;
 
 static int open_backend(const char *path, amisnap_backend *out)
 {
@@ -181,7 +189,19 @@ static int open_backend(const char *path, amisnap_backend *out)
              * SSL_set1_host()): real handshake success, real encrypted
              * data exchange, no hang. */
             if (!g_tls_lib_open) {
-                rc = amisnap_tls_lib_open(g_tls_allow_13);
+                if (g_tls_insecure) {
+                    /* Never silent, per tls.h's own doc comment on
+                     * `insecure`: printed once per process (right
+                     * before the one amisnap_tls_lib_open() call that
+                     * actually applies it), not per-connection, so a
+                     * multi-destination run (e.g. RESTORE's REPO= and
+                     * DEST=) doesn't spam duplicate warnings once
+                     * g_tls_lib_open latches. */
+                    amilog_err("AmiSnap: WARNING: TLSINSECURE set -- certificate "
+                               "verification disabled for \"%s\" and every other "
+                               "https:// destination this run touches\n", path);
+                }
+                rc = amisnap_tls_lib_open(g_tls_allow_13, g_tls_insecure);
                 if (rc != AMISNAP_OK) {
                     amilog_err("AmiSnap: TLS init failed for \"%s\" -- AmiSSL not "
                                "installed, or its cert store (AmiSSL:Certs) isn't "
@@ -1730,9 +1750,9 @@ static int str_ieq(const char *a, const char *b)
     return *a == '\0' && *b == '\0';
 }
 
-#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,TLS13/S"
+#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,TLS13/S,TLSINSECURE/S"
 enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_LOG,
-       ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_TLS13, ARG_COUNT };
+       ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_TLS13, ARG_TLSINSECURE, ARG_COUNT };
 
 static int real_main(void *arg)
 {
@@ -1759,10 +1779,15 @@ static int real_main(void *arg)
 
     /* TLS13: opt into TLS 1.3 for this run's https:// destinations
      * (open_backend()'s own comment has the full "why 1.2 by default"
-     * evidence). Read once here, before any command dispatch below can
-     * call open_backend(), same as every other once-per-process global
-     * this file sets up in this function. */
+     * evidence). TLSINSECURE: opt out of certificate verification
+     * entirely (tls.h's own doc comment on amisnap_tls_lib_open()'s
+     * `insecure` parameter has the full reasoning -- a self-signed or
+     * otherwise untrusted certificate, the common case for a home-lab
+     * NAS/WebDAV server). Both read once here, before any command
+     * dispatch below can call open_backend(), same as every other
+     * once-per-process global this file sets up in this function. */
     g_tls_allow_13 = args[ARG_TLS13] != 0;
+    g_tls_insecure = args[ARG_TLSINSECURE] != 0;
 
     logpath = (const char *)args[ARG_LOG];
     if (logpath) {

@@ -30,6 +30,15 @@
 # TLS13=1 runs the same cycle with the TLS13 switch set (opt into TLS
 # 1.3) instead of the TLS 1.2 default -- pass it to test that path too.
 #
+# INSECURE=1 runs the same cycle with the TLSINSECURE switch set
+# instead, and -- unlike the default run -- the throwaway CA is
+# deliberately NOT installed into the clone's own AmiSSL:Certs at all,
+# genuinely simulating a self-signed/untrusted certificate with no
+# trust store to walk a chain against (the real home-lab case
+# TLSINSECURE exists for), not just a real CA the guest happens to
+# trust. TLS13 and INSECURE are independent knobs (either, both, or
+# neither).
+#
 # Prereqs: same as run-tls-bench.sh (copperline, a real WB clone with
 # AmiSSL installed, openssl, docker for the cross-build) plus python3
 # (mini_webdav_server.py, stdlib-only).
@@ -50,6 +59,7 @@ WB=${WB:-${AMIAUTH_WB_HDD:-}}
 BENCH=${BENCH:-120}
 PORT=${PORT:-18794}
 TLS13=${TLS13:-0}
+INSECURE=${INSECURE:-0}
 
 AMISNAP_BIN="$ROOT/build/AmiSnap"
 STAGE_BIN="$ROOT/build/copperline-fixtures/stage"
@@ -68,6 +78,7 @@ command -v python3 >/dev/null || { echo "FAIL: python3 not found" >&2; exit 2; }
 echo "ROM: $KICK"
 echo "WB:  $WB"
 echo "TLS13: $TLS13"
+echo "INSECURE: $INSECURE"
 
 T=$(mktemp -d)
 SERVER_PID=""
@@ -104,11 +115,16 @@ CA_HASH=$(openssl x509 -noout -hash -in "$PKI/ca-cert.pem")
 
 # --- clone the WB (copy-on-write), install the CA hash into the
 # clone's own AmiSSL:Certs (AmiSSL: -> SYS:AmiSSL per its own
-# S:User-Startup), stage AmiSnap + fixtures + results mount. ----------
+# S:User-Startup) -- UNLESS INSECURE=1, in which case this is
+# deliberately skipped: TLSINSECURE's whole point is working with no
+# real chain to verify at all, so leaving the throwaway CA out here is
+# what makes this a genuine test of that, not just "a CA the guest
+# happens to trust anyway". Stage AmiSnap + fixtures + results
+# mount. --------------------------------------------------------
 cp -Rc "$WB" "$T/boot" 2>/dev/null || cp -R "$WB" "$T/boot"
 CERTS_DIR="$T/boot/AmiSSL/Certs"
 [ -d "$CERTS_DIR" ] || { echo "FAIL: $WB/AmiSSL/Certs missing -- AmiSSL not actually installed on this WB?" >&2; exit 2; }
-cp "$PKI/ca-cert.pem" "$CERTS_DIR/$CA_HASH.0"
+[ "$INSECURE" = "1" ] || cp "$PKI/ca-cert.pem" "$CERTS_DIR/$CA_HASH.0"
 
 mkdir -p "$T/source" "$T/restored" "$T/results" "$T/server-root"
 cp "$AMISNAP_BIN" "$T/boot/AmiSnap"
@@ -116,20 +132,21 @@ cp "$STAGE_BIN" "$T/boot/stage"
 cp "$READBACK_BIN" "$T/boot/readback"
 
 REPO_URL="https://127.0.0.1:$PORT/repo"
-TLS13_ARG=""
-[ "$TLS13" = "1" ] && TLS13_ARG=" TLS13"
+TLS_ARGS=""
+[ "$TLS13" = "1" ] && TLS_ARGS="$TLS_ARGS TLS13"
+[ "$INSECURE" = "1" ] && TLS_ARGS="$TLS_ARGS TLSINSECURE"
 
 SEQ="$T/boot/S/Startup-Sequence"
-awk -v repo="$REPO_URL" -v tls13="$TLS13_ARG" '
+awk -v repo="$REPO_URL" -v tlsargs="$TLS_ARGS" '
 /^LoadWB/ {
     print "Assign Source: AmiSnapSource:"
     print "Assign Restored: AmiSnapRestored:"
     print "Assign Results: AmiSnapResults:"
     print "SYS:stage"
-    print "SYS:AmiSnap ACTION=SNAPSHOT SOURCE=Source: REPO=" repo tls13 " LOG=Results:snapshot.log"
-    print "SYS:AmiSnap ACTION=LIST REPO=" repo tls13 " LOG=Results:list.log"
-    print "SYS:AmiSnap ACTION=VERIFY REPO=" repo tls13 " FULL LOG=Results:verify.log"
-    print "SYS:AmiSnap ACTION=RESTORE REPO=" repo tls13 " DEST=Restored: LOG=Results:restore.log"
+    print "SYS:AmiSnap ACTION=SNAPSHOT SOURCE=Source: REPO=" repo tlsargs " LOG=Results:snapshot.log"
+    print "SYS:AmiSnap ACTION=LIST REPO=" repo tlsargs " LOG=Results:list.log"
+    print "SYS:AmiSnap ACTION=VERIFY REPO=" repo tlsargs " FULL LOG=Results:verify.log"
+    print "SYS:AmiSnap ACTION=RESTORE REPO=" repo tlsargs " DEST=Restored: LOG=Results:restore.log"
     print "SYS:readback"
 }
 { print }

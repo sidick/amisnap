@@ -2037,6 +2037,42 @@ protocol code against a local WebDAV container.
    needs to be -- the BIO-pair redesign sidesteps it entirely, the same
    way `modssl.c`'s own header comment describes doing on this exact
    platform.
+
+   **`TLSINSECURE` added (same day, 2026-08-17)** -- a self-signed or
+   otherwise untrusted certificate is the common, legitimate case for a
+   home-lab NAS/WebDAV server, and refusing it outright just because it
+   can't build a chain to a public CA (or the box has no real CA store
+   set up at all, itself a common home-lab state) isn't the right
+   default failure mode for a destination the user already trusts some
+   other way -- it's on their own LAN, most commonly. `amisnap_tls_lib_
+   open()` takes a new `insecure` parameter (CLI: the `TLSINSECURE`
+   switch, `main.c`'s own `g_tls_insecure`): `SSL_VERIFY_NONE` instead
+   of `SSL_VERIFY_PEER`, `AmiSSL:Certs` never loaded at all (so this
+   also works with no real trust store installed), and `tls_connect()`
+   skips `SSL_set1_host()` too (a self-signed cert's CN/SAN commonly
+   doesn't match the server's real address, and a hostname mismatch
+   wouldn't abort the connection under `SSL_VERIFY_NONE` regardless, so
+   checking it would only be misleading). Deliberately opt-in, never
+   silent: `open_backend()` prints a visible `WARNING:` once per
+   process before the connection it applies to, not buried in a debug
+   log -- "trust is everything" governs the *default*, this is the
+   explicit escape hatch a user can choose to take for a specific
+   destination, not a quiet downgrade.
+
+   Verified live, real production CLI, real `TLSINSECURE`: extended
+   `run-webdav-tls.sh` with `INSECURE=1`, which -- unlike the default
+   run -- deliberately does *not* install the throwaway CA into the WB
+   clone's own `AmiSSL:Certs` at all, so this genuinely exercises "no
+   chain to verify" rather than "a CA the guest happens to trust
+   anyway". Full real SNAPSHOT/LIST/VERIFY/RESTORE cycle over `https://`
+   against the self-signed/untrusted server, `WARNING: TLSINSECURE set`
+   printed on every command as designed, correct content round-trip,
+   real objects on the server's own backing store -- a clean `PASS`.
+   The default (no `TLSINSECURE`) path retested alongside it, still
+   clean, no warning printed, confirming the new parameter didn't
+   disturb the existing verified behavior. Full regression sweep
+   (899/899 host tests, `run.sh`/`run-webdav.sh`/`run-s3.sh`) clean
+   throughout.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below
