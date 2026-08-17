@@ -232,6 +232,129 @@ if [ "$OBJECT_COUNT" -lt 1 ]; then
     fail=1
 fi
 
+kill "$SERVER_PID" >/dev/null 2>&1 || true
+
+# --- second pass: AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION
+# env-var credential fallback, no credentials in REPO= at all -- same
+# standard names/precedence the AWS CLI and SDKs use everywhere else,
+# so this REPO= URL never has to carry secrets in plaintext in a
+# Startup-Sequence script, shell history, or `ps` output
+# (amisnap_s3_parse_url()'s own has_credentials/has_region fields,
+# src/cli/main.c's open_backend()). `Set` (a Shell-resident built-in
+# needing no C: binary and no ENV: assign) rather than `SetEnv`: this
+# minimal boot's C: has only the 4 binaries run.sh itself stages, so
+# MakeDir/Assign/List (needed to set up ENV: for a true global/
+# SetEnv-style variable) are "Unknown command" here -- confirmed live.
+# `Set` defines a *local* shell variable instead, which GetVar()'s own
+# documented local-before-global lookup order finds through exactly
+# the same code path, without needing ENV: to exist. ---------------
+PORT2=$((PORT + 1))
+WORK2="$HERE/s3-work-envcreds"
+rm -rf "$WORK2"
+mkdir -p "$WORK2/boot/C" "$WORK2/boot/S" "$WORK2/source" "$WORK2/results" "$WORK2/server-root"
+cp "$AMISNAP_BIN" "$WORK2/boot/C/AmiSnap"
+cp "$STAGE_BIN" "$WORK2/boot/C/stage"
+
+REPO_URL2="s3://127.0.0.1:$PORT2/$BUCKET/repo"
+cat > "$WORK2/boot/S/Startup-Sequence" <<EOF
+FailAt 21
+Set AWS_ACCESS_KEY_ID $ACCESS_KEY
+Set AWS_SECRET_ACCESS_KEY $SECRET_KEY
+Set AWS_REGION $REGION
+stage
+AmiSnap ACTION=SNAPSHOT SOURCE=Source: REPO=$REPO_URL2 LOG=Results:snapshot.log
+AmiSnap ACTION=LIST REPO=$REPO_URL2 LOG=Results:list.log
+EOF
+
+cat > "$WORK2/machine.toml" <<EOF
+[cpu]
+model = "68020"
+
+[memory]
+chip = "1M"
+fast = "2M"
+
+[floppy]
+drives = 1
+
+[[filesys]]
+path = "$WORK2/boot"
+volume = "AmiSnapBoot"
+bootpri = 10
+
+[[filesys]]
+path = "$WORK2/source"
+volume = "Source"
+bootpri = -128
+
+[[filesys]]
+path = "$WORK2/results"
+volume = "Results"
+bootpri = -128
+
+[emulation]
+power_on = true
+warp_speed = "max"
+EOF
+
+SERVER_LOG2="$WORK2/server.log"
+python3 "$ROOT/tests/s3/mini_s3_server.py" "$WORK2/server-root" "$BUCKET" \
+    "$ACCESS_KEY" "$SECRET_KEY" "$REGION" "$PORT2" >"$SERVER_LOG2" 2>&1 &
+SERVER_PID2=$!
+cleanup2() { kill "$SERVER_PID2" >/dev/null 2>&1 || true; }
+trap cleanup2 EXIT INT TERM
+
+i=0
+READY2=0
+while [ $i -lt 50 ]; do
+    if grep -q "^READY" "$SERVER_LOG2" 2>/dev/null; then READY2=1; break; fi
+    if ! kill -0 "$SERVER_PID2" 2>/dev/null; then
+        echo "FAIL: mini_s3_server.py (env-creds pass) exited early:" >&2
+        cat "$SERVER_LOG2" >&2
+        exit 3
+    fi
+    i=$((i + 1))
+    sleep 0.1
+done
+[ "$READY2" -eq 1 ] || { echo "FAIL: server (env-creds pass) never became ready" >&2; cat "$SERVER_LOG2" >&2; exit 3; }
+
+set +e
+"$COPPERLINE" --config "$WORK2/machine.toml" --cpu 68020 --noaudio --hostsocket-net host \
+    --benchmark-until "$BENCH" "$KICK" >"$OUT" 2>&1
+CL_RC2=$?
+set -e
+kill "$SERVER_PID2" >/dev/null 2>&1 || true
+
+echo "----- copperline output (env-creds pass) -----"
+tail -20 "$OUT"
+echo "------------------------------"
+[ "$CL_RC2" -eq 0 ] || { echo "FAIL: $COPPERLINE (env-creds pass) exited $CL_RC2"; cat "$OUT"; exit 3; }
+
+check_log2() {
+    name=$1; pattern=$2
+    path="$WORK2/results/$name"
+    if [ ! -e "$path" ]; then
+        echo "FAIL: (env-creds pass) missing $name (command never completed?)"
+        fail=1
+        return
+    fi
+    echo "--- (env-creds pass) $name ---"; cat "$path"
+    if ! grep -q "$pattern" "$path"; then
+        echo "FAIL: (env-creds pass) $name does not contain expected pattern: $pattern"
+        fail=1
+    fi
+}
+check_log2 stage.log "^stage: done$"
+check_log2 snapshot.log "^Snapshot .*(0 unchanged, 0 failed)"
+check_log2 list.log " entries"
+
+OBJECT_COUNT2=$(find "$WORK2/server-root" -type f 2>/dev/null | wc -l | tr -d ' ')
+echo "--- (env-creds pass) S3 server backing store: $OBJECT_COUNT2 object(s) ---"
+if [ "$OBJECT_COUNT2" -lt 1 ]; then
+    echo "FAIL: (env-creds pass) no objects found on the S3 server's own backing store"
+    fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
     echo "FAIL: one or more checks failed"
     exit 1

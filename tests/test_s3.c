@@ -560,16 +560,31 @@ static void run_url_parse_tests(void)
     TEST_CHECK(strcmp(u.bucket, "mybucket") == 0);
     TEST_CHECK(u.base_path[0] == '\0');
     TEST_CHECK(strcmp(u.region, "us-east-1") == 0); /* default */
+    TEST_CHECK(u.has_credentials);
+    TEST_CHECK(!u.has_region);
 
     TEST_CHECK(amisnap_s3_parse_url("s3://AKID:SECRET@minio.local/mybucket/some/prefix?region=eu-west-1",
                                      &u) == AMISNAP_OK);
     TEST_CHECK(u.port == 80);
     TEST_CHECK(strcmp(u.base_path, "some/prefix") == 0);
     TEST_CHECK(strcmp(u.region, "eu-west-1") == 0);
+    TEST_CHECK(u.has_region);
 
-    /* Missing credentials, missing bucket, wrong scheme: all refused. */
-    TEST_CHECK(amisnap_s3_parse_url("s3://minio.local/mybucket", &u) == AMISNAP_ERR_MALFORMED);
+    /* No credentials in the URL: valid syntax, not this function's
+     * concern -- the CLI (src/cli/main.c's open_backend()) falls back
+     * to AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars, same
+     * convention the AWS CLI/SDKs use, and only errors if those are
+     * *also* absent. has_credentials is how the CLI tells "the URL
+     * didn't specify this" apart from a URL that spelled out empty
+     * credentials (which isn't syntactically possible here anyway). */
+    TEST_CHECK(amisnap_s3_parse_url("s3://minio.local/mybucket", &u) == AMISNAP_OK);
+    TEST_CHECK(!u.has_credentials);
+    TEST_CHECK(u.access_key[0] == '\0' && u.secret_key[0] == '\0');
+
+    /* Missing bucket, only one of access/secret key, wrong scheme: all refused. */
+    TEST_CHECK(amisnap_s3_parse_url("s3://minio.local", &u) == AMISNAP_ERR_MALFORMED);
     TEST_CHECK(amisnap_s3_parse_url("s3://AKID:SECRET@minio.local", &u) == AMISNAP_ERR_MALFORMED);
+    TEST_CHECK(amisnap_s3_parse_url("s3://AKID@minio.local/bucket", &u) == AMISNAP_ERR_MALFORMED);
     TEST_CHECK(amisnap_s3_parse_url("http://AKID:SECRET@minio.local/bucket", &u) == AMISNAP_ERR_MALFORMED);
 
     /* A real AWS-shaped secret key: base64-alphabet, so it routinely

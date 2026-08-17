@@ -79,9 +79,19 @@ typedef struct {
     char region[AMISNAP_S3_URL_REGION_MAX]; /* defaults to "us-east-1" if the URL omits ?region= */
     char access_key[AMISNAP_S3_URL_CRED_MAX];
     char secret_key[AMISNAP_S3_URL_CRED_MAX];
+    /* True if the URL itself carried "user:pass@"/"?region=" -- lets a
+     * caller (the CLI's AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/
+     * AWS_REGION/AWS_DEFAULT_REGION env-var fallback, src/cli/main.c)
+     * tell "the URL didn't specify this" apart from "the URL specified
+     * exactly the same value the fallback would have produced" --
+     * access_key/secret_key empty already doubles as that signal for
+     * credentials, but region always has a non-empty value (the
+     * "us-east-1" default) so needs its own flag. */
+    int has_credentials;
+    int has_region;
 } amisnap_s3_url;
 
-/* Parses "s3://<access_key>:<secret_key>@host[:port]/<bucket>[/prefix]
+/* Parses "s3://[<access_key>:<secret_key>@]host[:port]/<bucket>[/prefix]
  * [?region=<region>]" (the CLI's own REPO=/DEST= form for an S3
  * destination, docs/proposal.md Tier 3) into `out`. Path-style
  * addressing only (bucket as the first path component, not a virtual-
@@ -92,9 +102,16 @@ typedef struct {
  * issue that disabled `https://` for WebDAV (implementation-plan.md
  * Phase 3 item 4) applies equally here; there is no separate `s3s://`
  * scheme to fail into until that's fixed. Purely syntactic -- does not
- * open a connection. Returns AMISNAP_OK, or AMISNAP_ERR_MALFORMED for
- * anything that isn't a recognizable `s3://` URL with both credentials
- * and a bucket. */
+ * open a connection.
+ *
+ * Credentials in the URL are optional (out->has_credentials reports
+ * which): the CLI (src/cli/main.c's open_backend()) falls back to the
+ * AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars when the URL omits
+ * them, same convention the AWS CLI/SDKs use on every other platform,
+ * so this function alone does not treat missing credentials as an
+ * error -- only the CLI, after the env-var fallback has also come up
+ * empty, does. Returns AMISNAP_OK, or AMISNAP_ERR_MALFORMED for
+ * anything that isn't a recognizable `s3://` URL with a bucket. */
 int amisnap_s3_parse_url(const char *url, amisnap_s3_url *out);
 
 /* Current UTC time as "YYYYMMDD'T'HHMMSS'Z'" (SigV4's own x-amz-date

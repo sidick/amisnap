@@ -34,6 +34,7 @@
 
 #include <dos/dos.h>
 #include <dos/rdargs.h>
+#include <dos/var.h>
 #include <proto/dos.h>
 
 #include "amipath.h"
@@ -181,9 +182,73 @@ static int open_backend(const char *path, amisnap_backend *out)
         rc = amisnap_s3_parse_url(path, &url);
         if (rc != AMISNAP_OK) {
             amilog_err("AmiSnap: malformed S3 URL \"%s\" -- expected "
-                       "s3://<access_key>:<secret_key>@host[:port]/<bucket>[/prefix]"
+                       "s3://[<access_key>:<secret_key>@]host[:port]/<bucket>[/prefix]"
                        "[?region=<region>]\n", path);
             return rc;
+        }
+
+        /* AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION/
+         * AWS_DEFAULT_REGION fallback -- same standard names and
+         * precedence (AWS_REGION over AWS_DEFAULT_REGION) the AWS CLI
+         * and SDKs use on every other platform, so a REPO= URL doesn't
+         * have to carry credentials in plaintext in a Startup-Sequence
+         * script, shell history, or `ps` output. GetVar() with no
+         * GVF_GLOBAL_ONLY/GVF_LOCAL_ONLY flag checks local shell
+         * variables (`Set`) first, then global ones (`SetEnv`/ENV:) --
+         * both are legitimate "environment variable" idioms on
+         * AmigaDOS, and this accepts either, mirroring how a Unix
+         * shell's `export` and a plain assignment both work for the
+         * AWS CLI's own env-var lookup there. Only consulted when the
+         * URL itself didn't carry the credentials/region (s3.h's own
+         * has_credentials/has_region doc comment) -- a URL that does
+         * specify them is never second-guessed against the
+         * environment.
+         *
+         * The AWS_REGION/AWS_DEFAULT_REGION lookup is deliberately
+         * nested inside the "no URL credentials" branch, not run
+         * unconditionally whenever !url.has_region (the common case --
+         * few URLs bother with "?region="): GetVar()'s own documented
+         * global-variable fallback resolves through the `ENV:` logical
+         * device, and (the same class of quirk as
+         * snapshot_source_repo_overlap()'s own Lock()-on-a-URL finding
+         * above) confirmed live under Copperline to hang on a real
+         * "Please insert volume ENV in any drive" requester rather
+         * than failing cleanly when `ENV:` isn't assigned -- rare on a
+         * normally-booted AmigaOS system (every stock Startup-Sequence
+         * assigns it) but a real risk for an unattended backup run on
+         * a minimal/embedded/scripted one. Since region is only worth
+         * risking that for when the caller has already opted into
+         * "configure entirely from the environment" (no credentials in
+         * the URL either), nesting it here keeps every existing
+         * URL-with-embedded-credentials deployment exactly as safe as
+         * before this fallback existed; a caller that wants an
+         * explicit non-default region without env-var credentials can
+         * still use "?region=" in the URL, unaffected either way. */
+        if (!url.has_credentials) {
+            LONG klen = GetVar((STRPTR)"AWS_ACCESS_KEY_ID", url.access_key,
+                                sizeof(url.access_key), LV_VAR);
+            LONG slen = GetVar((STRPTR)"AWS_SECRET_ACCESS_KEY", url.secret_key,
+                                sizeof(url.secret_key), LV_VAR);
+            if (klen <= 0 || slen <= 0) {
+                amilog_err("AmiSnap: no credentials for \"%s\" -- embed them in "
+                           "the URL (s3://<access_key>:<secret_key>@...) or set "
+                           "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY\n", path);
+                return AMISNAP_ERR_MALFORMED;
+            }
+
+            if (!url.has_region) {
+                char regionbuf[AMISNAP_S3_URL_REGION_MAX];
+                LONG rlen = GetVar((STRPTR)"AWS_REGION", regionbuf, sizeof(regionbuf), LV_VAR);
+                if (rlen <= 0)
+                    rlen = GetVar((STRPTR)"AWS_DEFAULT_REGION", regionbuf, sizeof(regionbuf), LV_VAR);
+                /* Neither set: leave amisnap_s3_parse_url()'s own
+                 * "us-east-1" default in url.region untouched --
+                 * written into a separate buffer first specifically so
+                 * a failed GetVar() (undocumented whether it leaves
+                 * partial output behind) can never clobber that
+                 * default. */
+                if (rlen > 0) memcpy(url.region, regionbuf, (size_t)rlen + 1);
+            }
         }
 
         /* TLS: s3.h's own doc comment -- not yet supported (no separate

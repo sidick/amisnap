@@ -978,45 +978,47 @@ int amisnap_s3_parse_url(const char *url, amisnap_s3_url *out)
     if (strncmp(p, "s3://", 5) != 0) return AMISNAP_ERR_MALFORMED;
     p += 5;
 
-    /* userinfo (required: access_key:secret_key@) -- same parsing
-     * shape as amisnap_webdav_parse_url()'s own optional userinfo,
-     * just mandatory here (an S3 destination with no credentials
-     * makes no sense). Scanned unbounded by any '/' in the remaining
-     * string (unlike the host/bucket searches below, which bound
-     * themselves by the next '/' on purpose): a real S3 secret key is
-     * base64-alphabet and routinely contains a literal '/' (about a
-     * 1-in-32 chance per character, no escaping required by this
-     * scheme's own documented syntax) -- bounding this search by the
-     * first '/' anywhere in the URL, including one inside the secret
-     * key itself, misidentifies the userinfo/host boundary and was
-     * confirmed live to reject exactly this shape of real-world
-     * credential ("bad arguments"/"malformed S3 URL" against AWS's own
-     * published example secret key, which contains a '/'). '@' cannot
-     * legitimately appear in the host or bucket/prefix components that
-     * follow, so the first '@' in the whole remaining string is always
-     * the real boundary. */
+    /* userinfo (optional: access_key:secret_key@ -- absent means the
+     * CLI's AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env-var fallback
+     * supplies them instead, see s3.h's own doc comment). Same parsing
+     * shape as amisnap_webdav_parse_url()'s own optional userinfo.
+     * Scanned unbounded by any '/' in the remaining string (unlike the
+     * host/bucket searches below, which bound themselves by the next
+     * '/' on purpose): a real S3 secret key is base64-alphabet and
+     * routinely contains a literal '/' (about a 1-in-32 chance per
+     * character, no escaping required by this scheme's own documented
+     * syntax) -- bounding this search by the first '/' anywhere in the
+     * URL, including one inside the secret key itself, misidentifies
+     * the userinfo/host boundary and was confirmed live to reject
+     * exactly this shape of real-world credential ("bad arguments"/
+     * "malformed S3 URL" against AWS's own published example secret
+     * key, which contains a '/'). '@' cannot legitimately appear in
+     * the host or bucket/prefix components that follow, so the first
+     * '@' in the whole remaining string, if any, is always the real
+     * boundary. */
     at = NULL;
     {
         const char *q;
         for (q = p; *q; q++) if (*q == '@') { at = q; break; }
     }
-    if (!at) return AMISNAP_ERR_MALFORMED;
-
-    colon = NULL;
-    {
-        const char *q;
-        for (q = p; q < at; q++) if (*q == ':') { colon = q; break; }
+    out->has_credentials = (at != NULL);
+    if (at) {
+        colon = NULL;
+        {
+            const char *q;
+            for (q = p; q < at; q++) if (*q == ':') { colon = q; break; }
+        }
+        if (!colon) return AMISNAP_ERR_MALFORMED; /* both access_key AND secret_key required together */
+        {
+            size_t klen = (size_t)(colon - p);
+            size_t slen = (size_t)(at - (colon + 1));
+            if (klen == 0 || klen >= sizeof(out->access_key)) return AMISNAP_ERR_MALFORMED;
+            if (slen == 0 || slen >= sizeof(out->secret_key)) return AMISNAP_ERR_MALFORMED;
+            percent_decode(p, klen, out->access_key, sizeof(out->access_key));
+            percent_decode(colon + 1, slen, out->secret_key, sizeof(out->secret_key));
+        }
+        p = at + 1;
     }
-    if (!colon) return AMISNAP_ERR_MALFORMED; /* both access_key AND secret_key required */
-    {
-        size_t klen = (size_t)(colon - p);
-        size_t slen = (size_t)(at - (colon + 1));
-        if (klen == 0 || klen >= sizeof(out->access_key)) return AMISNAP_ERR_MALFORMED;
-        if (slen == 0 || slen >= sizeof(out->secret_key)) return AMISNAP_ERR_MALFORMED;
-        percent_decode(p, klen, out->access_key, sizeof(out->access_key));
-        percent_decode(colon + 1, slen, out->secret_key, sizeof(out->secret_key));
-    }
-    p = at + 1;
     path_start = strchr(p, '/');
 
     host_start = p;
@@ -1081,6 +1083,7 @@ int amisnap_s3_parse_url(const char *url, amisnap_s3_url *out)
             size_t vlen = strlen(q) - klen;
             if (vlen >= sizeof(out->region)) return AMISNAP_ERR_MALFORMED;
             percent_decode(q + klen, vlen, out->region, sizeof(out->region));
+            out->has_region = 1;
         }
     }
 

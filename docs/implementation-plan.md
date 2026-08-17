@@ -2158,6 +2158,44 @@ needed).
    clean; `vamos` confirms both the malformed-URL refusal and the
    no-TCP/IP-stack refusal work under emulation — reaching a real MinIO
    endpoint needs real hardware/network, item 6 below).
+
+   **`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`/
+   `AWS_DEFAULT_REGION` env-var fallback added (2026-08-17)**, so a
+   `REPO=s3://host/bucket` URL doesn't have to carry credentials in
+   plaintext in a Startup-Sequence script, shell history, or `ps`
+   output -- same standard names/precedence the AWS CLI and SDKs use
+   everywhere else. `amisnap_s3_parse_url()`'s userinfo is now optional
+   (`amisnap_s3_url.has_credentials`/`has_region` report which parts
+   the URL itself supplied); `open_backend()` calls `GetVar()` (no
+   `GVF_GLOBAL_ONLY`/`GVF_LOCAL_ONLY`, so both a local `Set` and a
+   global `SetEnv` are honoured, same as a Unix shell's plain
+   assignment vs. `export`) only for whatever the URL left unspecified,
+   and only errors ("no credentials for ...") if both the URL and the
+   environment come up empty. Confirmed live under Copperline (the
+   `run-s3.sh` on-target test's own second pass, `Set`-only since this
+   minimal boot's `C:` has no `MakeDir`/`Assign`/`List` to build a real
+   `ENV:`): a full SNAPSHOT/LIST cycle against the same independent S3
+   server, `REPO=` carrying no credentials at all.
+
+   One real bug surfaced and fixed before this could ship safely: an
+   early version ran the `AWS_REGION`/`AWS_DEFAULT_REGION` lookup
+   unconditionally whenever the URL's own `?region=` was absent (the
+   common case) -- regardless of whether the URL already carried
+   credentials. `GetVar()`'s global-variable fallback resolves through
+   the `ENV:` logical device, and (the same class of quirk as this
+   item's own `snapshot_source_repo_overlap()`/`Lock()`-on-a-URL
+   finding below) confirmed live to hang on a real "Please insert
+   volume ENV in any drive" requester rather than failing cleanly when
+   `ENV:` isn't assigned -- rare on a normally-booted AmigaOS system
+   (every stock Startup-Sequence assigns it) but a real risk for an
+   unattended backup run on a minimal/embedded/scripted one, and it
+   would have silently added that risk to every existing
+   credentials-in-the-URL deployment, not just new env-var-only ones.
+   Fixed by nesting the region lookup inside the "no URL credentials"
+   branch, so it only runs once the caller has already opted into
+   "configure entirely from the environment" -- a URL with embedded
+   credentials but no `?region=` is exactly as safe as it was before
+   this feature existed.
 4. "Large objects to minimise request count": proposal's own stated
    S3 strategy is bigger chunks, not S3 multipart upload — repo.c's
    existing `amisnap_repo_writer_file_chunked()`/`AMISNAP_DEFAULT_CHUNK_SIZE`
