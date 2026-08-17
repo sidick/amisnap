@@ -78,18 +78,27 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # --- throwaway local CA + server cert, fresh every run -- never the
-# real AmiSSL:Certs trust store, only this run's own clone's copy. ---
+# real AmiSSL:Certs trust store, only this run's own clone's copy.
+# -not_before/-not_after (not -days, which is notAfter-relative-to-
+# host-now only): this WB clone's guest RTC is not synced to real
+# wall-clock time (confirmed live -- X509_V_ERR_CERT_NOT_YET_VALID,
+# "certificate is not yet valid or the system clock is incorrect",
+# against a -days-2 cert whose notBefore was the host's real "now"),
+# so a validity window has to cover whatever the guest's own default
+# clock happens to be, not just the host's. ------------------------
 PKI="$T/pki"
 mkdir -p "$PKI"
 openssl genrsa -out "$PKI/ca-key.pem" 2048 >/dev/null 2>&1
-openssl req -x509 -new -nodes -key "$PKI/ca-key.pem" -sha256 -days 2 \
+openssl req -x509 -new -nodes -key "$PKI/ca-key.pem" -sha256 \
+    -not_before 19700101000000Z -not_after 20991231235959Z \
     -out "$PKI/ca-cert.pem" -subj "/CN=AmiSnap Test CA" >/dev/null 2>&1
 openssl genrsa -out "$PKI/server-key.pem" 2048 >/dev/null 2>&1
 openssl req -new -key "$PKI/server-key.pem" -out "$PKI/server.csr" \
     -subj "/CN=127.0.0.1" >/dev/null 2>&1
 echo "subjectAltName = IP:127.0.0.1" > "$PKI/ext.cnf"
 openssl x509 -req -in "$PKI/server.csr" -CA "$PKI/ca-cert.pem" -CAkey "$PKI/ca-key.pem" \
-    -CAcreateserial -out "$PKI/server-cert.pem" -days 2 -sha256 \
+    -CAcreateserial -out "$PKI/server-cert.pem" -sha256 \
+    -not_before 19700101000000Z -not_after 20991231235959Z \
     -extfile "$PKI/ext.cnf" >/dev/null 2>&1
 CA_HASH=$(openssl x509 -noout -hash -in "$PKI/ca-cert.pem")
 

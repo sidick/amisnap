@@ -9,6 +9,25 @@
  * real transport and prints the raw response (or the exact step/error
  * that failed) instead of webdav.c's own undifferentiated error code.
  *
+ * Runs behind amisnap_stackswap_run(), same as real_main() in
+ * src/cli/main.c -- not optional here: this file's own first pass
+ * (without it) produced a genuine, reproducible-looking hang inside
+ * tls.c's BIO-pair pump that turned out to be this standalone binary's
+ * own small default AmigaDOS stack overflowing under tls_pump()'s 4KB
+ * local ciphertext buffer several frames deep (tls_connect ->
+ * tls_run -> tls_pump -> tls_flush_out) -- silent corruption, not a
+ * clean crash, per stackswap.h's own documented reasoning for why
+ * every real entry point in this codebase swaps to a real 32KB stack
+ * first. Confirmed as the actual cause, not just a guess: a bare
+ * BIO_new_bio_pair()/BIO_write()/BIO_read() smoke test
+ * (tests/copperline/biopairdiag.c, no deep call chain, no large local
+ * buffers) worked perfectly first try on the *same* small default
+ * stack, isolating the difference to stack depth specifically. This
+ * diagnostic exists to test tls.c's own real code path faithfully, so
+ * it needs the same real stack production code always has -- omitting
+ * it here would keep reproducing an artifact of this test file, not
+ * tls.c's own design.
+ *
  * Usage: tlswebdavdiag <host> <port> <path>
  */
 #include <stdio.h>
@@ -16,14 +35,19 @@
 #include <string.h>
 
 #include "socket.h"
+#include "stackswap.h"
 #include "tls.h"
 #include "tlv.h"
 
-int main(int argc, char **argv)
+typedef struct {
+    const char *host;
+    unsigned short port;
+    const char *path;
+} diag_args;
+
+static int run(void *arg)
 {
-    const char *host = argc > 1 ? argv[1] : "127.0.0.1";
-    unsigned short port = argc > 2 ? (unsigned short)atoi(argv[2]) : 18794;
-    const char *path = argc > 3 ? argv[3] : "/repo";
+    diag_args *a = (diag_args *)arg;
     amisnap_transport t;
     void *handle = NULL;
     char req[512];
@@ -32,7 +56,7 @@ int main(int argc, char **argv)
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    printf("tlswebdavdiag: host=%s port=%u path=%s\n", host, (unsigned)port, path);
+    printf("tlswebdavdiag: host=%s port=%u path=%s\n", a->host, (unsigned)a->port, a->path);
 
     if (amisnap_socket_lib_open() != AMISNAP_OK) {
         printf("tlswebdavdiag: FAIL bsdsocket.library not available\n");
@@ -49,7 +73,7 @@ int main(int argc, char **argv)
     t.ops = &amisnap_tls_transport_ops;
     t.ctx = NULL;
 
-    rc = amisnap_transport_connect(&t, host, port, &handle);
+    rc = amisnap_transport_connect(&t, a->host, a->port, &handle);
     printf("tlswebdavdiag: transport_connect rc=%d\n", rc);
     if (rc != AMISNAP_OK) {
         printf("tlswebdavdiag: FAIL connect (handshake or cert verification failed)\n");
@@ -58,7 +82,7 @@ int main(int argc, char **argv)
 
     n = snprintf(req, sizeof(req),
                  "MKCOL %s HTTP/1.1\r\nHost: %s:%u\r\nConnection: close\r\n\r\n",
-                 path, host, (unsigned)port);
+                 a->path, a->host, (unsigned)a->port);
     rc = amisnap_transport_send(&t, handle, req, (size_t)n);
     printf("tlswebdavdiag: send MKCOL rc=%d (%d bytes)\n", rc, n);
     if (rc != AMISNAP_OK) {
@@ -87,4 +111,21 @@ int main(int argc, char **argv)
     amisnap_transport_close(&t, handle);
     printf("tlswebdavdiag: done\n");
     return 0;
+}
+
+int main(int argc, char **argv)
+{
+    diag_args a;
+    int degraded = 0;
+    int rc;
+
+    a.host = argc > 1 ? argv[1] : "127.0.0.1";
+    a.port = argc > 2 ? (unsigned short)atoi(argv[2]) : 18794;
+    a.path = argc > 3 ? argv[3] : "/repo";
+
+    rc = amisnap_stackswap_run(run, &a, &degraded);
+    if (degraded) {
+        printf("tlswebdavdiag: note: ran on the default stack (StackSwap alloc failed)\n");
+    }
+    return rc;
 }

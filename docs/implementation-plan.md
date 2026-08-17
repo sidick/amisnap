@@ -1957,6 +1957,86 @@ protocol code against a local WebDAV container.
    exact platform, specifically re-tested with real verification
    enabled once it exists (a passing BIO-pair test with `VERIFY_NONE`
    would repeat this exact mistake).
+
+   **Done for real (same day, 2026-08-17): the BIO-pair pump, verified
+   against the exact scenario that hung, `https://` re-enabled.**
+   `tls_connect()`/`tls_send()`/`tls_recv()`/`tls_close()` rewritten
+   around `BIO_new_bio_pair()` + `SSL_set_bio()` + `SSL_set_connect_
+   state()`, following `micropython/ports/amiga/modssl.c`'s own proven
+   design exactly (`tls_pump()`/`tls_run()`, tls.c's own header comment
+   has the full design note) -- AmiSSL's `SSL_do_handshake()`/
+   `SSL_read()`/`SSL_write()` now only ever touch in-memory BIOs, so
+   they can never block inside AmiSSL's own call stack; this file's own
+   loop does the real blocking `amisnap_socket_send()`/
+   `amisnap_socket_recv()` instead, whenever AmiSSL reports
+   `SSL_ERROR_WANT_READ`/`WANT_WRITE`. Deliberately simpler than
+   modssl.c's own version: AmiSnap's `transport.h` contract is
+   unconditionally blocking end to end already, so there's no
+   EAGAIN/poll-mask machinery to port, just the pump-and-retry shape.
+
+   First on-target retest (`tests/copperline/tlswebdavdiag.c`, real
+   `tls.c`, real `SSL_VERIFY_PEER` + `SSL_set1_host()`, a throwaway CA
+   genuinely installed into a real WB clone's `AmiSSL:Certs`) *still*
+   appeared to hang -- but step-by-step debug output pinned it to
+   `BIO_read()` on the net-side BIO never returning, immediately after
+   `BIO_ctrl_pending()` correctly reported real pending bytes. A bare
+   `BIO_new_bio_pair()`/`BIO_write()`/`BIO_read()` smoke test with no
+   SSL involved at all (`tests/copperline/biopairdiag.c`) worked
+   perfectly first try on the same boot -- isolating the difference to
+   something specific to the deeper call chain, not the BIO-pair
+   primitive itself. Root cause: **this diagnostic binary's own default
+   AmigaDOS stack**, not `tls.c` -- unlike every real AmiSnap entry
+   point, which always runs behind `amisnap_stackswap_run()`'s real
+   32KB stack (`src/amiga/stackswap.c`, `stackswap.h`'s own documented
+   reasoning: "an Amiga stack overflow is silent memory corruption, not
+   a clean crash"), this standalone test binary didn't -- and
+   `tls_pump()`'s new 4KB local ciphertext buffer, several frames deep
+   (`tls_connect` -> `tls_run` -> `tls_pump` -> `tls_flush_out`), was
+   exactly the kind of thing that overflows a small default stack
+   silently. Wrapped the diagnostic's own logic in
+   `amisnap_stackswap_run()`, matching `real_main()` exactly, and the
+   apparent hang was gone completely: real `ClientHello` sent, real
+   server response received, retry, real (non-hanging) terminal state.
+
+   That real terminal state was `SSL_ERROR_SSL` /
+   `X509_V_ERR_CERT_NOT_YET_VALID` ("certificate is not yet valid or
+   the system clock is incorrect") -- not a bug either, just this WB
+   clone's own guest RTC not being synced to real wall-clock time (a
+   `-days 2` test cert's `notBefore` was the *host's* real "now",
+   which the guest's own clock predates). Reissued the throwaway CA/
+   server cert with an explicit wide `-not_before`/`-not_after` window
+   (1970-2099, `run-webdav-tls.sh` updated the same way) instead of
+   `-days`, covering any plausible default guest clock.
+
+   With both real fixes in place -- the BIO-pair pump and a validity
+   window wide enough for an unsynced guest clock --
+   `tests/copperline/tlswebdavdiag.c` completed a full real handshake
+   (`SSL_VERIFY_PEER` + `SSL_set1_host()`, no shortcuts) and a real
+   encrypted MKCOL exchange with zero hang. Then the actual target
+   validation: `open_backend()` (`main.c`) re-enabled for `https://`
+   again (same TLS-1.2-default/`TLS13`-opt-in shape as the earlier,
+   walked-back attempt, this time backed by a design that's actually
+   fixed, not just evidence from tests that avoided the failure mode),
+   and `tests/copperline/run-webdav-tls.sh` -- the real, unmodified
+   production CLI, a real `https://` URL, real certificate-chain-plus-
+   hostname verification against a real WB+AmiSSL install, a real
+   independent TLS server (`mini_webdav_server.py`'s new optional TLS
+   mode, Python's own `ssl` module) -- ran a complete real SNAPSHOT/
+   LIST/VERIFY/RESTORE cycle over the negotiated session and **passed
+   outright**: correct content round-trip, real objects on the server's
+   own backing store. Full regression sweep also clean (899/899 host
+   tests; `run.sh`/`run-webdav.sh`/`run-s3.sh` all still `PASS`).
+
+   Net effect: `https://` WebDAV destinations are real and working
+   again, TLS 1.2 by default with `TLS13` as an explicit opt-in (not
+   yet given the same dedicated real-verification pass 1.2 has). `s3://`
+   still has no TLS support (`s3s://` doesn't exist yet, unrelated to
+   this fix, tracked separately). The verification-callback-level *why*
+   AmiSSL's old blocking `SSL_set_fd()` design specifically broke under
+   `SSL_VERIFY_PEER` + `SSL_set1_host()` is still unknown and no longer
+   needs to be -- the BIO-pair redesign sidesteps it entirely, the same
+   way `modssl.c`'s own header comment describes doing on this exact
+   platform.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below

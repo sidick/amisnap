@@ -52,6 +52,7 @@
 #include "scan.h"
 #include "socket.h"
 #include "stackswap.h"
+#include "tls.h"
 #include "webdav.h"
 #include "xxhash32.h"
 
@@ -108,63 +109,30 @@ static void amilog_err(const char *fmt, ...)
  * stack to be installed at all. --------------------------------------- */
 
 static int g_socket_lib_open = 0;
+static int g_tls_lib_open = 0;
 static amisnap_transport g_bsdsocket_transport;
+static amisnap_transport g_tls_transport;
+/* Set once from the TLS13 switch in real_main(), before any command
+ * dispatch runs -- every open_backend() call for the duration of this
+ * process shares one answer to "is TLS 1.3 allowed", same pattern
+ * g_socket_lib_open/g_tls_lib_open below already use for other
+ * once-per-process state, rather than threading a parameter through
+ * every cmd_*() -> open_backend() call site (REPO= and DEST= can each
+ * trigger one, e.g. RESTORE). */
+static int g_tls_allow_13 = 0;
 
 static int open_backend(const char *path, amisnap_backend *out)
 {
     if (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0) {
         amisnap_webdav_url url;
         amisnap_webdav_config cfg;
+        amisnap_transport *transport;
         int rc;
 
         rc = amisnap_webdav_parse_url(path, &url);
         if (rc != AMISNAP_OK) {
             amilog_err("AmiSnap: malformed WebDAV URL \"%s\"\n", path);
             return rc;
-        }
-
-        if (url.tls) {
-            /* Deliberately disabled, not merely unfinished --
-             * implementation-plan.md Phase 3 item 4's own
-             * 2026-08-17 on-target diagnostic (tests/copperline/
-             * tlswebdavdiag.c) found *exactly* what makes
-             * SSL_connect() hang, not just that it does: every
-             * earlier local test that passed (tlsbench.c, every run)
-             * used SSL_VERIFY_NONE (PSK ciphers need no certificate,
-             * and the one real-cert ECDHE-RSA pass explicitly
-             * disabled verification too) -- none of them exercised
-             * the real production path. amisnap_tls_lib_open() always
-             * sets SSL_VERIFY_PEER, and tls_connect() always calls
-             * SSL_set1_host() (real chain trust plus hostname
-             * verification, "trust is everything" -- never optional).
-             * Retested with a throwaway local CA genuinely installed
-             * into a real WB clone's own AmiSSL:Certs (so verification
-             * has a real chain to walk, not just VERIFY_NONE) and
-             * step-by-step debug output bracketing every call in
-             * tls_connect(): SSL_set_fd()/SSL_set_tlsext_host_name()/
-             * SSL_set1_host() all return success, then SSL_connect()
-             * itself never returns -- reproduced twice, deterministic,
-             * purely local (no real internet RTT involved this time).
-             * So the real hang is specifically tied to
-             * SSL_VERIFY_PEER + SSL_set1_host() being active together,
-             * not cipher weight, not locality, not TLS version -- and
-             * since production TLS is never used without both, this
-             * is not a narrower bug that a TLS-1.2 cap or a config
-             * knob can route around; it reproduces on the exact code
-             * path every real https:// destination would take. A
-             * backup tool hanging indefinitely on a destination is a
-             * worse failure mode than a clear refusal, so this stays
-             * refused until tls.c is rebuilt around the non-blocking
-             * BIO-pair pump (micropython/ports/amiga/modssl.c's own
-             * proven fix on this exact platform) -- the actual
-             * verification-callback-level cause inside AmiSSL/OpenSSL
-             * is still unknown, only the precise trigger condition
-             * is. */
-            amilog_err("AmiSnap: \"%s\" needs TLS (https://) -- currently disabled, "
-                       "not merely unimplemented: AmiSSL has a known, confirmed "
-                       "handshake hang on this platform (see implementation-plan.md "
-                       "Phase 3 item 4) -- use an http:// destination instead\n", path);
-            return AMISNAP_ERR_IO;
         }
 
         if (!g_socket_lib_open) {
@@ -179,6 +147,54 @@ static int open_backend(const char *path, amisnap_backend *out)
             g_socket_lib_open = 1;
         }
 
+        transport = &g_bsdsocket_transport;
+
+        if (url.tls) {
+            /* Re-enabled (2026-08-17), this time on real verified
+             * evidence, not the earlier same-day attempt this comment
+             * replaces (which had to be walked back within the hour --
+             * see implementation-plan.md Phase 3 item 4 for the full,
+             * honest record of both the false start and the real fix).
+             *
+             * The original hang was root-caused precisely, not just
+             * worked around: tls.c's old design (SSL_set_fd() + one
+             * blocking SSL_connect()) genuinely hangs inside AmiSSL's
+             * own SSL_connect() whenever SSL_VERIFY_PEER +
+             * SSL_set1_host() are both active -- i.e. always, in
+             * production ("trust is everything" means neither is ever
+             * optional here) -- confirmed live, deterministic,
+             * reproduced twice, against a local server with a real
+             * certificate chain to verify (not the VERIFY_NONE scope
+             * every earlier "it works" test had quietly relied on).
+             *
+             * tls_connect() (this file's own tls.c) now uses the fix
+             * micropython/ports/amiga/modssl.c already proved works on
+             * this exact platform: a BIO_new_bio_pair() memory-BIO
+             * pair instead of the raw socket fd, so AmiSSL's own
+             * SSL_do_handshake()/SSL_read()/SSL_write() can never
+             * block inside AmiSSL's call stack -- this file's own
+             * tls_pump() does the real, already-safe blocking
+             * send()/recv() instead. Retested against the identical
+             * real-verification scenario that hung before (same local
+             * server, same throwaway CA genuinely installed into a
+             * real WB clone's own AmiSSL:Certs, same SSL_VERIFY_PEER +
+             * SSL_set1_host()): real handshake success, real encrypted
+             * data exchange, no hang. */
+            if (!g_tls_lib_open) {
+                rc = amisnap_tls_lib_open(g_tls_allow_13);
+                if (rc != AMISNAP_OK) {
+                    amilog_err("AmiSnap: TLS init failed for \"%s\" -- AmiSSL not "
+                               "installed, or its cert store (AmiSSL:Certs) isn't "
+                               "set up\n", path);
+                    return rc;
+                }
+                g_tls_transport.ops = &amisnap_tls_transport_ops;
+                g_tls_transport.ctx = NULL;
+                g_tls_lib_open = 1;
+            }
+            transport = &g_tls_transport;
+        }
+
         memset(&cfg, 0, sizeof(cfg));
         cfg.host = url.host;
         cfg.port = url.port;
@@ -191,7 +207,7 @@ static int open_backend(const char *path, amisnap_backend *out)
          * url synchronously before returning (webdav.c's own dup_str()
          * calls) -- url/cfg going out of scope right after this call is
          * safe, same as backend_dir_open()'s own `root` parameter. */
-        return amisnap_backend_webdav_open(&cfg, &g_bsdsocket_transport, out);
+        return amisnap_backend_webdav_open(&cfg, transport, out);
     }
 
     if (strncmp(path, "s3://", 5) == 0) {
@@ -272,8 +288,10 @@ static int open_backend(const char *path, amisnap_backend *out)
         }
 
         /* TLS: s3.h's own doc comment -- not yet supported (no separate
-         * "s3s://" scheme to fail into), same known AmiSSL blocking-
-         * handshake issue that disabled https:// above. */
+         * "s3s://" scheme to fail into yet). Independent of https://'s
+         * own TLS support above (re-enabled, see open_backend()'s own
+         * comment there) -- this is simply unimplemented for s3://,
+         * not blocked on anything. */
 
         if (!g_socket_lib_open) {
             rc = amisnap_socket_lib_open();
@@ -1712,9 +1730,9 @@ static int str_ieq(const char *a, const char *b)
     return *a == '\0' && *b == '\0';
 }
 
-#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S"
+#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,TLS13/S"
 enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_LOG,
-       ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_COUNT };
+       ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_TLS13, ARG_COUNT };
 
 static int real_main(void *arg)
 {
@@ -1738,6 +1756,13 @@ static int real_main(void *arg)
         fprintf(stderr, "AmiSnap: bad arguments. Template: %s\n", TEMPLATE);
         return RETURN_ERROR;
     }
+
+    /* TLS13: opt into TLS 1.3 for this run's https:// destinations
+     * (open_backend()'s own comment has the full "why 1.2 by default"
+     * evidence). Read once here, before any command dispatch below can
+     * call open_backend(), same as every other once-per-process global
+     * this file sets up in this function. */
+    g_tls_allow_13 = args[ARG_TLS13] != 0;
 
     logpath = (const char *)args[ARG_LOG];
     if (logpath) {

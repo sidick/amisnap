@@ -26,14 +26,52 @@
  * same as socket.c) -- AmiSSL has no 68000 path at all (confirmed by
  * AmiAuth's own amissl-bench.sh comment), so this is naturally gated
  * behind this project's already-020+ CPU floor with no separate check
- * needed. Cross-build-verified against the real SDK's headers and
+ * needed.
+ *
+ * Connection setup uses a BIO pair, not SSL_set_fd() + a single
+ * blocking SSL_connect() -- implementation-plan.md Phase 3 item 4's
+ * own on-target diagnostics (tests/copperline/tlswebdavdiag.c,
+ * confirmed live under Copperline twice, deterministic, purely local)
+ * found the SSL_set_fd() path genuinely hangs inside AmiSSL's own
+ * SSL_connect() whenever SSL_VERIFY_PEER + SSL_set1_host() are both
+ * active -- i.e. always, in production, since "trust is everything"
+ * means those are never optional here. This is the same failure mode
+ * micropython/ports/amiga/modssl.c's own header comment already
+ * documented independently on this exact platform ("its single
+ * blocking SSL_connect was the more fragile of the two -- it
+ * intermittently broke the pipe under the Amiga's slow handshakes,
+ * where the BIO pump (with proper EAGAIN handling) succeeds") and
+ * already ships a proven fix for: BIO_new_bio_pair() gives AmiSSL a
+ * pair of in-memory BIOs instead of the raw socket fd, so
+ * SSL_do_handshake()/SSL_read()/SSL_write() can never block inside
+ * AmiSSL's own I/O code at all -- they either make progress or return
+ * SSL_ERROR_WANT_READ/WANT_WRITE immediately, and *this file's own*
+ * loop (tls_pump(), below) does the actual blocking send()/recv() over
+ * the real socket, using the plain, already-correct blocking
+ * amisnap_socket_send()/amisnap_socket_recv() from socket.c.
+ *
+ * Simpler than micropython's own version, deliberately: modssl.c has
+ * to support non-blocking sockets (asyncio) and partial/stashed writes
+ * because MicroPython's stream protocol can report EAGAIN from a
+ * single write() call. AmiSnap's own transport.h contract is
+ * unconditionally blocking end to end (amisnap_socket_send() itself
+ * already loops until every byte is sent or a real error occurs, per
+ * socket.h's own documented contract) -- so tls_pump() never needs to
+ * stash a partial ciphertext tail across calls the way modssl.c's
+ * ssl_flush_out()/out_buf does, and want_read always really blocks
+ * until data arrives rather than needing an EAGAIN/poll-mask path.
+ *
+ * Cross-build-verified against the real SDK's headers and
  * libamisslstubs.a; genuine on-target execution needs a boot volume
  * with AmiSSL actually installed (the "AmiSSL:" assign + LIBS:AmiSSL/
  * setup its own installer performs -- AmiAuth's own amissl-bench.sh
  * documents that OpenAmiSSLTags() reliably crashes ramlib on a
- * from-scratch minimal boot lacking that assign), so unlike socket.c's
- * own bsdsocket path this has no Copperline regression yet -- tracked
- * as an open item, not silently assumed working.
+ * from-scratch minimal boot lacking that assign) -- this BIO-pair
+ * redesign was itself verified the same way item 4's earlier work
+ * was: a real cloned WB+AmiSSL install, a throwaway CA installed into
+ * its own AmiSSL:Certs, real SSL_VERIFY_PEER + SSL_set1_host() (the
+ * exact configuration that hung before), see implementation-plan.md
+ * for the full record.
  */
 #include <errno.h>
 #include <stdlib.h>
@@ -47,6 +85,7 @@
 #include <proto/amisslmaster.h>
 #include <amissl/tags.h>
 #include <proto/amissl.h> /* pulls in amissl/amissl.h -> openssl/ssl.h transitively */
+#include <openssl/err.h> /* ERR_clear_error() -- see tls_do_handshake()'s own comment */
 
 #include "socket.h"
 #include "tls.h"
@@ -117,19 +156,12 @@ int amisnap_tls_lib_open(int allow_tls13)
         return AMISNAP_ERR_IO;
     }
 
-    /* TLS 1.2 by default, TLS 1.3 opt-in (CLI: TLS13 switch, main.c) --
-     * implementation-plan.md Phase 3 item 4's own on-target diagnostic
-     * (tests/copperline/tlsbench.c/run-tls-bench.sh): the exact same
-     * blocking SSL_set_fd()+SSL_connect() design below reliably
-     * completed real TLS 1.2 handshakes plus real data exchange
-     * against a local server at every cipher weight tried (cheap PSK
-     * through a realistic ECDHE-RSA-AES128-GCM-SHA256 with a real
-     * certificate) -- capping here is standing on that specific,
-     * verified evidence, not a guess. TLS 1.3 was never tested locally
-     * (only against the real, and differently-behaving, original
-     * example.com:443 target) -- gated behind an explicit opt-in until
-     * it gets the same local verification pass TLS 1.2 already has,
-     * not because it's assumed broken. Never below 1.2 either way
+    /* TLS 1.2 by default, TLS 1.3 opt-in (CLI: TLS13 switch, main.c).
+     * The version cap itself is unrelated to the BIO-pair redesign
+     * above (this file's own header comment) -- kept because TLS 1.3
+     * still hasn't had a dedicated local verification pass of its own
+     * (only TLS 1.2 has, both before and after the BIO-pair fix),
+     * not because 1.3 is assumed broken. Never below 1.2 either way
      * (TLS 1.0/1.1 are deprecated protocols this project has no reason
      * to accept from a server). */
     SSL_CTX_set_min_proto_version(g_tls_ctx, TLS1_2_VERSION);
@@ -166,13 +198,155 @@ int amisnap_tls_lib_open(int allow_tls13)
 typedef struct {
     LONG sock;
     SSL *ssl;
+    BIO *net_bio; /* our side of the pair; SSL owns the other side (internal_bio)
+                    * once SSL_set_bio() runs -- freed automatically by SSL_free(). */
 } tls_handle;
+
+/* Buffer size for both directions of tls_pump() below -- comfortably
+ * under BIO_new_bio_pair()'s own default per-side buffer (17KB, since
+ * this file passes 0/0 for "use the default"), so a single chunk can
+ * never itself overflow the pair. Not tied to any TLS record-size
+ * limit -- SSL_do_handshake()/SSL_read()/SSL_write() each drain
+ * whatever's already in internal_bio before ever reporting
+ * WANT_READ/WANT_WRITE again, so tls_pump() is always called again for
+ * more before the pair can back up. */
+#define TLS_PUMP_CHUNK 4096
+
+/* Pushes every byte AmiSSL currently has queued in net_bio (its
+ * outgoing ciphertext -- handshake flights, encrypted records, or a
+ * queued close_notify) out over the real, already-blocking
+ * amisnap_socket_send() (which itself loops until every byte is sent
+ * or a real error occurs, per socket.h's own contract) -- so there is
+ * nothing to stash across calls the way a non-blocking pump would
+ * need to (see this file's own header comment for the contrast with
+ * micropython/ports/amiga/modssl.c's own ssl_flush_out()). */
+static int tls_flush_out(tls_handle *h)
+{
+    size_t pending = BIO_ctrl_pending(h->net_bio);
+
+    while (pending > 0) {
+        char buf[TLS_PUMP_CHUNK];
+        int n = BIO_read(h->net_bio, buf,
+                          (int)(pending < sizeof(buf) ? pending : sizeof(buf)));
+
+        if (n <= 0) break; /* BIO_ctrl_pending() just said pending>0 -- not expected */
+        if (amisnap_socket_send(h->sock, buf, (size_t)n) != AMISNAP_OK) return AMISNAP_ERR_IO;
+        pending = BIO_ctrl_pending(h->net_bio);
+    }
+    return AMISNAP_OK;
+}
+
+/* One round of shuttling ciphertext between AmiSSL's side of the BIO
+ * pair and the real socket -- the whole point of the BIO-pair redesign
+ * (this file's own header comment): called only when
+ * SSL_do_handshake()/SSL_read()/SSL_write() just reported
+ * SSL_ERROR_WANT_READ or SSL_ERROR_WANT_WRITE, meaning AmiSSL made
+ * whatever progress it could with what it already had and is now
+ * blocked purely on I/O -- never inside AmiSSL's own call stack, so a
+ * real blocking recv() here is exactly as safe as it would be in any
+ * other transport.h implementation.
+ *
+ * Always flushes pending output first regardless of `want_read`: a
+ * WANT_READ can still have unrelated queued output (e.g. mid-
+ * handshake flights are not strictly request/response), and a
+ * WANT_WRITE by definition has output to flush. Only blocks on a real
+ * recv() when `want_read` is set -- otherwise this call is pure
+ * output-flushing and returns as soon as that's done. */
+static int tls_pump(tls_handle *h, int want_read)
+{
+    int rc = tls_flush_out(h);
+
+    if (rc != AMISNAP_OK) return rc;
+
+    if (want_read) {
+        char buf[TLS_PUMP_CHUNK];
+        size_t got = 0;
+
+        rc = amisnap_socket_recv(h->sock, buf, sizeof(buf), &got);
+        if (rc != AMISNAP_OK) return AMISNAP_ERR_IO;
+        /* The real TCP connection closing while AmiSSL is still
+         * waiting for more bytes is never a clean outcome at this
+         * layer, handshake or otherwise -- tls_recv()'s own
+         * SSL_ERROR_ZERO_RETURN check (a real, in-protocol
+         * close_notify) is the only path a clean EOF can take. */
+        if (got == 0) return AMISNAP_ERR_IO;
+        if (BIO_write(h->net_bio, buf, (int)got) <= 0) return AMISNAP_ERR_IO;
+    }
+    return AMISNAP_OK;
+}
+
+/* Drives any AmiSSL operation whose blocking should happen out here
+ * (pumped over the real socket) rather than inside AmiSSL's own call
+ * stack: retries `op` until it succeeds, hits a real (non-WANT_*)
+ * error, or a pump round itself fails. `op`'s return follows normal
+ * OpenSSL convention (<=0 means "check SSL_get_error()"). Shared by
+ * the handshake, tls_send(), and tls_recv() below -- all three are
+ * "call something, and if AmiSSL says WANT_READ/WANT_WRITE, pump and
+ * retry" with only the something and the success test differing. */
+typedef int (*tls_op_fn)(SSL *ssl, void *ctx);
+
+static int tls_run(tls_handle *h, tls_op_fn op, void *ctx, int *op_result_out)
+{
+    for (;;) {
+        int r, err;
+
+        /* SSL_get_error()'s own contract: it only reports reliably
+         * when the thread-local error queue is empty going in, or a
+         * stale error left behind by an earlier, unrelated failure can
+         * make a perfectly normal WANT_READ/WANT_WRITE misreport as
+         * fatal -- confirmed load-bearing by a real, shipped AmiSSL
+         * client on this exact platform
+         * (~/src/micropython/ports/amiga/modssl.c's own comment at
+         * every one of its SSL_get_error() call sites). */
+        ERR_clear_error();
+        r = op(h->ssl, ctx);
+        if (r > 0) {
+            *op_result_out = r;
+            return AMISNAP_OK;
+        }
+        err = SSL_get_error(h->ssl, r);
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            int rc = tls_pump(h, err == SSL_ERROR_WANT_READ);
+
+            if (rc != AMISNAP_OK) return rc;
+            continue;
+        }
+        *op_result_out = r;
+        /* Real terminal error (SSL_ERROR_SSL, SSL_ERROR_SYSCALL, or
+         * SSL_ERROR_ZERO_RETURN) -- the caller distinguishes those by
+         * its own SSL_get_error() call on the now-final state, same as
+         * before this redesign; tls_run() itself only arbitrates the
+         * pump-and-retry loop. */
+        return AMISNAP_ERR_IO;
+    }
+}
+
+static int do_handshake_op(SSL *ssl, void *ctx)
+{
+    (void)ctx;
+    return SSL_do_handshake(ssl);
+}
+
+typedef struct { void *buf; int len; } tls_io_args;
+
+static int do_read_op(SSL *ssl, void *ctx)
+{
+    tls_io_args *a = (tls_io_args *)ctx;
+    return SSL_read(ssl, a->buf, a->len);
+}
+
+static int do_write_op(SSL *ssl, void *ctx)
+{
+    tls_io_args *a = (tls_io_args *)ctx;
+    return SSL_write(ssl, a->buf, a->len);
+}
 
 static int tls_connect(amisnap_transport *t, const char *host, uint16_t port, void **handle_out)
 {
     tls_handle *h;
     LONG sock;
-    int rc;
+    int rc, op_result;
+    BIO *internal_bio;
 
     (void)t;
     if (!g_tls_ctx) return AMISNAP_ERR_IO;
@@ -186,6 +360,7 @@ static int tls_connect(amisnap_transport *t, const char *host, uint16_t port, vo
         return AMISNAP_ERR_NOMEM;
     }
     h->sock = sock;
+    h->net_bio = NULL;
 
     h->ssl = SSL_new(g_tls_ctx);
     if (!h->ssl) {
@@ -194,14 +369,30 @@ static int tls_connect(amisnap_transport *t, const char *host, uint16_t port, vo
         return AMISNAP_ERR_IO;
     }
 
+    internal_bio = NULL;
+    if (BIO_new_bio_pair(&internal_bio, 0, &h->net_bio, 0) != 1) {
+        SSL_free(h->ssl);
+        amisnap_socket_close(sock);
+        free(h);
+        return AMISNAP_ERR_IO;
+    }
+    SSL_set_bio(h->ssl, internal_bio, internal_bio); /* SSL now owns internal_bio */
+    SSL_set_connect_state(h->ssl);
+
     /* SNI (the server-side name selection extension) and the client-side
      * hostname-match check are two distinct things -- both point at the
      * same `host`, but setting one never implies the other. */
-    if (!SSL_set_fd(h->ssl, (int)sock) ||
-        !SSL_set_tlsext_host_name(h->ssl, host) ||
-        !SSL_set1_host(h->ssl, host) ||
-        SSL_connect(h->ssl) != 1) {
+    if (!SSL_set_tlsext_host_name(h->ssl, host) || !SSL_set1_host(h->ssl, host)) {
+        SSL_free(h->ssl); /* frees internal_bio too */
+        BIO_free(h->net_bio);
+        amisnap_socket_close(sock);
+        free(h);
+        return AMISNAP_ERR_IO;
+    }
+
+    if (tls_run(h, do_handshake_op, NULL, &op_result) != AMISNAP_OK) {
         SSL_free(h->ssl);
+        BIO_free(h->net_bio);
         amisnap_socket_close(sock);
         free(h);
         return AMISNAP_ERR_IO;
@@ -219,11 +410,27 @@ static int tls_send(amisnap_transport *t, void *handle, const void *data, size_t
 
     (void)t;
     while (remaining > 0) {
-        int n = SSL_write(h->ssl, p, (int)remaining);
+        tls_io_args args;
+        int op_result, rc;
 
-        if (n <= 0) return AMISNAP_ERR_IO;
-        p += (size_t)n;
-        remaining -= (size_t)n;
+        args.buf = (void *)p;
+        /* SSL_write()'s own len parameter is a plain int -- a single
+         * call is never asked to accept more than fits, same reasoning
+         * TLS_PUMP_CHUNK's own comment gives, just at the plaintext
+         * layer instead of the ciphertext one. */
+        args.len = (int)(remaining < 0x7fffffffu ? remaining : 0x7fffffff);
+
+        rc = tls_run(h, do_write_op, &args, &op_result);
+        if (rc != AMISNAP_OK) return rc;
+        /* SSL_write() only queues the record into the BIO pair --
+         * tls_run()'s own pump-on-WANT_WRITE loop pushes most of it
+         * already, but push the tail (if SSL_write() itself succeeded
+         * without ever needing to pump) before considering these bytes
+         * truly sent. */
+        rc = tls_flush_out(h);
+        if (rc != AMISNAP_OK) return rc;
+        p += (size_t)op_result;
+        remaining -= (size_t)op_result;
     }
     return AMISNAP_OK;
 }
@@ -231,12 +438,16 @@ static int tls_send(amisnap_transport *t, void *handle, const void *data, size_t
 static int tls_recv(amisnap_transport *t, void *handle, void *buf, size_t len, size_t *got)
 {
     tls_handle *h = (tls_handle *)handle;
-    int n;
+    tls_io_args args;
+    int op_result, rc;
 
     (void)t;
-    n = SSL_read(h->ssl, buf, (int)len);
-    if (n > 0) {
-        *got = (size_t)n;
+    args.buf = buf;
+    args.len = (int)(len < 0x7fffffffu ? len : 0x7fffffff);
+
+    rc = tls_run(h, do_read_op, &args, &op_result);
+    if (rc == AMISNAP_OK) {
+        *got = (size_t)op_result;
         return AMISNAP_OK;
     }
 
@@ -246,7 +457,7 @@ static int tls_recv(amisnap_transport *t, void *handle, void *buf, size_t len, s
      * tp_recv contract already documents for the plain bsdsocket path.
      * Anything else (a real I/O error, a truncated/reset connection) is
      * a genuine error -- never silently treated as a clean EOF. */
-    if (SSL_get_error(h->ssl, n) == SSL_ERROR_ZERO_RETURN) {
+    if (SSL_get_error(h->ssl, op_result) == SSL_ERROR_ZERO_RETURN) {
         *got = 0;
         return AMISNAP_OK;
     }
@@ -260,9 +471,17 @@ static void tls_close(amisnap_transport *t, void *handle)
     (void)t;
     if (h) {
         if (h->ssl) {
-            SSL_shutdown(h->ssl); /* best effort -- never blocks teardown on its own result */
-            SSL_free(h->ssl);
+            /* Best effort, same convention as every other close() in
+             * this codebase: SSL_shutdown() queues a close_notify into
+             * net_bio (it may need two calls for a full bidirectional
+             * shutdown, but this never waits for the peer's own
+             * close_notify back) -- one flush pushes it out; a flush
+             * failure here still doesn't block teardown. */
+            SSL_shutdown(h->ssl);
+            tls_flush_out(h);
+            SSL_free(h->ssl); /* frees internal_bio too */
         }
+        if (h->net_bio) BIO_free(h->net_bio);
         amisnap_socket_close(h->sock);
         free(h);
     }
