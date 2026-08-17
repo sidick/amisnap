@@ -128,6 +128,26 @@ static int g_tls_allow_13 = 0;
  * full reasoning) for a self-signed or otherwise untrusted
  * certificate, the common case for a home-lab NAS/WebDAV server. */
 static int g_tls_insecure = 0;
+/* CIPHERS= is NOT wired up here -- see implementation-plan.md Phase 3
+ * item 4's "CIPHERS= cipher-list override" entry. A real, intermittent
+ * (roughly 1-in-3 across repeated identical runs, not a one-off flake)
+ * corruption was found: real https:// RESTORE with an explicit
+ * cipher_list set completes and self-verifies successfully, yet a
+ * LATER, unrelated process can no longer Lock() the files it just
+ * wrote. Extensive isolated on-target repro attempts (cipherlockdiag.c,
+ * cipherconndiag.c, lockchecker.c under tests/copperline/) ruled out
+ * several specific hypotheses -- SSL_CTX_set_cipher_list() itself,
+ * stack overflow (reproduced identically at 8x the normal stack),
+ * simple repeated tls_lib_open()/connect() exhaustion under the actual
+ * production call pattern (single lib_open, connection-reuse) -- but
+ * did not find the mechanism; the bug reproduces only under the full,
+ * real webdav.c/restore.c pipeline, and only intermittently. Per this
+ * project's own "a data-losing bug is fatal" principle, an
+ * intermittent corruption is worse than a deterministic one (harder
+ * for a user to ever notice or trust), so this stays CLI-inert -- the
+ * cipher_list parameter itself stays on amisnap_tls_lib_open() (tls.c/
+ * tls.h), ready for whichever fix eventually lands, but nothing here
+ * ever calls it non-NULL. */
 
 static int open_backend(const char *path, amisnap_backend *out)
 {
@@ -201,10 +221,10 @@ static int open_backend(const char *path, amisnap_backend *out)
                                "verification disabled for \"%s\" and every other "
                                "https:// destination this run touches\n", path);
                 }
-                rc = amisnap_tls_lib_open(g_tls_allow_13, g_tls_insecure);
+                rc = amisnap_tls_lib_open(g_tls_allow_13, g_tls_insecure, NULL);
                 if (rc != AMISNAP_OK) {
                     amilog_err("AmiSnap: TLS init failed for \"%s\" -- AmiSSL not "
-                               "installed, or its cert store (AmiSSL:Certs) isn't "
+                               "installed or its cert store (AmiSSL:Certs) isn't "
                                "set up\n", path);
                     return rc;
                 }

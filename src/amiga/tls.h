@@ -46,8 +46,30 @@
  * silent: amisnap_tls_lib_open() itself doesn't warn (it has no
  * per-destination context), but every caller that passes a non-zero
  * `insecure` is expected to log a visible warning first, the same way
- * main.c's own open_backend() does. */
-int amisnap_tls_lib_open(int allow_tls13, int insecure);
+ * main.c's own open_backend() does.
+ *
+ * `cipher_list`: NULL keeps AmiSSL's own default cipher preference
+ * (the default, and -- as of 2026-08-17 -- the ONLY value any caller
+ * in this codebase ever actually passes; nothing wires this to the
+ * CLI). Non-NULL (an openssl-cipher-string, e.g. "PSK-CHACHA20-
+ * POLY1305" or a colon-separated list) would pass straight to
+ * SSL_CTX_set_cipher_list() -- conceived as a CPU-budget lever
+ * (proposal.md's own "CPU budget" principle applied to TLS bulk
+ * transfer, not a security one: implementation-plan.md Phase 3 item
+ * 4's own real, on-target throughput measurements found the fastest
+ * cipher is genuinely CPU-class-dependent and non-obvious
+ * (ChaCha20-Poly1305 beats AES-CBC at 68030/50MHz+, but AES-CBC wins
+ * on a stock 68020/14MHz; AES-GCM is slowest at every speed tested, by
+ * a consistent ~2x margin)) -- but a real, intermittent on-target
+ * corruption was found when this was actually wired up as a CLI
+ * switch (implementation-plan.md Phase 3 item 4's own "CIPHERS= CLI
+ * override: implemented then withdrawn" entry has the full
+ * investigation), so the CLI wiring was removed while this parameter
+ * itself stays, ready for whichever fix eventually lands. Invalid/
+ * unsupported syntax fails closed (a negative AMISNAP_ERR_* code from
+ * amisnap_tls_lib_open() itself, same as every other setup failure
+ * here), never silently falls back to the default list. */
+int amisnap_tls_lib_open(int allow_tls13, int insecure, const char *cipher_list);
 void amisnap_tls_lib_close(void);
 
 /* transport.h adapter: connect() opens a real bsdsocket TCP connection

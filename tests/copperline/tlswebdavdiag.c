@@ -63,7 +63,7 @@ static int run(void *arg)
         return 20;
     }
 
-    rc = amisnap_tls_lib_open(0, 0);
+    rc = amisnap_tls_lib_open(0, 0, NULL);
     if (rc != AMISNAP_OK) {
         printf("tlswebdavdiag: FAIL amisnap_tls_lib_open rc=%d\n", rc);
         return 20;

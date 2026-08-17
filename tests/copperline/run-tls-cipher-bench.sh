@@ -37,6 +37,15 @@ BENCH=${BENCH:-180}
 PORT=${PORT:-18820}
 TOTAL_KB=${TOTAL_KB:-128}
 PSK_HEX=${PSK_HEX:-1a2b3c4d5e6f708192a3b4c5d6e7f809}
+# CPU_MODEL/CPU_CLOCK: override the emulated CPU, e.g.
+# CPU_MODEL=68030 CPU_CLOCK=50 for a real (not extrapolated) number on
+# a common accelerated-Amiga target instead of the 14MHz 68020 stock
+# baseline. Passed straight to copperline's own --cpu/--cpu-clock
+# flags below, same "don't rely on a single implicit source" reasoning
+# tests/copperline/machine.toml's own header comment already gives for
+# always passing --cpu explicitly on the command line.
+CPU_MODEL=${CPU_MODEL:-68020}
+CPU_CLOCK=${CPU_CLOCK:-}
 
 [ -n "$KICK" ] && [ -e "$KICK" ] || { echo "FAIL: Kickstart ROM missing (KICK=, or AMIAUTH_ROM via $AMIAUTH_ENV): '$KICK'" >&2; exit 2; }
 [ -n "$WB" ] && [ -d "$WB" ] || { echo "FAIL: Workbench dir missing (WB=, or AMIAUTH_WB_HDD via $AMIAUTH_ENV): '$WB'" >&2; exit 2; }
@@ -49,6 +58,7 @@ BIN="$ROOT/build/tlsthroughput"
 echo "ROM: $KICK"
 echo "WB:  $WB"
 echo "TOTAL_KB per cipher: $TOTAL_KB"
+echo "CPU: $CPU_MODEL${CPU_CLOCK:+ @ ${CPU_CLOCK}MHz}"
 
 # --- PSK ciphers: isolate bulk-cipher cost, no certificate/key
 # exchange overhead at all. One AES-CBC (the classic, oldest-style
@@ -78,7 +88,16 @@ SEQ="$T/boot/S/Startup-Sequence"
         echo "SYS:bench 127.0.0.1 $PORT $c $PSK_HEX $TOTAL_KB >Results:cipher$n.log"
     done
 } > "$T/cipher-commands.txt"
+# "CPU CHECKINSTALL" (this WB's own real Startup-Sequence) blocks on a
+# real "press RETURN to resume booting" prompt under any --cpu other
+# than what the WB was originally installed for (68030/68040/etc. with
+# no matching *.library present) -- confirmed live, headless, no way
+# to press a key. This diagnostic never calls a CPU-specific library
+# itself, so the check is simply skipped in THIS throwaway clone's own
+# copy (never the real WB image) rather than sourcing/vendoring a real
+# 68030.library into LIBS: just to satisfy a check nothing here needs.
 awk -v cmdfile="$T/cipher-commands.txt" '
+/^CPU CHECKINSTALL/ { next }
 /^LoadWB/ {
     while ((getline line < cmdfile) > 0) print line
 }
@@ -88,7 +107,7 @@ grep -q '^SYS:bench ' "$SEQ" || { echo "FAIL: could not patch Startup-Sequence (
 
 cat > "$T/cfg.toml" <<EOF
 [cpu]
-model = "68020"
+model = "$CPU_MODEL"
 
 [memory]
 fast = "8M"
@@ -124,9 +143,13 @@ while [ $i -lt 50 ]; do
 done
 [ "$READY" -eq 1 ] || { echo "FAIL: server never became ready" >&2; cat "$T/server.log" >&2; exit 3; }
 
+CPU_CLOCK_ARGS=""
+[ -n "$CPU_CLOCK" ] && CPU_CLOCK_ARGS="--cpu-clock $CPU_CLOCK"
+
 OUT=$(mktemp)
 set +e
-"$COPPERLINE" --config "$T/cfg.toml" --cpu 68020 --noaudio --hostsocket-net host \
+# shellcheck disable=SC2086
+"$COPPERLINE" --config "$T/cfg.toml" --cpu "$CPU_MODEL" $CPU_CLOCK_ARGS --noaudio --hostsocket-net host \
     --benchmark-until "$BENCH" "$KICK" >"$OUT" 2>&1
 CL_RC=$?
 set -e

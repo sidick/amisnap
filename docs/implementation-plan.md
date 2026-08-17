@@ -2126,6 +2126,76 @@ protocol code against a local WebDAV container.
    but it's not zero) -- a decision for whoever picks the actual default
    or writes the recommended-cipher user documentation, not something
    to bake in silently on the strength of a throughput number alone.
+
+   **CIPHERS= CLI override: implemented then withdrawn (2026-08-17),
+   not shipped.** A `CIPHERS=<openssl-cipher-string>` switch was added
+   to `main.c` so a user could force the measurement above's faster
+   cipher for their real hardware class (PiStorm/fast-emulation users
+   specifically -- see this item's own throughput numbers). Real
+   on-target testing (`tests/copperline/run-webdav-tls.sh`, a full
+   SNAPSHOT/LIST/VERIFY/RESTORE cycle against a real independently-
+   implemented TLS+WebDAV server) found a genuine, **intermittent**
+   corruption: RESTORE itself completes and self-verifies successfully
+   (correct byte counts, correct metadata match rates) whenever
+   `CIPHERS=` is set to a non-default cipher, but a *separate, later*
+   process (the on-target readback fixture) can then no longer `Lock()`
+   the files RESTORE just wrote -- they genuinely don't exist on the
+   host-backed filesystem afterward. Measured failure rate across
+   repeated identical runs: roughly 1 in 3, not a one-off flake and not
+   100% either -- genuinely intermittent.
+
+   Extensive isolated on-target repro attempts (`tests/copperline/
+   cipherlockdiag.c`, `cipherconndiag.c`, `lockchecker.c` -- kept as
+   dev-only diagnostics, matching this directory's existing convention,
+   in case a future investigation picks this back up) ruled out several
+   specific hypotheses without finding the actual mechanism:
+     - Not `SSL_CTX_set_cipher_list()` itself corrupting process state --
+       calling `amisnap_tls_lib_open()` with a `cipher_list` set, up to
+       4 times in one process with no network I/O at all, never broke
+       `Lock()`.
+     - Not a stack overflow -- reproduced (see below) identically at 8x
+       the normal 32KB `AMISNAP_STACK_SIZE`.
+     - Not simple resource exhaustion under the *actual* production call
+       pattern -- one `amisnap_tls_lib_open()` per process followed by
+       many real `tls_connect()`/`tls_close()` cycles reusing the same
+       `SSL_CTX` (matching `webdav.c`'s own real keep-alive/retry
+       design) ran cleanly for 8 rounds with a real cipher_list set, no
+       corruption.
+     - A *different* real bug was found along the way and is worth its
+       own note: repeated **full** `amisnap_tls_lib_open()`/
+       `amisnap_tls_lib_close()` cycles (3 or more, whether within one
+       process or spread across separate processes in the same boot
+       session) reliably hang inside AmiSSL, independent of cipher_list
+       entirely (reproduces identically with no cipher override at
+       all). This is very likely a real AmiSSL/amissl.library-level
+       limitation, but it does not explain the CIPHERS= corruption
+       above -- production code never calls `amisnap_tls_lib_close()`
+       at all (confirmed by grep), so this path is never exercised
+       today. Noted here so it isn't rediscovered from scratch if
+       `amisnap_tls_lib_close()` is ever wired up for real.
+     - Debug instrumentation itself is a hazard in this call path: an
+       earlier attempt at adding `fprintf(stderr, ...)` tracing inside
+       `tls_connect()`/`tls_close()` changed RESTORE's own behavior
+       (turned the late silent-corruption failure into an immediate
+       abort), and even a `fopen()`-per-call version pointed at `RAM:`
+       did the same -- any file I/O interleaved with the BIO-pair pump
+       is itself suspect. The instrumentation that finally worked
+       without perturbing behavior held everything in a static
+       in-memory buffer, dumped once via the existing `LOG=` mechanism
+       at the very end.
+
+   Given this project's own "a data-losing bug is fatal" principle, an
+   *intermittent* corruption is worse than a deterministic one -- a
+   user has no reliable way to notice it's happening. `CIPHERS=` is
+   therefore **not** exposed on the CLI (`main.c`'s `TEMPLATE` has no
+   `CIPHERS/K`); the underlying `cipher_list` parameter stays on
+   `amisnap_tls_lib_open()` (`tls.c`/`tls.h`) as an inert internal
+   capability, ready for whichever fix eventually lands, but nothing in
+   this codebase ever calls it non-NULL today. Root-causing this
+   further would need either AmiSSL's own source (not available) or
+   substantially more on-target iteration than is practical without
+   it; picking this back up should start from the diagnostics above
+   rather than re-deriving the ruled-out hypotheses.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below
