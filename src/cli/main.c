@@ -124,22 +124,42 @@ static int open_backend(const char *path, amisnap_backend *out)
         }
 
         if (url.tls) {
-            /* Deliberately disabled, not merely unfinished:
-             * implementation-plan.md Phase 3 item 4's own retest found
-             * a real, CPU-speed-independent hang in AmiSSL's blocking
-             * SSL_set_fd()+SSL_connect() path on this platform (also
-             * independently hit and documented by a second AmiSSL
-             * client, micropython's own Amiga port) -- confirmed with
-             * a 14x clock increase plus JIT making no difference at
-             * all, not merely suspected. tls.c's own soft-load/cert-
-             * verification/connection-setup logic is confirmed correct
-             * up to that point and stays in the tree, ready to wire
-             * back in once rebuilt around a non-blocking BIO-pair pump
-             * (the fix micropython's own modssl.c already proves works
-             * here) -- but actually reaching a hung connection from the
-             * CLI is a worse failure mode for a backup tool than a
-             * clear refusal, so this path is refused unconditionally
-             * for now rather than left reachable. */
+            /* Deliberately disabled, not merely unfinished --
+             * implementation-plan.md Phase 3 item 4's own
+             * 2026-08-17 on-target diagnostic (tests/copperline/
+             * tlswebdavdiag.c) found *exactly* what makes
+             * SSL_connect() hang, not just that it does: every
+             * earlier local test that passed (tlsbench.c, every run)
+             * used SSL_VERIFY_NONE (PSK ciphers need no certificate,
+             * and the one real-cert ECDHE-RSA pass explicitly
+             * disabled verification too) -- none of them exercised
+             * the real production path. amisnap_tls_lib_open() always
+             * sets SSL_VERIFY_PEER, and tls_connect() always calls
+             * SSL_set1_host() (real chain trust plus hostname
+             * verification, "trust is everything" -- never optional).
+             * Retested with a throwaway local CA genuinely installed
+             * into a real WB clone's own AmiSSL:Certs (so verification
+             * has a real chain to walk, not just VERIFY_NONE) and
+             * step-by-step debug output bracketing every call in
+             * tls_connect(): SSL_set_fd()/SSL_set_tlsext_host_name()/
+             * SSL_set1_host() all return success, then SSL_connect()
+             * itself never returns -- reproduced twice, deterministic,
+             * purely local (no real internet RTT involved this time).
+             * So the real hang is specifically tied to
+             * SSL_VERIFY_PEER + SSL_set1_host() being active together,
+             * not cipher weight, not locality, not TLS version -- and
+             * since production TLS is never used without both, this
+             * is not a narrower bug that a TLS-1.2 cap or a config
+             * knob can route around; it reproduces on the exact code
+             * path every real https:// destination would take. A
+             * backup tool hanging indefinitely on a destination is a
+             * worse failure mode than a clear refusal, so this stays
+             * refused until tls.c is rebuilt around the non-blocking
+             * BIO-pair pump (micropython/ports/amiga/modssl.c's own
+             * proven fix on this exact platform) -- the actual
+             * verification-callback-level cause inside AmiSSL/OpenSSL
+             * is still unknown, only the precise trigger condition
+             * is. */
             amilog_err("AmiSnap: \"%s\" needs TLS (https://) -- currently disabled, "
                        "not merely unimplemented: AmiSSL has a known, confirmed "
                        "handshake hang on this platform (see implementation-plan.md "

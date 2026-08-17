@@ -13,18 +13,31 @@ create/read/delete real files/directories on disk.
 Supports exactly the subset webdav.c uses: PUT, GET, DELETE, MKCOL,
 PROPFIND (Depth 0/1), both Content-Length and chunked Transfer-Encoding
 request bodies (decoded by hand -- BaseHTTPRequestHandler does not do
-this itself). No auth, no TLS, no locking -- none of those are
-exercised by this check (auth is already covered against the in-memory
-mock in tests/test_webdav.c).
+this itself). No auth, no locking -- neither is exercised by this
+check (auth is already covered against the in-memory mock in
+tests/test_webdav.c).
 
-Usage: mini_webdav_server.py <root-dir> <port (0 = auto-select)>
+Usage: mini_webdav_server.py <root-dir> <port (0 = auto-select)> [cert key]
 Prints "READY <port>" to stdout once listening, so a driving script can
 synchronize on the actual bound port instead of guessing one free or
 guessing a startup delay.
+
+Optional TLS: pass a cert and key (PEM paths) as two extra arguments to
+wrap the listening socket in a real TLS session (Python's stdlib ssl
+module -- an independent TLS implementation from AmiSSL, same
+"independent implementation, not this project's own assumptions"
+reasoning as everything else in this file) instead of plain HTTP.
+Added for implementation-plan.md Phase 3 item 4's own on-target
+`run-tls-bench.sh` follow-up work: a real end-to-end SNAPSHOT/RESTORE
+cycle over a real https:// REPO= against the real, unmodified
+production CLI and webdav.c, not just a raw handshake. Omit both
+arguments for the original plain-HTTP behaviour (host-CI's own
+webdav-check, unaffected either way).
 """
 import http.server
 import os
 import socketserver
+import ssl
 import sys
 import urllib.parse
 
@@ -144,6 +157,8 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 def main():
     root = sys.argv[1]
     port = int(sys.argv[2])
+    cert = sys.argv[3] if len(sys.argv) > 3 else None
+    key = sys.argv[4] if len(sys.argv) > 4 else None
     os.makedirs(root, exist_ok=True)
     # ThreadingMixIn, not plain HTTPServer/TCPServer: webdav.c legitimately
     # holds one HTTP/1.1 keep-alive connection open across several
@@ -158,6 +173,10 @@ def main():
     # bug in webdav.c itself.
     server = Server(("127.0.0.1", port), Handler)
     server.root = root
+    if cert and key:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=cert, keyfile=key)
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
     print("READY %d" % server.server_address[1], flush=True)
     server.serve_forever()
 

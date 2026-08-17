@@ -35,6 +35,7 @@
  * own bsdsocket path this has no Copperline regression yet -- tracked
  * as an open item, not silently assumed working.
  */
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -76,13 +77,26 @@ void amisnap_tls_lib_close(void)
     }
 }
 
-int amisnap_tls_lib_open(void)
+int amisnap_tls_lib_open(int allow_tls13)
 {
     LONG rc;
 
     AmiSSLMasterBase = OpenLibrary((CONST_STRPTR)"amisslmaster.library", 5);
     if (!AmiSSLMasterBase) return AMISNAP_ERR_IO;
 
+    /* AmiSSL_ErrNoPtr: amissl.doc's own InitAmiSSLA entry warns "You
+     * should always specify this tag or errno error detection in your
+     * program will not work reliably", and AmiSSL's own internal
+     * socket calls -- exactly the ones the blocking SSL_connect() path
+     * below depends on -- need it to interpret retry conditions
+     * correctly, independent of whether this file itself reads errno.
+     * Previously omitted (reasoned at the time as optional); added
+     * after confirming it's what the one other real, shipped AmiSSL
+     * client on this platform (~/src/micropython/ports/amiga/
+     * amiga_ssl.c) always passes, and after tests/copperline/
+     * tlsbench.c's own on-target diagnostic (implementation-plan.md
+     * Phase 3 item 4) used it throughout every one of its successful
+     * local handshakes. */
     rc = OpenAmiSSLTags(AMISSL_CURRENT_VERSION,
         AmiSSL_UsesOpenSSLStructs, FALSE, /* amissl.doc's own recommendation: avoid
                                             * pinning to today's struct layouts */
@@ -90,6 +104,7 @@ int amisnap_tls_lib_open(void)
                                                          * amisnap_socket_lib_open() first */
         AmiSSL_GetAmiSSLBase,      (ULONG)&AmiSSLBase,
         AmiSSL_GetAmiSSLExtBase,   (ULONG)&AmiSSLExtBase,
+        AmiSSL_ErrNoPtr,           (ULONG)&errno,
         TAG_DONE);
     if (rc != 0 || !AmiSSLBase) {
         amisnap_tls_lib_close();
@@ -101,6 +116,24 @@ int amisnap_tls_lib_open(void)
         amisnap_tls_lib_close();
         return AMISNAP_ERR_IO;
     }
+
+    /* TLS 1.2 by default, TLS 1.3 opt-in (CLI: TLS13 switch, main.c) --
+     * implementation-plan.md Phase 3 item 4's own on-target diagnostic
+     * (tests/copperline/tlsbench.c/run-tls-bench.sh): the exact same
+     * blocking SSL_set_fd()+SSL_connect() design below reliably
+     * completed real TLS 1.2 handshakes plus real data exchange
+     * against a local server at every cipher weight tried (cheap PSK
+     * through a realistic ECDHE-RSA-AES128-GCM-SHA256 with a real
+     * certificate) -- capping here is standing on that specific,
+     * verified evidence, not a guess. TLS 1.3 was never tested locally
+     * (only against the real, and differently-behaving, original
+     * example.com:443 target) -- gated behind an explicit opt-in until
+     * it gets the same local verification pass TLS 1.2 already has,
+     * not because it's assumed broken. Never below 1.2 either way
+     * (TLS 1.0/1.1 are deprecated protocols this project has no reason
+     * to accept from a server). */
+    SSL_CTX_set_min_proto_version(g_tls_ctx, TLS1_2_VERSION);
+    SSL_CTX_set_max_proto_version(g_tls_ctx, allow_tls13 ? TLS1_3_VERSION : TLS1_2_VERSION);
 
     /* Real verification, not a placeholder: chain trust against AmiSSL's
      * own bundled, pre-hashed CA directory (the standard OpenSSL c_rehash

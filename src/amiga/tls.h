@@ -22,8 +22,17 @@
  * (AMISNAP_ERR_IO covers every failure mode here -- library absent,
  * AmiSSL init failure, cert store unavailable -- deliberately
  * undifferentiated at this layer; the caller's own message is what
- * tells the user which). */
-int amisnap_tls_lib_open(void);
+ * tells the user which).
+ *
+ * `allow_tls13`: 0 caps the negotiated protocol at TLS 1.2 (the
+ * default the CLI passes -- implementation-plan.md Phase 3 item 4's
+ * own on-target diagnostic verified this exact blocking design
+ * reliably completes real TLS 1.2 handshakes locally at every cipher
+ * weight tried), non-zero allows TLS 1.3 too (CLI: the TLS13 switch --
+ * opt-in because 1.3 hasn't had that same local verification pass
+ * yet, not because it's assumed broken). Never below TLS 1.2 either
+ * way. */
+int amisnap_tls_lib_open(int allow_tls13);
 void amisnap_tls_lib_close(void);
 
 /* transport.h adapter: connect() opens a real bsdsocket TCP connection

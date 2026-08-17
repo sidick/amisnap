@@ -1883,6 +1883,80 @@ protocol code against a local WebDAV container.
    the `https://` CLI-level refusal itself, which stays in place
    unchanged for now -- this is new evidence to build the next
    experiment from, not yet grounds to reverse a safety decision.
+
+   **Follow-up (same day, 2026-08-17): found the actual trigger.**
+   Briefly re-enabled `https://` at the CLI level on the strength of
+   the local-PASS evidence above, then immediately caught the gap
+   before it shipped by going back to do the "more thorough local
+   testing" this whole pass was meant to deliver: every local PASS
+   above used `SSL_VERIFY_NONE` (PSK ciphers need no certificate at
+   all; the one real-cert `ECDHE-RSA-AES128-GCM-SHA256` pass explicitly
+   disabled verification too, `tlsbench.c`'s own deliberate scope
+   narrowing) -- **none of them exercised real chain-plus-hostname
+   verification**, the one thing `amisnap_tls_lib_open()`/
+   `tls_connect()` never runs without in production
+   (`SSL_VERIFY_PEER` at the `SSL_CTX` level, `SSL_set1_host()` per
+   connection -- "trust is everything").
+
+   Built `tests/copperline/tlswebdavdiag.c`: calls the REAL,
+   unmodified `tls.c` directly (not a reimplementation) via
+   `amisnap_tls_transport_ops`, against a local `mini_webdav_server.py`
+   now with genuine TLS support (`ssl.SSLContext`, a second independent
+   implementation) wrapped around a certificate signed by a throwaway
+   local CA whose hash was installed into a real, cloned WB's own
+   `AmiSSL:Certs` (`tests/copperline/run-webdav-tls.sh`) -- so
+   `SSL_CTX_load_verify_locations("AmiSSL:Certs")` had a genuine chain
+   to walk, not `VERIFY_NONE`. Result: the real production CLI's own
+   SNAPSHOT failed with a generic `AMISNAP_ERR_IO` ("cannot open
+   repository"), no hang visible at that level -- but curl against the
+   identical server succeeded instantly, so something underneath
+   needed isolating.
+
+   Added temporary step-by-step `fprintf`+`fflush` instrumentation
+   directly inside `tls.c`'s own `tls_connect()` (captured every
+   setter's return value into a local instead of calling twice, to
+   rule out the instrumentation itself as a confound) and rebuilt
+   `tlswebdavdiag` against it: `SSL_set_fd()`, `SSL_set_tlsext_host_name()`,
+   and `SSL_set1_host()` all return success, then **`SSL_connect()`
+   itself never returns** -- reproduced identically twice, purely
+   local, no internet RTT involved this time. Meanwhile the exact same
+   cipher/version bisected via `tlsbench.c` with a new `verify=1` mode
+   added specifically for this (real `SSL_VERIFY_PEER` +
+   `SSL_CTX_load_verify_locations` + `SSL_set1_host()`, everything else
+   unchanged from the passing runs) did **not** hang -- it failed
+   cleanly in ~2.5s with "certificate verify failed" (a self-signed-cert-shaped
+   rejection worth chasing separately, but not a hang). Tried with the
+   cipher restriction removed too (`CIPHER=DEFAULT`, matching `tls.c`'s
+   own unrestricted default) -- still no hang, still the same clean
+   ~2.5s failure. The one remaining, confirmed difference between the
+   hanging and non-hanging runs is: real `tls.c`'s own `tls_connect()`
+   vs. `tlsbench.c`'s reimplementation of the identical call sequence.
+
+   **Net conclusion**: the real hang is specifically tied to
+   `SSL_VERIFY_PEER` + `SSL_set1_host()` being active together inside
+   AmiSSL's own blocking `SSL_connect()` path on this platform --
+   independent of cipher weight, TLS version, and (this time,
+   definitively) locality/internet RTT, since this reproduced purely
+   locally. Since production TLS is never used without both (dropping
+   either would mean connecting without checking who's on the other
+   end, not an option here), this is not a narrower bug a TLS-1.2 cap
+   or a config knob can route around -- it reproduces on the exact code
+   path every real `https://` destination would take. **The CLI-level
+   refusal (`open_backend()` in `main.c`) was restored, not left
+   re-enabled** -- shipping the brief re-enable would have reintroduced
+   the original hang for every real destination under a different
+   diagnosis. `tls.c` keeps two small, real improvements from this pass
+   (the `AmiSSL_ErrNoPtr` tag, and `amisnap_tls_lib_open()` now taking
+   an `allow_tls13` parameter with TLS capped to 1.2 by default) since
+   neither is wrong, just not sufficient on their own -- both are ready
+   for whichever fix actually lands. The verification-callback-level
+   *why* inside AmiSSL/OpenSSL is still unknown; only the precise
+   trigger condition is now known. Next step is the same one already on
+   record: rebuild `tls_connect()` around the non-blocking BIO-pair
+   pump `micropython/ports/amiga/modssl.c` already proves works on this
+   exact platform, specifically re-tested with real verification
+   enabled once it exists (a passing BIO-pair test with `VERIFY_NONE`
+   would repeat this exact mistake).
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below

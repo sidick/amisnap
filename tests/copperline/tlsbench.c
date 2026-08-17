@@ -101,6 +101,15 @@ int main(int argc, char **argv)
     const char *host = argc > 1 ? argv[1] : "127.0.0.1";
     unsigned short port = argc > 2 ? (unsigned short)atoi(argv[2]) : 4433;
     const char *cipher = argc > 3 ? argv[3] : "PSK-NULL-SHA";
+    /* verify=1: exercise the exact real-production verification path
+     * (SSL_VERIFY_PEER + SSL_CTX_load_verify_locations("AmiSSL:Certs")
+     * + per-connection SSL_set1_host()) instead of this diagnostic's
+     * original narrower VERIFY_NONE scope -- added to bisect a real
+     * hang found in tls.c's own real tls_connect() (via the separate
+     * tlswebdavdiag.c) that never reproduced in any VERIFY_NONE run
+     * here, to find out whether it's specifically SSL_set1_host()/real
+     * chain verification, not handshake mechanics generally. */
+    int verify = argc > 4 && strcmp(argv[4], "1") == 0;
     LONG sock = -1;
     SSL_CTX *ctx = NULL;
     SSL *ssl = NULL;
@@ -184,11 +193,22 @@ int main(int argc, char **argv)
         return 20;
     }
     SSL_CTX_set_psk_client_callback(ctx, psk_client_cb);
-    /* PSK authenticates via the shared key itself, not a certificate --
-     * no chain to verify (this is a deliberate diagnostic scope
-     * narrowing, not how amisnap_tls_lib_open() behaves in
-     * production: that path keeps real SSL_VERIFY_PEER always). */
-    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL); // nosemgrep: cpp.lang.security.crypto.certificate.openssl-disabled-cert-validation.openssl-disabled-cert-validation
+    if (verify) {
+        /* Real production verification, not the narrower VERIFY_NONE
+         * scope below: matches amisnap_tls_lib_open() exactly. */
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL); // nosemgrep: cpp.lang.security.crypto.certificate.openssl-disabled-cert-validation.openssl-disabled-cert-validation
+        if (SSL_CTX_load_verify_locations(ctx, NULL, "AmiSSL:Certs") != 1) {
+            printf("tlsbench: FAIL SSL_CTX_load_verify_locations(AmiSSL:Certs)\n");
+            return 20;
+        }
+    } else {
+        /* PSK authenticates via the shared key itself, not a
+         * certificate -- no chain to verify (this is a deliberate
+         * diagnostic scope narrowing, not how amisnap_tls_lib_open()
+         * behaves in production: that path keeps real SSL_VERIFY_PEER
+         * always). */
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL); // nosemgrep: cpp.lang.security.crypto.certificate.openssl-disabled-cert-validation.openssl-disabled-cert-validation
+    }
 
     printf("tlsbench: connecting TCP %s:%u\n", host, (unsigned)port);
     fflush(stdout);
@@ -217,6 +237,17 @@ int main(int argc, char **argv)
      * right virtual host's certificate/config at all, independent of
      * anything this diagnostic is actually trying to measure. */
     SSL_set_tlsext_host_name(ssl, host);
+    if (verify) {
+        /* The real production hostname-match check tls.c's own
+         * tls_connect() always adds -- chain trust alone isn't enough.
+         * This is the specific call this bisection run exists to
+         * isolate. */
+        if (!SSL_set1_host(ssl, host)) {
+            printf("tlsbench: FAIL SSL_set1_host\n");
+            return 20;
+        }
+        printf("tlsbench: SSL_set1_host OK, starting handshake\n");
+    }
 
     if (have_timer) freq = ReadEClock(&t0);
     rc = SSL_connect(ssl);
