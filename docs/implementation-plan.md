@@ -2113,6 +2113,22 @@ protocol code against a local WebDAV container.
    evidently costs more than CBC's separate, simpler HMAC-SHA1 saves by
    comparison, on this real build specifically.
 
+   **Positioning for users, decided here rather than left implicit:**
+   these numbers (5-11 KB/s, hours for a real 100MB backup) are for the
+   68020/14MHz floor this project targets at minimum -- TLS's own bulk-
+   transfer overhead there dwarfs any difference between ciphers, so
+   this project should not emphasize `https://`/TLS for a traditional,
+   stock-speed Amiga user; a mounted-volume/SMB/NFS destination (this
+   project's own first-choice backend, `docs/proposal.md`) or plain
+   `http://` WebDAV on a trusted home LAN stays the practical
+   recommendation there. TLS support is real and genuinely useful, just
+   for a different audience: PiStorm-class accelerators and fast
+   emulation, where the CPU budget this whole measurement is about
+   stops being the constraint. Any future user-facing docs (README,
+   the benchmark doc `docs/proposal.md`'s "Toolchain and testing"
+   implies, or Aminet release notes) should say this plainly rather
+   than presenting `https://` as an equally-good option for everyone.
+
    Only 128KB per cipher, PSK-only (bulk cost in isolation, not a
    realistic full handshake-plus-transfer number for a real certificate
    -- ECDHE-RSA-AES128-GCM-SHA256 vs. ECDHE-RSA-CHACHA20-POLY1305 with
