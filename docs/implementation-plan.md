@@ -2073,6 +2073,59 @@ protocol code against a local WebDAV container.
    disturb the existing verified behavior. Full regression sweep
    (899/899 host tests, `run.sh`/`run-webdav.sh`/`run-s3.sh`) clean
    throughout.
+
+   **Bulk-cipher throughput measured (same day, 2026-08-17), a real,
+   counter-intuitive result.** Follow-up question once the fix landed:
+   is a cipher override worth adding for CPU budget on slower Amigas
+   (proposal.md's own "CPU budget" principle), not security/interop
+   (`TLSINSECURE` already covers untrusted certs)? Measured rather than
+   guessed, same house rule as everything else here:
+   `tests/copperline/tlsthroughput.c` (a standalone diagnostic, PSK
+   ciphers -- no certificate/key-exchange cost, isolating bulk-cipher
+   speed specifically) against `tests/copperline/tls_echo_server.py` (a
+   real, independent TLS echo server, Python's own `ssl` module) over
+   `--hostsocket-net host`, real EClock timing, 128KB each way per
+   cipher, real 68020 execution
+   (`tests/copperline/run-tls-cipher-bench.sh`):
+
+   | Cipher | KB/s | Time for 100MB (extrapolated) |
+   |---|---|---|
+   | `PSK-AES128-CBC-SHA` | 11 | ~2.6 hours |
+   | `PSK-CHACHA20-POLY1305` | 9 | ~3.2 hours |
+   | `PSK-AES256-CBC-SHA` | 9 | ~3.2 hours |
+   | `PSK-AES128-GCM-SHA256` | 5 | ~5.7 hours |
+   | `PSK-AES256-GCM-SHA384` | 5 | ~5.7 hours |
+
+   The gap is real and large enough to matter for an actual backup
+   (>2x between fastest and slowest), so the underlying "is it worth
+   adding a cipher knob" question is answered yes -- but the *specific*
+   result contradicts the natural assumption (the same one this
+   project's own earlier conversation started from): ChaCha20-Poly1305
+   is usually the recommended "fast without AES hardware" choice, but
+   here plain AES-CBC (paired with a separate HMAC-SHA1, not an
+   integrated AEAD tag) beat it, and AES-**GCM** -- despite AES itself
+   being reasonably fast -- was the slowest of all. The likely
+   explanation (not yet independently confirmed against AmiSSL's own
+   source, which isn't available): GCM's GHASH and Poly1305's MAC are
+   both carry-less/finite-field multiplication-heavy constructions that
+   need real hardware support (PCLMUL-equivalent) to be cheap; on an
+   AmiSSL m68k software build with none, that authentication overhead
+   evidently costs more than CBC's separate, simpler HMAC-SHA1 saves by
+   comparison, on this real build specifically.
+
+   Only 128KB per cipher, PSK-only (bulk cost in isolation, not a
+   realistic full handshake-plus-transfer number for a real certificate
+   -- ECDHE-RSA-AES128-GCM-SHA256 vs. ECDHE-RSA-CHACHA20-POLY1305 with
+   a real cert would be the next real-world-shaped measurement, not yet
+   taken) -- a first, real data point, not the final word. Also worth
+   flagging honestly, not just the speed number: recommending CBC mode
+   specifically for its speed advantage carries the classic caveats
+   (padding-oracle-family attacks; TLS 1.2's explicit IV and this being
+   a backup client rather than a network service being probed by a
+   chosen-ciphertext-capable adversary both narrow the real risk here,
+   but it's not zero) -- a decision for whoever picks the actual default
+   or writes the recommended-cipher user documentation, not something
+   to bake in silently on the strength of a throughput number alone.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below
