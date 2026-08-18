@@ -219,9 +219,14 @@ static void mock_serve(mock_server *srv, const char *method, const char *path,
             char buf[4096];
             int n = 0;
 
+            /* Newline-separated elements, on purpose: real servers
+             * (Apache mod_dav) pretty-print their PROPFIND XML, and the
+             * href scraper must NOT turn the inter-element whitespace
+             * into phantom entries (it once matched the "</D:href>"
+             * closing tag and scraped the following "\n" as a name). */
             n += snprintf(buf + n, sizeof(buf) - (size_t)n,
-                           "<?xml version=\"1.0\"?><D:multistatus xmlns:D=\"DAV:\">"
-                           "<D:response><D:href>%s%s</D:href></D:response>",
+                           "<?xml version=\"1.0\"?>\n<D:multistatus xmlns:D=\"DAV:\">\n"
+                           "<D:response><D:href>%s%s</D:href></D:response>\n",
                            path[0] ? path : "/", is_col ? "/" : "");
             if (is_col && depth && strcmp(depth, "1") == 0) {
                 size_t i;
@@ -231,16 +236,16 @@ static void mock_serve(mock_server *srv, const char *method, const char *path,
                     const char *fp = srv->files[i].path;
                     if (strncmp(fp, path, plen) == 0 && fp[plen] == '/' && strchr(fp + plen + 1, '/') == NULL)
                         n += snprintf(buf + n, sizeof(buf) - (size_t)n,
-                                      "<D:response><D:href>%s</D:href></D:response>", fp);
+                                      "<D:response><D:href>%s</D:href></D:response>\n", fp);
                 }
                 for (i = 0; i < srv->col_count; i++) {
                     const char *cp = srv->cols[i].path;
                     if (strncmp(cp, path, plen) == 0 && cp[plen] == '/' && strchr(cp + plen + 1, '/') == NULL)
                         n += snprintf(buf + n, sizeof(buf) - (size_t)n,
-                                      "<D:response><D:href>%s/</D:href></D:response>", cp);
+                                      "<D:response><D:href>%s/</D:href></D:response>\n", cp);
                 }
             }
-            n += snprintf(buf + n, sizeof(buf) - (size_t)n, "</D:multistatus>");
+            n += snprintf(buf + n, sizeof(buf) - (size_t)n, "</D:multistatus>\n");
             amisnap_buf_bytes(&resp_body, buf, (size_t)n);
             status = "207 Multi-Status";
         }

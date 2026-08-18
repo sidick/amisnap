@@ -102,32 +102,47 @@ static int value_contains_ci(const char *value, size_t value_len, const char *ne
     return 0;
 }
 
-static uint64_t parse_u64(const char *p, size_t len)
+/* Both parsers set *ok = 0 on overflow (the accumulated value would
+ * exceed UINT64_MAX) so a hostile/broken server can't wrap a body
+ * length mod 2^64 and desync the parser into framing the body off an
+ * attacker-chosen value. *ok stays 1 otherwise; passing ok = NULL
+ * skips the signal (used for the 3-digit status code, which cannot
+ * overflow). Parsing still stops at the first non-digit, so a chunk
+ * extension (";ext") or trailing space ends the number as before --
+ * trailing-garbage rejection, where it matters (Content-Length), is
+ * the caller's job. */
+static uint64_t parse_u64(const char *p, size_t len, int *ok)
 {
     uint64_t v = 0;
     size_t i;
 
+    if (ok) *ok = 1;
     for (i = 0; i < len; i++) {
+        uint64_t d;
         if (p[i] < '0' || p[i] > '9') break;
-        v = v * 10 + (uint64_t)(p[i] - '0');
+        d = (uint64_t)(p[i] - '0');
+        if (v > (UINT64_MAX - d) / 10u) { if (ok) *ok = 0; return 0; }
+        v = v * 10u + d;
     }
     return v;
 }
 
-static uint64_t parse_hex64(const char *p, size_t len)
+static uint64_t parse_hex64(const char *p, size_t len, int *ok)
 {
     uint64_t v = 0;
     size_t i;
 
+    if (ok) *ok = 1;
     for (i = 0; i < len; i++) {
         char c = p[i];
-        int digit;
+        uint64_t digit;
 
-        if (c >= '0' && c <= '9') digit = c - '0';
-        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+        if (c >= '0' && c <= '9') digit = (uint64_t)(c - '0');
+        else if (c >= 'a' && c <= 'f') digit = (uint64_t)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') digit = (uint64_t)(c - 'A' + 10);
         else break; /* chunk extensions (";ext") stop hex parsing here, same as trailing space */
-        v = v * 16 + (uint64_t)digit;
+        if (v > (UINT64_MAX - digit) / 16u) { if (ok) *ok = 0; return 0; }
+        v = v * 16u + digit;
     }
     return v;
 }
@@ -139,7 +154,7 @@ static uint64_t parse_hex64(const char *p, size_t len)
  * headers_raw is done growing, rather than pointing into it while still
  * appending -- amisnap_buf_bytes() may realloc() and move the whole
  * buffer, which would invalidate any pointer captured mid-scan. */
-static void populate_headers(amisnap_http_response *r)
+static int populate_headers(amisnap_http_response *r)
 {
     const char *p = (const char *)r->headers_raw.data;
     const char *end = p + r->headers_raw.len;
@@ -169,8 +184,20 @@ static void populate_headers(amisnap_http_response *r)
             }
 
             if (header_name_eq(name, name_len, "Content-Length")) {
+                /* Must be a run of digits, optionally trailing spaces,
+                 * and must not overflow -- a hostile "Content-Length:
+                 * 12garbage" (parsed as 12 before) or a value wrapping
+                 * mod 2^64 would let the server frame the body off a
+                 * bogus length and truncate the download. Fail closed. */
+                int ok;
+                size_t d = 0, t;
+                while (d < value_len && value[d] >= '0' && value[d] <= '9') d++;
+                if (d == 0) return AMISNAP_ERR_MALFORMED; /* no digits at all */
+                for (t = d; t < value_len; t++)
+                    if (value[t] != ' ') return AMISNAP_ERR_MALFORMED; /* trailing garbage */
+                r->content_length = parse_u64(value, value_len, &ok);
+                if (!ok) return AMISNAP_ERR_MALFORMED; /* overflow */
                 r->has_content_length = 1;
-                r->content_length = parse_u64(value, value_len);
             } else if (header_name_eq(name, name_len, "Transfer-Encoding")) {
                 if (value_contains_ci(value, value_len, "chunked"))
                     r->chunked = 1;
@@ -178,6 +205,7 @@ static void populate_headers(amisnap_http_response *r)
         }
         p += linelen + 1; /* skip the NUL populate_headers' own caller placed there */
     }
+    return AMISNAP_OK;
 }
 
 /* Consumes bytes from data[*pos..len) into r->line_scratch until a '\n'
@@ -242,7 +270,7 @@ int amisnap_http_response_feed(amisnap_http_response *r, const void *data_v, siz
             if (i >= r->line_scratch.len) return AMISNAP_ERR_MALFORMED;
             i++;
             if (r->line_scratch.len - i < 3) return AMISNAP_ERR_MALFORMED;
-            r->status_code = (int)parse_u64((const char *)r->line_scratch.data + i, 3);
+            r->status_code = (int)parse_u64((const char *)r->line_scratch.data + i, 3, NULL);
             reset_line(r);
             r->state = AMISNAP_HTTP_PARSE_HEADERS;
             break;
@@ -256,13 +284,24 @@ int amisnap_http_response_feed(amisnap_http_response *r, const void *data_v, siz
             }
 
             if (r->line_scratch.len == 0) {
-                populate_headers(r);
+                rc = populate_headers(r);
+                if (rc != AMISNAP_OK) return rc;
                 reset_line(r);
                 if (r->chunked) {
                     r->state = AMISNAP_HTTP_PARSE_CHUNK_SIZE;
                 } else if (r->has_content_length && r->content_length > 0) {
                     r->state = AMISNAP_HTTP_PARSE_BODY;
                 } else {
+                    /* No chunked, no positive Content-Length. If there
+                     * was no Content-Length header AT ALL (not even
+                     * "Content-Length: 0"), the body is connection-close
+                     * delimited (RFC 7230 3.3.3) and this parser can't
+                     * read it -- flag it so a GET caller rejects the
+                     * response rather than accepting a truncated-to-
+                     * empty object. A framed "Content-Length: 0" (a
+                     * genuinely empty body) leaves the flag clear. */
+                    if (!r->has_content_length)
+                        r->body_unframed = 1;
                     r->state = AMISNAP_HTTP_PARSE_DONE;
                     *done = 1;
                     return AMISNAP_OK;
@@ -300,7 +339,12 @@ int amisnap_http_response_feed(amisnap_http_response *r, const void *data_v, siz
                 if (tl < 0) return tl;
                 if (!tl) break;
             }
-            r->chunk_remaining = parse_hex64((const char *)r->line_scratch.data, r->line_scratch.len);
+            {
+                int ok;
+                r->chunk_remaining = parse_hex64((const char *)r->line_scratch.data,
+                                                  r->line_scratch.len, &ok);
+                if (!ok) return AMISNAP_ERR_MALFORMED; /* chunk size overflowed uint64 */
+            }
             reset_line(r);
             r->state = (r->chunk_remaining == 0) ? AMISNAP_HTTP_PARSE_CHUNK_TRAILER
                                                   : AMISNAP_HTTP_PARSE_CHUNK_DATA;

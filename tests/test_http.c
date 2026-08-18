@@ -113,13 +113,71 @@ static void run_response_no_body_tests(void)
     TEST_CHECK(done == 1);
     TEST_CHECK(r.status_code == 201);
     TEST_CHECK(r.body.len == 0);
+    /* No Content-Length header at all -> the body (if any) was
+     * connection-close delimited, which this parser doesn't read.
+     * body_unframed must be set so a GET caller can reject it rather
+     * than accept a silently-truncated empty object. (Harmless here,
+     * a 201 PUT reply; load-bearing for GET -- see the s3/webdav
+     * get() checks.) */
+    TEST_CHECK(r.body_unframed == 1);
     amisnap_http_response_free(&r);
 
     feed_byte_at_a_time(&r, resp, sizeof(resp) - 1, &done, &rc);
     TEST_CHECK(rc == AMISNAP_OK);
     TEST_CHECK(done == 1);
     TEST_CHECK(r.status_code == 201);
+    TEST_CHECK(r.body_unframed == 1);
     amisnap_http_response_free(&r);
+}
+
+static void run_response_content_length_framing_tests(void)
+{
+    amisnap_http_response r;
+    int done, rc;
+
+    /* A framed empty body ("Content-Length: 0") is NOT unframed -- a
+     * genuinely zero-byte object, which a GET caller must accept. */
+    {
+        static const char resp[] = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        feed_whole(&r, resp, sizeof(resp) - 1, &done, &rc);
+        TEST_CHECK(rc == AMISNAP_OK);
+        TEST_CHECK(done == 1);
+        TEST_CHECK(r.body.len == 0);
+        TEST_CHECK(r.has_content_length == 1);
+        TEST_CHECK(r.body_unframed == 0);
+        amisnap_http_response_free(&r);
+    }
+
+    /* A Content-Length that overflows uint64 must fail closed, not
+     * wrap mod 2^64 and let the server frame the body off a bogus
+     * length. */
+    {
+        static const char resp[] =
+            "HTTP/1.1 200 OK\r\nContent-Length: 99999999999999999999999\r\n\r\nX";
+        feed_whole(&r, resp, sizeof(resp) - 1, &done, &rc);
+        TEST_CHECK(rc == AMISNAP_ERR_MALFORMED);
+        amisnap_http_response_free(&r);
+    }
+
+    /* Trailing non-numeric garbage ("12garbage") must be rejected, not
+     * silently parsed as 12. */
+    {
+        static const char resp[] =
+            "HTTP/1.1 200 OK\r\nContent-Length: 12garbage\r\n\r\n123456789012";
+        feed_whole(&r, resp, sizeof(resp) - 1, &done, &rc);
+        TEST_CHECK(rc == AMISNAP_ERR_MALFORMED);
+        amisnap_http_response_free(&r);
+    }
+
+    /* A chunk size that overflows uint64 must fail closed too. */
+    {
+        static const char resp[] =
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+            "FFFFFFFFFFFFFFFFF\r\n";
+        feed_whole(&r, resp, sizeof(resp) - 1, &done, &rc);
+        TEST_CHECK(rc == AMISNAP_ERR_MALFORMED);
+        amisnap_http_response_free(&r);
+    }
 }
 
 static void run_response_chunked_tests(void)
@@ -243,6 +301,7 @@ void run_http_tests(void)
 {
     run_request_builder_tests();
     run_response_content_length_tests();
+    run_response_content_length_framing_tests();
     run_response_no_body_tests();
     run_response_chunked_tests();
     run_response_chunked_with_trailer_tests();

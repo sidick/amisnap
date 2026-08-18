@@ -56,8 +56,23 @@ static int webdav_build_abs(webdav_ctx *ctx, const char *method, const char *abs
         hdrs[hdr_count++] = extra[i];
 
     amisnap_buf_init(out);
-    return amisnap_http_build_request(out, method, abspath, ctx->host_header,
-                                       hdrs, hdr_count, body, body_len);
+    {
+        /* Free `out` on ANY failure from here: amisnap_http_build_request
+         * can fail (AMISNAP_ERR_MALFORMED) AFTER already appending the
+         * request line/headers -- e.g. a header line over 255 bytes, which
+         * a long Basic-auth credential hits on every request -- leaving a
+         * partially-filled buffer. Every caller does
+         * `if (rc != AMISNAP_OK) return rc;` without its own free, so
+         * releasing it here is the single point that keeps them all
+         * leak-free. (The earlier extra_count return is before
+         * amisnap_buf_init, so `out` is untouched there -- nothing to
+         * free.) */
+        int rc = amisnap_http_build_request(out, method, abspath, ctx->host_header,
+                                             hdrs, hdr_count, body, body_len);
+        if (rc != AMISNAP_OK)
+            amisnap_buf_free(out);
+        return rc;
+    }
 }
 
 static int webdav_build(webdav_ctx *ctx, const char *method, const char *key,
@@ -270,13 +285,21 @@ static void webdav_scrape_hrefs(const char *body, size_t body_len, const char *s
 
         if (!h) break;
 
-        /* Confirm this "href" match is a tag name, not incidental text
-         * -- walk back to the nearest '<' or '>' and require '<'
-         * (tolerates a namespace prefix like "D:" or "lp1:" in between). */
+        /* Confirm this "href" match is an OPENING tag name, not
+         * incidental text or a closing tag -- walk back to the nearest
+         * '<' or '>' and require '<' (tolerates a namespace prefix like
+         * "D:" or "lp1:" in between). tag_start now points just after
+         * that '<'; if it points at '/', this is a CLOSING tag
+         * ("</D:href>") -- reject it. Without this reject, a closing
+         * tag was accepted as if it were opening, and the "content"
+         * scraped between its '>' and the next '<' was the inter-
+         * element whitespace a pretty-printing server (Apache mod_dav)
+         * emits -- yielding a phantom "\n" entry per real one, which
+         * snapshot enumeration and prune would then act on. */
         tag_start = h;
         while (tag_start > body && tag_start[-1] != '<' && tag_start[-1] != '>')
             tag_start--;
-        if (tag_start == body || tag_start[-1] != '<') {
+        if (tag_start == body || tag_start[-1] != '<' || tag_start[0] == '/') {
             pos = (size_t)(h - body) + 4;
             continue;
         }
@@ -301,7 +324,14 @@ static void webdav_scrape_hrefs(const char *body, size_t body_len, const char *s
         if (strcmp(decoded, self_path) != 0) {
             name = strrchr(decoded, '/');
             name = name ? name + 1 : decoded;
-            if (name[0] != '\0') cb(user, name);
+            /* Defence in depth beyond the closing-tag reject above: an
+             * empty or all-whitespace name is never a real entry (it's
+             * inter-element formatting), so never surface it as one. */
+            {
+                const char *s = name;
+                while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+                if (*s != '\0') cb(user, name);
+            }
         }
 
         pos = (size_t)(lt - body);
@@ -448,6 +478,15 @@ static int webdav_get(amisnap_backend *be, const char *key, amisnap_buf *out)
         return AMISNAP_ERR_NOT_FOUND;
     }
     if (resp.status_code / 100 != 2) {
+        amisnap_http_response_free(&resp);
+        return AMISNAP_ERR_IO;
+    }
+    /* A 2xx GET whose body was connection-close delimited (no
+     * Content-Length, not chunked) was truncated to empty by the
+     * parser -- never accept that as a valid object, or a stored file
+     * would silently restore as zero bytes. A real empty object comes
+     * back framed as "Content-Length: 0" (body_unframed clear). */
+    if (resp.body_unframed) {
         amisnap_http_response_free(&resp);
         return AMISNAP_ERR_IO;
     }

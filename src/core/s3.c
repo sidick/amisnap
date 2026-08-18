@@ -165,9 +165,31 @@ static int s3_build_signed(s3_ctx *ctx, const char *method, const char *canonica
 /* --- request/response exchange, with one-retry-on-stale-keep-alive --
  * identical shape and reasoning to webdav.c's own webdav_exchange(). --- */
 
-static int s3_exchange(s3_ctx *ctx, const amisnap_buf *req, amisnap_http_response *resp)
+/* `idempotent`: 1 for GET/PUT/HEAD/DELETE (safe to replay -- the
+ * one-retry-on-stale-keep-alive below applies), 0 for the multipart
+ * POSTs (CreateMultipartUpload, CompleteMultipartUpload) which are
+ * NOT. For a non-idempotent request the stale-connection retry is
+ * dangerous: if the send was delivered and the server acted before the
+ * reused connection died mid-response, replaying it would initiate a
+ * SECOND upload (orphaning the first, whose UploadId we never learned)
+ * or hit an already-completed upload (a false failure for an object
+ * that actually committed). So for those we (a) force a FRESH
+ * connection -- a just-opened socket is far less likely to be the
+ * server's silently-half-closed keep-alive that the retry exists to
+ * paper over -- and (b) never retry: one attempt, and an ambiguous
+ * failure is reported as a failure rather than blindly replayed. */
+static int s3_exchange_ex(s3_ctx *ctx, const amisnap_buf *req, amisnap_http_response *resp,
+                          int idempotent)
 {
     int attempt;
+
+    if (!idempotent && ctx->conn != NULL) {
+        /* Don't send a non-idempotent request down a possibly-stale
+         * kept-alive connection -- start clean so the single attempt
+         * below is as reliable as it can be. */
+        amisnap_transport_close(ctx->transport, ctx->conn);
+        ctx->conn = NULL;
+    }
 
     for (attempt = 0; attempt < 2; attempt++) {
         int fresh = (ctx->conn == NULL);
@@ -203,10 +225,21 @@ static int s3_exchange(s3_ctx *ctx, const amisnap_buf *req, amisnap_http_respons
 
         amisnap_transport_close(ctx->transport, ctx->conn);
         ctx->conn = NULL;
-        if (rc != AMISNAP_ERR_IO || fresh)
+        /* Retry only an idempotent request, and only when a REUSED
+         * connection failed (fresh false) -- a non-idempotent request
+         * never retries (it forced a fresh connection above, so `fresh`
+         * is true here anyway, but check idempotent explicitly for
+         * clarity). */
+        if (!idempotent || rc != AMISNAP_ERR_IO || fresh)
             return rc;
     }
     return AMISNAP_ERR_IO;
+}
+
+/* Idempotent requests (GET/PUT/HEAD/DELETE) -- the common case. */
+static int s3_exchange(s3_ctx *ctx, const amisnap_buf *req, amisnap_http_response *resp)
+{
+    return s3_exchange_ex(ctx, req, resp, 1);
 }
 
 #define UNSIGNED_PAYLOAD "UNSIGNED-PAYLOAD"
@@ -255,6 +288,15 @@ static int s3_get(amisnap_backend *be, const char *key, amisnap_buf *out)
         return AMISNAP_ERR_NOT_FOUND;
     }
     if (resp.status_code / 100 != 2) {
+        amisnap_http_response_free(&resp);
+        return AMISNAP_ERR_IO;
+    }
+    /* A 2xx GET with a connection-close-delimited body (no
+     * Content-Length, not chunked) was truncated to empty by the
+     * parser -- reject rather than restore a stored object as zero
+     * bytes. See webdav.c's own s3-parallel check / http.h's
+     * body_unframed. A real empty object returns "Content-Length: 0". */
+    if (resp.body_unframed) {
         amisnap_http_response_free(&resp);
         return AMISNAP_ERR_IO;
     }
@@ -576,7 +618,7 @@ static int s3_multipart_initiate(s3_ctx *ctx, const char *key, char upload_id_ou
                           NULL, 0, &req);
     amisnap_buf_free(&path);
     if (rc != AMISNAP_OK) return rc;
-    rc = s3_exchange(ctx, &req, &resp);
+    rc = s3_exchange_ex(ctx, &req, &resp, 0); /* CreateMultipartUpload: NOT idempotent */
     amisnap_buf_free(&req);
     if (rc != AMISNAP_OK) return rc;
 
@@ -677,7 +719,7 @@ static int s3_multipart_complete(s3_ctx *ctx, const char *key, const char *uploa
     amisnap_buf_free(&body);
     if (rc != AMISNAP_OK) return rc;
 
-    rc = s3_exchange(ctx, &req, &resp);
+    rc = s3_exchange_ex(ctx, &req, &resp, 0); /* CompleteMultipartUpload: NOT idempotent */
     amisnap_buf_free(&req);
     if (rc != AMISNAP_OK) return rc;
 

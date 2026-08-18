@@ -88,6 +88,15 @@ typedef struct {
     uint64_t content_length;
     int chunked;
     uint64_t chunk_remaining; /* CHUNK_DATA: bytes left in the current chunk */
+    int body_unframed;        /* set when headers ended with NEITHER Content-Length
+                                * NOR chunked Transfer-Encoding: the body (if any) is
+                                * delimited only by connection close (RFC 7230 3.3.3),
+                                * which this parser does not read. Correct to treat as
+                                * empty for a genuinely bodyless response (204/304, a
+                                * PUT/MKCOL/DELETE reply), but a GET whose object body
+                                * is framed this way would be silently truncated to
+                                * empty -- so GET callers must reject a 2xx with this
+                                * set rather than accept a zero-byte object. */
 
     amisnap_buf headers_raw;  /* raw header-block bytes, CRLF-terminated lines,
                                 * NUL-separated in place of each line's CRLF once
