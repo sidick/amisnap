@@ -128,24 +128,26 @@ static int g_tls_allow_13 = 0;
  * full reasoning) for a self-signed or otherwise untrusted
  * certificate, the common case for a home-lab NAS/WebDAV server. */
 static int g_tls_insecure = 0;
-/* CIPHERS= is NOT wired up here -- see implementation-plan.md Phase 3
- * item 4's "CIPHERS= cipher-list override" entry. A real, intermittent
- * corruption was found: real https:// RESTORE with an explicit
- * cipher_list set completes and self-verifies successfully, yet a
- * LATER, unrelated process can no longer Lock() the files it just
- * wrote. Extensive isolated on-target repro attempts (cipherlockdiag.c,
- * cipherconndiag.c, lockchecker.c under tests/copperline/) ruled out
- * several specific hypotheses. Two independently-review-found real
- * bugs were fixed as a result (a short-write bug in tls.c's own
- * tls_pump(), a temp-filename collision in backend_dir.c) but neither
- * explains this corruption -- re-tested against the real repro after
- * both fixes landed and it still reproduces, if anything at a higher
- * rate across the small sample retested. Per this project's own "a
- * data-losing bug is fatal" principle, an intermittent corruption is
- * worse than a deterministic one (harder for a user to ever notice or
- * trust), so this stays CLI-inert -- the cipher_list parameter itself
- * stays on amisnap_tls_lib_open() (tls.c/tls.h), ready for whichever
- * fix eventually lands, but nothing here ever calls it non-NULL. */
+/* Set once from CIPHERS=, same lifecycle as g_tls_allow_13/
+ * g_tls_insecure above. NULL (the default) keeps AmiSSL's own default
+ * cipher preference; a value passes straight to
+ * amisnap_tls_lib_open()'s own cipher_list parameter (tls.h's own doc
+ * comment has the full "why" -- a CPU-budget lever, not a security
+ * one, per implementation-plan.md Phase 3 item 4's own measurements).
+ * Was withdrawn from the CLI for a time after a real, intermittent
+ * on-target corruption; root-caused and fixed (implementation-plan.md
+ * Phase 3 item 4's "root cause found" entry) -- the corruption was
+ * never cipher-specific at all, it was AmiSSL never being closed on
+ * exit, leaving a stale per-process errno pointer in the shared
+ * library's state for a LATER process to wild-write through. That
+ * teardown is now added (see the amisnap_tls_lib_close() call near
+ * this file's own exit path), and CIPHERS= is safe to expose again --
+ * re-verified with 5/5 clean real on-target runs after the fix,
+ * against the exact scenario that failed 3/3 before it. Points
+ * directly into ReadArgs()'s own argument buffer (freed by
+ * FreeArgs() at the very end of real_main(), same lifetime every
+ * other `args[]` string here already relies on), not a copy. */
+static const char *g_tls_ciphers = NULL;
 
 static int open_backend(const char *path, amisnap_backend *out)
 {
@@ -219,11 +221,12 @@ static int open_backend(const char *path, amisnap_backend *out)
                                "verification disabled for \"%s\" and every other "
                                "https:// destination this run touches\n", path);
                 }
-                rc = amisnap_tls_lib_open(g_tls_allow_13, g_tls_insecure, NULL);
+                rc = amisnap_tls_lib_open(g_tls_allow_13, g_tls_insecure, g_tls_ciphers);
                 if (rc != AMISNAP_OK) {
                     amilog_err("AmiSnap: TLS init failed for \"%s\" -- AmiSSL not "
-                               "installed or its cert store (AmiSSL:Certs) isn't "
-                               "set up\n", path);
+                               "installed, its cert store (AmiSSL:Certs) isn't set "
+                               "up, or CIPHERS=\"%s\" isn't a cipher this AmiSSL "
+                               "build supports\n", path, g_tls_ciphers ? g_tls_ciphers : "");
                     return rc;
                 }
                 g_tls_transport.ops = &amisnap_tls_transport_ops;
@@ -1768,9 +1771,9 @@ static int str_ieq(const char *a, const char *b)
     return *a == '\0' && *b == '\0';
 }
 
-#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,TLS13/S,TLSINSECURE/S"
+#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,TLS13/S,TLSINSECURE/S,CIPHERS/K"
 enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_LOG,
-       ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_TLS13, ARG_TLSINSECURE, ARG_COUNT };
+       ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_TLS13, ARG_TLSINSECURE, ARG_CIPHERS, ARG_COUNT };
 
 static int real_main(void *arg)
 {
@@ -1801,11 +1804,18 @@ static int real_main(void *arg)
      * entirely (tls.h's own doc comment on amisnap_tls_lib_open()'s
      * `insecure` parameter has the full reasoning -- a self-signed or
      * otherwise untrusted certificate, the common case for a home-lab
-     * NAS/WebDAV server). Both read once here, before any command
+     * NAS/WebDAV server). CIPHERS: force a specific cipher/list -- a
+     * CPU-budget lever for accelerated hardware (PiStorm, fast
+     * emulation), not a security knob (tls.h's own doc comment has the
+     * measured "why", implementation-plan.md Phase 3 item 4 the full
+     * numbers) -- deliberately not emphasized for a stock-speed Amiga,
+     * where TLS's own bulk-transfer overhead dwarfs any difference
+     * between ciphers. All three read once here, before any command
      * dispatch below can call open_backend(), same as every other
      * once-per-process global this file sets up in this function. */
     g_tls_allow_13 = args[ARG_TLS13] != 0;
     g_tls_insecure = args[ARG_TLSINSECURE] != 0;
+    g_tls_ciphers = (const char *)args[ARG_CIPHERS];
 
     logpath = (const char *)args[ARG_LOG];
     if (logpath) {
@@ -1855,6 +1865,26 @@ static int real_main(void *arg)
         rc = RETURN_ERROR;
     }
 
+    /* AmiSSL must be torn down before bsdsocket -- opened in that
+     * order (open_backend()'s own TLS init runs after
+     * amisnap_socket_lib_open()), so closed in reverse, and
+     * amisnap_tls_lib_close()'s own CloseAmiSSL() call assumes
+     * SocketBase (AmiSSL_SocketBase at open time) is still valid.
+     * Previously never called on a successful run at all -- amissl.doc
+     * requires every OpenAmiSSLTags() caller to close it before exit
+     * (InitAmiSSLA's own documented contract), and skipping this left
+     * AmiSSL's per-process Init record -- including the AmiSSL_ErrNoPtr
+     * registration below, a pointer to THIS process's own &errno --
+     * retained in the shared library's state for the rest of the boot
+     * session. A later process's wild write through that now-dangling
+     * pointer was a real, on-target-verified, intermittent memory
+     * corruption (implementation-plan.md Phase 3 item 4's own
+     * "root cause found" entry has the full investigation and
+     * verification) -- not a TLS or cipher bug at all. */
+    if (g_tls_lib_open) {
+        amisnap_tls_lib_close();
+        g_tls_lib_open = 0;
+    }
     if (g_socket_lib_open) {
         amisnap_socket_lib_close();
         g_socket_lib_open = 0;

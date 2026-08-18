@@ -2262,6 +2262,81 @@ protocol code against a local WebDAV container.
    candidate the independent review produced, but the evidence now
    says it isn't (or isn't solely) the mechanism. `CIPHERS=` remains
    withdrawn from the CLI; the actual root cause is still unknown.
+
+   **Root cause found (2026-08-18): never a TLS or cipher bug at all
+   -- AmiSSL was simply never closed on exit, and `CIPHERS=` is
+   re-enabled.** A dedicated fresh investigation (an independent agent,
+   given the history above but told to look at `webdav.c`/`restore.c`/
+   `restore_meta.c` rather than `tls.c` again, since the corruption
+   only ever reproduced through the full pipeline) traced the actual
+   mechanism:
+     - `amisnap_tls_lib_open()` registers `AmiSSL_ErrNoPtr, &errno` with
+       `OpenAmiSSLTags()` (`tls.c`) -- a pointer into THIS process's own
+       stack/data. `amisnap_tls_lib_close()` (which calls `CloseAmiSSL()`,
+       deregistering it, per `CleanupAmiSSL()`'s documented behavior)
+       existed but was -- confirmed by grep -- never once called from
+       `main.c` on a successful run, only internally within `tls.c` on
+       init-failure paths.
+     - Across the harness's real multi-process run (SNAPSHOT, LIST,
+       VERIFY, RESTORE each a separate AmigaOS process), every prior
+       process leaves its own dead `&errno` registration sitting in
+       AmiSSL's retained per-library state after it exits -- amissl-
+       master.library is a real shared, refcounted system library, not
+       reset between separate process invocations.
+     - During RESTORE's TLS handshake, AmiSSL wrote a zero longword
+       through one of those now-dangling pointers -- a plain wild write,
+       nothing to do with TLS protocol correctness. In the failing
+       runs, that address happened to land inside RESTORE's own
+       `ReadArgs()` argument buffer, zeroing 4 bytes of the `DEST=
+       "Restored:"` string and truncating it to `"Res"` (or similar,
+       depending on exact layout). RESTORE then correctly wrote and
+       self-verified everything under `SYS:Res/` instead of the real
+       destination -- exactly matching the observed symptom (RESTORE
+       reports full success; the real destination is empty).
+     - **Why it looked cipher-specific**: pure coincidence of argument-
+       buffer layout. `CIPHERS=<cipher-string>` on all four command
+       lines happened to shift `ReadArgs()`'s allocations so `DEST`
+       landed on the stale pointer's target address. Decisively proven
+       two ways: padding the command lines with an inert, same-length
+       `COMMENT=` argument (no cipher override at all) reproduced the
+       *identical* corruption at the identical address; restricting the
+       TLS-using processes to just one (RESTORE only, so no stale
+       predecessor pointer exists to collide with) passed 3/3 even
+       *with* a cipher override present. This also explains every prior
+       dead end in one stroke: isolated diagnostics never chained
+       multiple real *processes* with a leaked registration each, so
+       they could never hit the collision; `tls.c`'s own connect/
+       handshake/pump code (reviewed and fixed twice above) was never
+       the mechanism because the bug isn't in that code at all.
+
+   **The fix**: `main.c`'s `real_main()` now closes AmiSSL before exit,
+   mirroring (and ordered before, since it depends on `SocketBase`
+   still being valid) the existing `amisnap_socket_lib_close()` call --
+   simply honoring `amissl.doc`'s own documented contract that every
+   `OpenAmiSSLTags()` caller closes it before exit, which this codebase
+   had never done on any successful run. **Verified on target**: the
+   known-failing padded-argument layout passed with the fix in place;
+   the original `CIPHERS=ECDHE-RSA-AES128-GCM-SHA256` repro against
+   `run-webdav-tls.sh` passed 3/3 in the fix-finding investigation, and
+   a further 6/6 (2026-08-18) once `CIPHERS=` was restored to the CLI
+   permanently and the fix's own comments/doc-strings were cleaned up
+   for a real ship, against the *exact* scenario that had failed 3/3
+   immediately before the fix. `CIPHERS=` is therefore back in
+   `TEMPLATE` (`main.c`) as a real, supported feature -- the two
+   earlier fixes (`tls_pump()`'s short-write handling, `backend_dir.c`'s
+   temp-path collision) stay too, both real bugs independent of this
+   one, just not the explanation for this specific symptom.
+
+   One loose end deliberately left as a note rather than chased
+   further: the earlier "repeated full `tls_lib_open()`/
+   `tls_lib_close()` cycles (3+) hang" finding does NOT reproduce under
+   this fix's actual pattern (one open, one close, per process) -- 12
+   clean cycles observed across the fix-verification runs. That
+   earlier finding may have depended on a different call pattern (e.g.
+   several cycles within a single process, which this fix never does)
+   and doesn't block shipping this fix, but is worth remembering if
+   `amisnap_tls_lib_close()` is ever called more than once per process
+   in the future.
 5. Host CI: protocol code (items 1-3) run against a local WebDAV
    container. **Done (2026-08-13)**, though "container" ended up meaning
    a real local server *process*, not a Docker container -- see below

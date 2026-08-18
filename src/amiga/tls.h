@@ -49,23 +49,24 @@
  * main.c's own open_backend() does.
  *
  * `cipher_list`: NULL keeps AmiSSL's own default cipher preference
- * (the default, and -- as of 2026-08-17 -- the ONLY value any caller
- * in this codebase ever actually passes; nothing wires this to the
- * CLI). Non-NULL (an openssl-cipher-string, e.g. "PSK-CHACHA20-
- * POLY1305" or a colon-separated list) would pass straight to
- * SSL_CTX_set_cipher_list() -- conceived as a CPU-budget lever
- * (proposal.md's own "CPU budget" principle applied to TLS bulk
- * transfer, not a security one: implementation-plan.md Phase 3 item
- * 4's own real, on-target throughput measurements found the fastest
- * cipher is genuinely CPU-class-dependent and non-obvious
- * (ChaCha20-Poly1305 beats AES-CBC at 68030/50MHz+, but AES-CBC wins
- * on a stock 68020/14MHz; AES-GCM is slowest at every speed tested, by
- * a consistent ~2x margin)) -- but a real, intermittent on-target
- * corruption was found when this was actually wired up as a CLI
- * switch (implementation-plan.md Phase 3 item 4's own "CIPHERS= CLI
- * override: implemented then withdrawn" entry has the full
- * investigation), so the CLI wiring was removed while this parameter
- * itself stays, ready for whichever fix eventually lands. Invalid/
+ * (the default). Non-NULL (CLI: CIPHERS=<openssl-cipher-string>, e.g.
+ * "PSK-CHACHA20-POLY1305" or a colon-separated list) passes straight
+ * to SSL_CTX_set_cipher_list() -- a CPU-budget lever (proposal.md's
+ * own "CPU budget" principle applied to TLS bulk transfer), not a
+ * security one: implementation-plan.md Phase 3 item 4's own real,
+ * on-target throughput measurements found the fastest cipher is
+ * genuinely CPU-class-dependent and non-obvious (ChaCha20-Poly1305
+ * beats AES-CBC at 68030/50MHz+, but AES-CBC wins on a stock
+ * 68020/14MHz; AES-GCM is slowest at every speed tested, by a
+ * consistent ~2x margin) -- not something this codebase should guess
+ * a universal "fast" default for. A real, intermittent on-target
+ * corruption was found the first time this was wired up as a CLI
+ * switch and the feature was withdrawn for a time; implementation-
+ * plan.md Phase 3 item 4's "root cause found" entry has the full
+ * story -- it was never cipher-specific at all (AmiSSL was never
+ * closed on exit, leaving a stale per-process pointer for a later
+ * process to wild-write through; amisnap_tls_lib_close() is now
+ * called on every exit path, main.c's own real_main()). Invalid/
  * unsupported syntax fails closed (a negative AMISNAP_ERR_* code from
  * amisnap_tls_lib_open() itself, same as every other setup failure
  * here), never silently falls back to the default list. */

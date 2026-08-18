@@ -60,6 +60,7 @@ BENCH=${BENCH:-120}
 PORT=${PORT:-18794}
 TLS13=${TLS13:-0}
 INSECURE=${INSECURE:-0}
+CIPHERS=${CIPHERS:-}
 
 AMISNAP_BIN="$ROOT/build/AmiSnap"
 STAGE_BIN="$ROOT/build/copperline-fixtures/stage"
@@ -79,6 +80,7 @@ echo "ROM: $KICK"
 echo "WB:  $WB"
 echo "TLS13: $TLS13"
 echo "INSECURE: $INSECURE"
+echo "CIPHERS: ${CIPHERS:-(default)}"
 
 T=$(mktemp -d)
 SERVER_PID=""
@@ -135,6 +137,7 @@ REPO_URL="https://127.0.0.1:$PORT/repo"
 TLS_ARGS=""
 [ "$TLS13" = "1" ] && TLS_ARGS="$TLS_ARGS TLS13"
 [ "$INSECURE" = "1" ] && TLS_ARGS="$TLS_ARGS TLSINSECURE"
+[ -n "$CIPHERS" ] && TLS_ARGS="$TLS_ARGS CIPHERS=$CIPHERS"
 
 SEQ="$T/boot/S/Startup-Sequence"
 awk -v repo="$REPO_URL" -v tlsargs="$TLS_ARGS" '

@@ -174,14 +174,15 @@ int amisnap_tls_lib_open(int allow_tls13, int insecure, const char *cipher_list)
     SSL_CTX_set_min_proto_version(g_tls_ctx, TLS1_2_VERSION);
     SSL_CTX_set_max_proto_version(g_tls_ctx, allow_tls13 ? TLS1_3_VERSION : TLS1_2_VERSION);
 
-    /* cipher_list override -- currently always NULL in practice (no
-     * caller in this codebase wires it up; tls.h's own doc comment on
-     * this parameter has the full "why not" -- a real, intermittent
-     * on-target corruption when this was tried as a CLI switch).
-     * Applied before the insecure/verified branch below since it's
-     * orthogonal to both. Fails closed: an unrecognized or unsupported
-     * cipher string is a real setup error, not silently ignored in
-     * favor of the default list. */
+    /* CIPHERS= override (CLI, main.c) -- a CPU-budget lever, not a
+     * security one (tls.h's own doc comment on this parameter has the
+     * full reasoning: the fastest cipher is genuinely CPU-class-
+     * dependent and non-obvious, measured, not guessed). Applied
+     * before the insecure/verified branch below since it's orthogonal
+     * to both -- a user on a home-lab self-signed server may still
+     * want to force a specific cipher for speed. Fails closed: an
+     * unrecognized or unsupported cipher string is a real setup
+     * error, not silently ignored in favor of the default list. */
     if (cipher_list && SSL_CTX_set_cipher_list(g_tls_ctx, cipher_list) != 1) {
         amisnap_tls_lib_close();
         return AMISNAP_ERR_IO;
