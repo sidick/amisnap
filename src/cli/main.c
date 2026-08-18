@@ -1046,6 +1046,7 @@ static LONG cmd_list(const char *repo)
     snapshot_list list;
     repo_key_ctx rk;
     int rc, i;
+    int degraded = 0; /* any snapshot's manifest unreadable/invalid */
 
     if (!repo) {
         amilog_err("AmiSnap: LIST needs REPO=<path>\n");
@@ -1083,6 +1084,7 @@ static LONG cmd_list(const char *repo)
         rc = fetch_and_open_manifest(&be, &rk, list.ids[i], &mf);
         if (rc != AMISNAP_OK) {
             amilog("%s  (manifest unreadable, error %d)\n", list.ids[i], rc);
+            degraded = 1;
             continue;
         }
 
@@ -1096,6 +1098,7 @@ static LONG cmd_list(const char *repo)
 
         if (rc != AMISNAP_OK || !ctx.seen) {
             amilog("%s  (manifest invalid, error %d)\n", list.ids[i], rc);
+            degraded = 1;
             continue;
         }
 
@@ -1106,7 +1109,12 @@ static LONG cmd_list(const char *repo)
     }
 
     amisnap_backend_close(&be);
-    return RETURN_OK;
+    /* WARN, not OK, if any snapshot's manifest couldn't be read or
+     * parsed -- a script using LIST as a repository health probe must
+     * see a non-zero RC (this file's own RC convention: WARN =
+     * "completed with some entries degraded"), not a clean success for
+     * a repository whose snapshots are corrupt. */
+    return degraded ? RETURN_WARN : RETURN_OK;
 }
 
 /* --- verify ----------------------------------------------------------------- */

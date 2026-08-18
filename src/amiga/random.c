@@ -203,12 +203,29 @@ int amisnap_random(uint8_t *buf, size_t n)
 
     pool_ensure();
 
+    /* Fail closed without the EClock timer. It is this generator's only
+     * high-quality entropy source -- the jitter loop below, and (its
+     * only would-be fallback) the keystroke-timing jitter in
+     * amisnap_read_passphrase(), are BOTH gated on it. Without the
+     * timer the pool holds only a low-resolution DateStamp, a few
+     * AvailMem/pointer values, and 64 bytes of allocation residue --
+     * near-guessable on a fresh deterministic emulator, and this
+     * function is used ONLY to mint long-lived repository key material
+     * (INIT/REKEY: the repo key, KDF salt, wrap nonce, repo id). A weak
+     * key here silently undermines every encrypted backup, so refuse
+     * rather than proceed: cmd_init()/cmd_rekey() already surface a
+     * "could not gather entropy" error to the user on a nonzero return.
+     * (timer_ready() opens the timer once and latches, so this is a
+     * deterministic per-process decision, not a transient flake.) */
+    if (!timer_ready())
+        return -1;
+
     g_calls++;
     amisnap_sha256_update(&g_pool, &g_calls, sizeof g_calls);
     stir_system_state();
 
     /* EClock jitter: rapid reads with a little work between them. */
-    if (timer_ready()) {
+    {
         int i;
         for (i = 0; i < 96; i++) {
             stir_eclock();

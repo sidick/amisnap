@@ -129,6 +129,7 @@ void amisnap_repo_wrap_key(const uint8_t k_wrap[AMISNAP_REPO_KEY_SIZE],
         memset(sk.nonce, 0, 32);
         amisnap_repo_encrypt_frame(&sk, wrap_nonce, repo_key,
                                     AMISNAP_REPO_KEY_SIZE, wrapped_out);
+        memset(&sk, 0, sizeof sk); /* sk holds copies of enc/mac -- scrub it too */
     }
 
     memset(enc, 0, sizeof enc);
@@ -152,6 +153,7 @@ int amisnap_repo_unwrap_key(const uint8_t k_wrap[AMISNAP_REPO_KEY_SIZE],
         memset(sk.nonce, 0, 32);
         rc = amisnap_repo_decrypt_frame(&sk, wrapped, AMISNAP_WRAPPED_KEY_SIZE,
                                          repo_key_out);
+        memset(&sk, 0, sizeof sk); /* sk holds copies of enc/mac -- scrub it too */
     }
 
     memset(enc, 0, sizeof enc);
