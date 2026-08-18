@@ -40,6 +40,7 @@
 #include "amipath.h"
 #include "backend_dir.h"
 #include "entropy.h"
+#include "exclude.h"
 #include "index.h"
 #include "applyuaem.h"
 #include "pbkdf2.h"
@@ -846,7 +847,67 @@ static int snapshot_source_repo_overlap(const char *source, const char *repo)
     return overlap;
 }
 
-static LONG cmd_snapshot(const char *source, const char *repo, const char *comment, int paranoid)
+/* Reads `path` whole via stdio (same convention as this file's own
+ * LOG= handling above -- libnix's fopen/fread, not a raw Amiga Open/
+ * Read pair) and parses it as exclude.h's plain-text pattern list.
+ * `*have_out` is set on success; left 0 (with *out left zeroed) if
+ * `path` is NULL, matching every other optional-file argument in this
+ * file. A file that exists but can't be opened/read is a real error
+ * (AMISNAP_ERR_IO) -- an EXCLUDE= the user gave that silently did
+ * nothing would be exactly the "quiet, wrong backup" class of failure
+ * principle 1 rules out. */
+static int load_exclude_file(const char *path, amisnap_exclude_list *out, int *have_out)
+{
+    FILE *f;
+    char *buf;
+    long size;
+    size_t got;
+    int rc;
+
+    memset(out, 0, sizeof(*out));
+    *have_out = 0;
+    if (!path)
+        return AMISNAP_OK;
+
+    f = fopen(path, "rb");
+    if (!f)
+        return AMISNAP_ERR_IO;
+
+    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0 || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return AMISNAP_ERR_IO;
+    }
+
+    if (size == 0) {
+        fclose(f);
+        rc = amisnap_exclude_parse(NULL, 0, out);
+        if (rc == AMISNAP_OK)
+            *have_out = 1;
+        return rc;
+    }
+
+    buf = (char *)malloc((size_t)size);
+    if (!buf) {
+        fclose(f);
+        return AMISNAP_ERR_NOMEM;
+    }
+
+    got = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    if (got != (size_t)size) {
+        free(buf);
+        return AMISNAP_ERR_IO;
+    }
+
+    rc = amisnap_exclude_parse(buf, (size_t)size, out);
+    free(buf);
+    if (rc == AMISNAP_OK)
+        *have_out = 1;
+    return rc;
+}
+
+static LONG cmd_snapshot(const char *source, const char *repo, const char *comment, int paranoid,
+                          const char *exclude_path)
 {
     amisnap_backend be;
     amisnap_repo_writer rw;
@@ -860,6 +921,8 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     char snapid[17];
     amisnap_index prev_index;
     int have_prev_index = 0;
+    amisnap_exclude_list exclude;
+    int have_exclude = 0;
     repo_key_ctx rk;
     int rc;
 
@@ -868,9 +931,16 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
         return RETURN_ERROR;
     }
 
+    rc = load_exclude_file(exclude_path, &exclude, &have_exclude);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: cannot read EXCLUDE=\"%s\" (error %d)\n", exclude_path, rc);
+        return RETURN_FAIL;
+    }
+
     rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
     }
 
@@ -878,6 +948,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", repo, rc);
         amisnap_backend_close(&be);
+        if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
     }
 
@@ -886,6 +957,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
                         "SOURCE=\"%s\" -- refusing to back a volume up onto itself\n",
                 repo, source);
         amisnap_backend_close(&be);
+        if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_ERROR;
     }
 
@@ -899,10 +971,12 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
      * implementation-plan.md's CLI wiring entry for the trade-off. */
     caps_visitor.user = NULL;
     caps_visitor.on_entry = caps_only_on_entry;
-    rc = amisnap_scan_volume(source, &caps_visitor, &caps, &caps_pass_result);
+    rc = amisnap_scan_volume(source, &caps_visitor, have_exclude ? &exclude : NULL, &caps,
+                              &caps_pass_result);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot scan \"%s\" (error %d)\n", source, rc);
         amisnap_backend_close(&be);
+        if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
     }
 
@@ -923,6 +997,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
         amilog_err("AmiSnap: cannot start snapshot (error %d)\n", rc);
         amisnap_repo_writer_free(&rw);
         amisnap_backend_close(&be);
+        if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
     }
 
@@ -939,6 +1014,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
         amilog_err("AmiSnap: cannot record volume info (error %d)\n", rc);
         amisnap_repo_writer_free(&rw);
         amisnap_backend_close(&be);
+        if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
     }
 
@@ -985,12 +1061,14 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     ctx.files_paranoid_mismatch = 0;
     real_visitor.user = &ctx;
     real_visitor.on_entry = snapshot_on_entry;
-    rc = amisnap_scan_volume(source, &real_visitor, &caps, &real_result);
+    rc = amisnap_scan_volume(source, &real_visitor, have_exclude ? &exclude : NULL, &caps,
+                              &real_result);
     if (have_prev_index) amisnap_index_free(&prev_index);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: scan failed partway through (error %d)\n", rc);
         amisnap_repo_writer_free(&rw);
         amisnap_backend_close(&be);
+        if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
     }
 
@@ -999,18 +1077,22 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     amisnap_backend_close(&be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: could not commit snapshot (error %d)\n", rc);
+        if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
     }
 
-    amilog("Snapshot %s: %lu dirs, %lu files (%lu unchanged, %lu failed), %lu links skipped\n",
+    amilog("Snapshot %s: %lu dirs, %lu files (%lu unchanged, %lu failed), %lu links skipped, "
+           "%lu dirs and %lu files excluded\n",
            snapid, (unsigned long)real_result.dirs_seen, (unsigned long)ctx.files_ok,
            (unsigned long)ctx.files_unchanged, (unsigned long)ctx.files_failed,
-           (unsigned long)real_result.links_skipped);
+           (unsigned long)real_result.links_skipped, (unsigned long)real_result.dirs_excluded,
+           (unsigned long)real_result.files_excluded);
     if (paranoid)
         amilog("Paranoid verify: %lu file(s) claimed unchanged by metadata but failed the "
                    "xxHash32 re-check and were re-read in full\n",
                (unsigned long)ctx.files_paranoid_mismatch);
 
+    if (have_exclude) amisnap_exclude_free(&exclude);
     if (ctx.files_failed > 0 || real_result.links_skipped > 0)
         return RETURN_WARN;
     return RETURN_OK;
@@ -1786,9 +1868,10 @@ static int str_ieq(const char *a, const char *b)
     return *a == '\0' && *b == '\0';
 }
 
-#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,TLS13/S,TLSINSECURE/S,CIPHERS/K"
+#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,TLS13/S,TLSINSECURE/S,CIPHERS/K,EXCLUDE/K"
 enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_LOG,
-       ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_TLS13, ARG_TLSINSECURE, ARG_CIPHERS, ARG_COUNT };
+       ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_TLS13, ARG_TLSINSECURE, ARG_CIPHERS, ARG_EXCLUDE,
+       ARG_COUNT };
 
 static int real_main(void *arg)
 {
@@ -1855,7 +1938,8 @@ static int real_main(void *arg)
 
     if (str_ieq(action, "SNAPSHOT")) {
         rc = cmd_snapshot((const char *)args[ARG_SOURCE], (const char *)args[ARG_REPO],
-                           (const char *)args[ARG_COMMENT], args[ARG_PARANOID] != 0);
+                           (const char *)args[ARG_COMMENT], args[ARG_PARANOID] != 0,
+                           (const char *)args[ARG_EXCLUDE]);
     } else if (str_ieq(action, "RESTORE")) {
         rc = cmd_restore((const char *)args[ARG_REPO], (const char *)args[ARG_DEST],
                           (const char *)args[ARG_SNAPID], (const char *)args[ARG_SUBTREE]);

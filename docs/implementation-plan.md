@@ -1295,14 +1295,33 @@ Amiga-specific metadata field rather than literally applying it.
    with the restored file's content checked byte-for-byte (not just
    size/count) against the fixture's own generation pattern.
 
-8. **Deferred design note: a backup exclude list.** Raised in
-   discussion (2026-08-12), not scheduled to a phase yet: a plain-text
-   file (per-source-directory, or one global list, TBD) naming files/
-   directories the user never wants backed up, read by `scan.c` before
-   walking so excluded entries never even get `Examine()`'d, matching
-   `docs/proposal.md`'s own already-planned "include/exclude patterns"
-   for `snapshot`. Natural to design alongside whichever item first
-   needs `scan.c` to filter its own walk rather than emit everything.
+8. Backup exclude list. Raised as a deferred design note (2026-08-12),
+   **implemented (2026-08-18)**: `src/core/exclude.[ch]` (portable,
+   host-tested -- `tests/test_exclude.c`) parses a plain-text,
+   gitignore-subset pattern file (comments/blank lines, `*`/`?`
+   wildcards that never cross `/`, non-anchored patterns matching any
+   path component at any depth, patterns with an interior or leading
+   `/` anchored to the full relative path, a trailing `/` restricting a
+   pattern to directories, matching case-insensitively throughout since
+   every native Amiga filesystem this tool targets is case-preserving
+   but case-insensitive) into an owned pattern list a path can be
+   matched against. `scan.h`/`scan.c` gained an optional
+   `amisnap_exclude_list *` parameter (NULL preserves the exact
+   original behavior for any future caller that doesn't pass one):
+   `process_entry()` checks it before ever calling `visitor->on_entry`,
+   so a matching directory is never recursed into (no `ExAll()` call
+   for anything under it) and a matching file is simply never emitted
+   -- both counted in two new `amisnap_scan_result` fields
+   (`dirs_excluded`/`files_excluded`) rather than silently vanishing
+   from the run's own reporting. CLI: `SNAPSHOT ... EXCLUDE=<path>`
+   (`src/cli/main.c`) reads the file via libnix's `fopen`/`fread` (the
+   same convention this file's own `LOG=` handling already uses, not a
+   raw Amiga `Open`/`Read` pair) and threads the parsed list through
+   both of `cmd_snapshot`'s scan passes (the caps-only walk and the
+   real one) so excluded entries influence neither. Cross-build-
+   verified clean (`make m68k-docker`); on-target Copperline
+   confirmation is still open, matching this item's own not-yet-tested
+   status for anything beyond a cross-build.
 
 **Deferred design note: media-spanning + parity (2026-08-12, not
 scheduled to a phase yet).** Two related, separable features raised in

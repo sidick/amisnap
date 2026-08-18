@@ -103,12 +103,12 @@ static int path_push(char *buf, size_t cap, size_t base_len, const char *name,
 }
 
 static int scan_dir(const char *root_path, BPTR lock, char *path_buf, size_t path_len, LONG type,
-                     const amisnap_scan_visitor *visitor,
+                     const amisnap_scan_visitor *visitor, const amisnap_exclude_list *exclude,
                      amisnap_scan_caps *caps, amisnap_scan_result *result);
 
 static int process_entry(const char *root_path, struct ExAllData *ead, LONG type,
                           char *path_buf, size_t base_len,
-                          const amisnap_scan_visitor *visitor,
+                          const amisnap_scan_visitor *visitor, const amisnap_exclude_list *exclude,
                           amisnap_scan_caps *caps, amisnap_scan_result *result)
 {
     amisnap_entry_meta entry;
@@ -150,6 +150,15 @@ static int process_entry(const char *root_path, struct ExAllData *ead, LONG type
         entry.has_owner = 1;
         entry.uid = ead->ed_OwnerUID;
         entry.gid = ead->ed_OwnerGID;
+    }
+
+    if (exclude && amisnap_exclude_match(exclude, path_buf, child_len,
+                                          entry.type == AMISNAP_ETYPE_DIR)) {
+        if (entry.type == AMISNAP_ETYPE_DIR)
+            result->dirs_excluded++;
+        else
+            result->files_excluded++;
+        return 0;
     }
 
     if (entry.type == AMISNAP_ETYPE_SOFTLINK || entry.type == AMISNAP_ETYPE_HARDLINK) {
@@ -197,7 +206,8 @@ static int process_entry(const char *root_path, struct ExAllData *ead, LONG type
         if (!child_lock)
             return AMISNAP_ERR_IO;
 
-        abort_rc = scan_dir(root_path, child_lock, path_buf, child_len, type, visitor, caps, result);
+        abort_rc = scan_dir(root_path, child_lock, path_buf, child_len, type, visitor, exclude, caps,
+                             result);
         UnLock(child_lock);
         return abort_rc;
     }
@@ -213,7 +223,7 @@ static int process_entry(const char *root_path, struct ExAllData *ead, LONG type
 }
 
 static int scan_dir(const char *root_path, BPTR lock, char *path_buf, size_t path_len, LONG type,
-                     const amisnap_scan_visitor *visitor,
+                     const amisnap_scan_visitor *visitor, const amisnap_exclude_list *exclude,
                      amisnap_scan_caps *caps, amisnap_scan_result *result)
 {
     struct ExAllControl *eac;
@@ -257,7 +267,8 @@ static int scan_dir(const char *root_path, BPTR lock, char *path_buf, size_t pat
         if (eac->eac_Entries > 0) {
             struct ExAllData *ead = buffer;
             do {
-                rc = process_entry(root_path, ead, type, path_buf, path_len, visitor, caps, result);
+                rc = process_entry(root_path, ead, type, path_buf, path_len, visitor, exclude, caps,
+                                    result);
                 if (rc != AMISNAP_OK)
                     goto done;
                 ead = ead->ed_Next;
@@ -277,6 +288,7 @@ done:
 }
 
 int amisnap_scan_volume(const char *root_path, const amisnap_scan_visitor *visitor,
+                         const amisnap_exclude_list *exclude,
                          amisnap_scan_caps *caps, amisnap_scan_result *result)
 {
     BPTR root_lock;
@@ -359,7 +371,7 @@ int amisnap_scan_volume(const char *root_path, const amisnap_scan_visitor *visit
     {
         char path_buf[AMISNAP_SCAN_PATH_BUF_LEN];
         path_buf[0] = '\0';
-        rc = scan_dir(root_path, root_lock, path_buf, 0, ED_OWNER, visitor, caps, result);
+        rc = scan_dir(root_path, root_lock, path_buf, 0, ED_OWNER, visitor, exclude, caps, result);
     }
 
     UnLock(root_lock);

@@ -34,6 +34,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "exclude.h"
 #include "meta.h"
 
 /* Generous fixed bound on a scanned path's length, matching
@@ -59,7 +60,9 @@ typedef struct {
 typedef struct {
     size_t dirs_seen;
     size_t files_seen;
-    size_t links_skipped; /* see this header's own note above */
+    size_t links_skipped;  /* see this header's own note above */
+    size_t dirs_excluded;  /* matched an exclude.h pattern -- not walked, not emitted */
+    size_t files_excluded; /* matched an exclude.h pattern -- not emitted */
 } amisnap_scan_result;
 
 /* Each callback returns 0 to continue or a nonzero value (propagated
@@ -83,10 +86,18 @@ typedef struct {
  * re-deriving it, and scan.c produces entries in that same order from
  * the source side too).
  *
+ * `exclude` may be NULL (scan everything, the original behavior). A
+ * matching entry is filtered before visitor->on_entry is ever called
+ * for it; a matching directory is never recursed into either -- an
+ * excluded subtree costs nothing beyond the one ExAll() batch call
+ * that revealed the directory's own name, never a walk of its
+ * contents. The root itself (E_PATH = "") is never excludable.
+ *
  * Returns AMISNAP_OK, a visitor abort value, or AMISNAP_ERR_IO if
  * `root_path` cannot be locked or a directory operation fails
  * abnormally partway through, or AMISNAP_ERR_NOMEM/AMISNAP_ERR_TOO_LONG. */
 int amisnap_scan_volume(const char *root_path, const amisnap_scan_visitor *visitor,
+                         const amisnap_exclude_list *exclude,
                          amisnap_scan_caps *caps, amisnap_scan_result *result);
 
 #endif /* AMISNAP_SCAN_H */
