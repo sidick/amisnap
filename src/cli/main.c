@@ -473,10 +473,16 @@ static int open_repo_key(amisnap_backend *be, repo_key_ctx *out)
     if (rc != AMISNAP_OK) return rc;
 
     rc = amisnap_repo_header_decode(raw.data, raw.len, &hdr);
-    amisnap_buf_free(&raw); /* hdr's salt/wrapped_key borrows expire here -- copy what's needed below */
-    if (rc != AMISNAP_OK) return rc;
+    /* hdr.salt / hdr.wrapped_key BORROW into raw.data (repo_header.c
+     * stores pointers into the input buffer, not copies) -- raw must
+     * stay alive until they're copied out below, so it is NOT freed
+     * here. Freeing it before the memcpy was a real use-after-free:
+     * PBKDF2 would run over a freed (possibly reused) salt, making
+     * unwrap fail nondeterministically -- a "wrong passphrase" that
+     * isn't. */
+    if (rc != AMISNAP_OK) { amisnap_buf_free(&raw); return rc; }
 
-    if (hdr.cipher == 0) return AMISNAP_OK;
+    if (hdr.cipher == 0) { amisnap_buf_free(&raw); return AMISNAP_OK; }
 
     {
         char passphrase[256];
@@ -485,9 +491,10 @@ static int open_repo_key(amisnap_backend *be, repo_key_ctx *out)
         uint8_t k_wrap[32];
         uint8_t repo_key[AMISNAP_REPO_KEY_SIZE];
 
-        if (hdr.salt_len > sizeof(salt)) return AMISNAP_ERR_TOO_LONG;
+        if (hdr.salt_len > sizeof(salt)) { amisnap_buf_free(&raw); return AMISNAP_ERR_TOO_LONG; }
         memcpy(salt, hdr.salt, hdr.salt_len);
         memcpy(wrapped, hdr.wrapped_key, AMISNAP_WRAPPED_KEY_SIZE);
+        amisnap_buf_free(&raw); /* salt/wrapped copied out -- hdr's borrows into raw are done with */
 
         if (amisnap_read_passphrase("AmiSnap passphrase: ", passphrase, sizeof(passphrase)) != 0) {
             return AMISNAP_ERR_IO;

@@ -386,6 +386,21 @@ int amisnap_repo_open_manifest(const amisnap_repo_subkeys *subkeys, const char *
     if (rc != AMISNAP_OK) return rc;
 
     if ((flags & 1u) == 0) {
+        /* Plaintext manifest. If this repository is encrypted (the
+         * caller holds subkeys, i.e. the repo header said CIPHER 1 and
+         * the passphrase verified), a plaintext manifest is NOT
+         * acceptable -- it carries no MAC, so its only integrity is the
+         * self-recomputable END_HASH, which an attacker with write
+         * access to the destination (the exact threat encryption
+         * exists for: an S3 bucket, an SMB share) can forge. Accepting
+         * it would let a forged manifest reference existing objects
+         * under attacker-chosen paths/protection bits, and verify/
+         * restore would faithfully apply it -- a silent authentication
+         * downgrade. Fail closed per "trust is everything": an
+         * encrypted repository's manifests must be encrypted. Only a
+         * genuinely plain (CIPHER 0) repository -- no subkeys -- may
+         * return an unauthenticated manifest. */
+        if (subkeys) return AMISNAP_ERR_MISSING_FIELD;
         amisnap_buf_init(plaintext_out);
         return amisnap_buf_bytes(plaintext_out, raw, rawlen);
     }

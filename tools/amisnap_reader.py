@@ -922,6 +922,37 @@ def write_uaem_sidecar(dest_path, entry):
         f.write(line + "\n")
 
 
+def safe_dest_path(dest, rel):
+    """Joins a manifest entry's relative path onto the restore
+    destination, refusing any path that would escape it. A manifest can
+    come from an untrusted source (a compromised NAS/WebDAV/S3 server;
+    note a plaintext manifest's END_HASH is self-recomputable, so a
+    forged one can look valid), so a hostile entry path like
+    "../../home/user/.profile" or an absolute "/etc/passwd" must not
+    let the reader overwrite files outside `dest`. Rejects absolute
+    paths and any ".." component up front, then verifies via realpath
+    that the result really stays under `dest` (defence in depth against
+    symlinks in `dest` itself and platform path quirks). Returns the
+    validated absolute path, or raises ValueError."""
+    text = rel.decode("latin-1")
+    # Amiga manifests use '/' as the separator; also treat the host
+    # separator so this is correct whichever platform runs the reader.
+    parts = text.replace("\\", "/").split("/")
+    for comp in parts:
+        if comp in ("", ".", ".."):
+            if comp == "..":
+                raise ValueError("manifest path escapes destination: %r" % text)
+            # empty/'.' components are harmless -- skip them
+            continue
+    if text.startswith("/") or os.path.isabs(text):
+        raise ValueError("manifest path is absolute: %r" % text)
+    dest_root = os.path.realpath(dest)
+    joined = os.path.realpath(os.path.join(dest_root, text))
+    if joined != dest_root and not joined.startswith(dest_root + os.sep):
+        raise ValueError("manifest path escapes destination: %r" % text)
+    return joined
+
+
 def cmd_restore(args):
     header = read_repo_header(args.repo)
     subkeys = open_repo_key(header)
@@ -944,7 +975,7 @@ def cmd_restore(args):
             skipped += 1
             continue
 
-        dest_path = os.path.join(args.dest, path.decode("latin-1")) if path else args.dest
+        dest_path = safe_dest_path(args.dest, path) if path else os.path.realpath(args.dest)
 
         if entry["type"] == ETYPE_DIR:
             os.makedirs(dest_path, exist_ok=True)
