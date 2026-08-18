@@ -1,0 +1,60 @@
+# User documentation site (MkDocs Material), published per release via
+# mike to GitHub Pages, following sibling AmiAuth's own convention
+# (userdocs/ is the single source of truth for user docs; the on-Amiga
+# AmigaGuide version -- `make guide` -- is generated from the same
+# source, not maintained separately). Developer design notes stay in
+# docs/ and are not part of this site.
+
+site_name: AmiSnap
+site_description: Versioned network backup with snapshots for classic AmigaOS
+site_url: https://sidick.github.io/amisnap/
+repo_url: https://github.com/sidick/amisnap
+repo_name: sidick/amisnap
+edit_uri: edit/main/userdocs/
+copyright: AmiSnap — versioned network backup for classic AmigaOS. BSD 2-Clause.
+
+docs_dir: userdocs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.footer
+    - content.action.edit
+
+extra:
+  version:
+    provider: mike
+
+markdown_extensions:
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting going:
+      - Installation: Installation.md
+      - Getting Started: Getting-Started.md
+  - Using AmiSnap:
+      - CLI Reference: CLI-Reference.md
+      - Exclude Lists: Exclude-Lists.md
+      - Destinations (Backends): Backends.md
+      - Encryption: Encryption.md
+  - Under the hood:
+      - Performance: Performance.md
+      - Disaster Recovery: Disaster-Recovery.md
+      - Repository Format: Repository-Format.md
+  - Help:
+      - Building from Source: Building-from-Source.md
+      - Changelog: Changelog.md

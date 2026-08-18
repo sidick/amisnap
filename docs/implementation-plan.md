@@ -2898,6 +2898,44 @@ period framed as "run alongside your existing method", Aminet release
 via the existing tag-driven pipeline. At 1.0: at least one full user
 backup rotation reported from real hardware.
 
+**User docs started (2026-08-18).** `userdocs/` (MkDocs Material,
+`mkdocs.yml`) + `tools/docs2guide.py` (adapted directly from sibling
+AmiAuth's converter of the same name -- the Markdown-to-AmigaGuide
+logic is generic, only `PAGES`/`version()` are AmiSnap's own) + `make
+guide` (wired into `dist`, confirmed producing a working
+`build/AmiSnap.guide` inside the archive via a real `make dist` run in
+the CI container). Twelve pages: index, Installation, Getting-Started,
+CLI-Reference (transcribed from the real `TEMPLATE`/`ARG_*`/RC values
+in `src/cli/main.c`, not from memory), Exclude-Lists, Backends,
+Encryption, **Performance** (the "honest per-tier performance guide"
+this item calls for -- the real measured numbers already on record
+elsewhere in this plan: the 10k-file/26s incremental-scan benchmark,
+the 8MB index-memory finding, the 256KiB chunk-size correction, and the
+real cipher-throughput table and its "don't recommend `https://` for a
+stock-speed Amiga" positioning from Phase 3 item 4, transcribed rather
+than restated informally), **Disaster-Recovery** (the walkthrough this
+item calls for, using `tools/amisnap_reader.py` -- including its
+independent-implementation framing and the honest "metadata can't be
+applied on a bare POSIX host without `--uaem`" limitation),
+Repository-Format (a summary pointing at the normative `docs/format.md`
+rather than duplicating it), Building-from-Source, Changelog (honestly
+states no tagged release exists yet rather than fabricating one).
+`index.md`'s own beta-status note states the "run alongside your
+existing method" framing this item calls for directly, sourced from
+the same reasoning as `AmiSnap.readme`'s existing text.
+
+**Not done yet, tracked honestly rather than glossed over**: the
+MkDocs site has not been published (no `.github/workflows/docs.yml`
+wired up, no GitHub Pages `mike` deploy) -- `mkdocs serve` works
+locally but nothing publishes it yet. The docs describe today's real
+CLI/behavior throughout, but have not been read end-to-end by a fresh
+user attempting the Getting Started walkthrough against a real
+(on-target or host) AmiSnap binary -- a real dry-run against
+Copperline, not just cross-build/lint verification, is a reasonable
+next check before calling this item done. The Aminet release itself
+(tag-driven publish) and the 1.0 "one full backup rotation on real
+hardware" gate remain entirely open.
+
 Post-1.0 (proposal "Future goals", unchanged): `amisnap-tool` host
 client growing out of the reference reader, commodity scheduler,
 ClassAct GUI + ARexx, repository mirroring.

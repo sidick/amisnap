@@ -63,7 +63,7 @@ AMIGA_GCC_IMAGE ?= ghcr.io/sidick/amiga-dev:1
 DOCKER_USER     := --user "$(shell id -u):$(shell id -g)"
 
 .PHONY: all test m68k m68k-docker clean build test-host stackswap-vamos-test cross-check \
-	copperline-fixtures test-target lint dist version
+	copperline-fixtures test-target lint dist version guide
 
 all: test
 
@@ -327,15 +327,23 @@ $(BUILD)/tools/lha:
 	cp $(BUILD)/tools/lha-src/src/lha $(BUILD)/tools/lha
 	rm -rf $(BUILD)/tools/lha-src
 
+# --- guide: AmigaGuide user documentation, generated from userdocs/ ----------
+# userdocs/ is the single source of truth for user docs (published as the
+# versioned MkDocs site via mike/GitHub Pages) -- this converts the same
+# Markdown into one hyperlinked AmigaGuide document for on-Amiga reading,
+# same tool and convention as sibling AmiAuth's own `make guide`.
+guide: | $(BUILD)/.dir
+	python3 tools/docs2guide.py userdocs $(BUILD)/AmiSnap.guide
+
 # --- dist: assemble the Aminet upload pair (archive + .readme) -------------
 # Builds the m68k binary itself (build-test.yml's dist job runs `make
 # dist` standalone). The $VER grep confirms the binary just built embeds
 # the CURRENT version.mk VERSION.REVISION -- catching a stale build/
 # before it ships (same self-check as the siblings' dist targets).
-dist: m68k $(LHA)
+dist: m68k guide $(LHA)
 	rm -rf $(BUILD)/dist
 	mkdir -p $(BUILD)/dist/AmiSnap
-	cp $(BUILD)/AmiSnap LICENSE AmiSnap.readme $(BUILD)/dist/AmiSnap/
+	cp $(BUILD)/AmiSnap $(BUILD)/AmiSnap.guide LICENSE AmiSnap.readme $(BUILD)/dist/AmiSnap/
 	cp AmiSnap.readme $(BUILD)/dist/
 	@v="$(VERSION).$(REVISION)"; \
 	grep -aqF "\$$VER: AmiSnap $$v (" $(BUILD)/dist/AmiSnap/AmiSnap || \
