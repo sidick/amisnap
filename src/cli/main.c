@@ -33,6 +33,7 @@
 #include <string.h>
 
 #include <dos/dos.h>
+#include <dos/dosextens.h>
 #include <dos/rdargs.h>
 #include <dos/var.h>
 #include <proto/dos.h>
@@ -1873,9 +1874,28 @@ enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_
        ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_TLS13, ARG_TLSINSECURE, ARG_CIPHERS, ARG_EXCLUDE,
        ARG_COUNT };
 
+/* Second "?" at the ReadArgs() prompt prints this (RDA_ExtHelp,
+ * dos/dosextens.h) before asking a third time -- the per-verb detail
+ * the flat TEMPLATE keyword list alone can't convey. */
+static const char exthelp[] =
+    "ACTION is one of:\n"
+    "  SNAPSHOT   take a new snapshot -- SOURCE, REPO required; COMMENT,\n"
+    "             PARANOID, EXCLUDE optional\n"
+    "  RESTORE    restore a snapshot -- REPO, DEST required; SNAPID\n"
+    "             (default latest), SUBTREE optional\n"
+    "  LIST       list snapshots in a repository -- REPO required\n"
+    "  VERIFY     check snapshot integrity -- REPO required; SNAPID\n"
+    "             (default latest), FULL optional\n"
+    "  PRUNE      apply retention -- REPO required; SNAPID or KEEP_LAST\n"
+    "  APPLYUAEM  apply a .uaem metadata sidecar -- SOURCE required\n"
+    "  INIT       create a new repository -- REPO required; PASSPHRASE\n"
+    "             to encrypt it\n"
+    "  REKEY      change a repository's passphrase -- REPO required\n";
+
 static int real_main(void *arg)
 {
     struct RDArgs *rdargs;
+    struct RDArgs *rda;
     LONG args[ARG_COUNT];
     LONG rc;
     const char *action;
@@ -1890,9 +1910,21 @@ static int real_main(void *arg)
     fprintf(stderr, "%s\n", verstring + 6);
 
     memset(args, 0, sizeof(args));
-    rdargs = ReadArgs((STRPTR)TEMPLATE, args, NULL);
+
+    /* A plain NULL third argument (as before) gives ReadArgs() no
+     * struct to hang RDA_ExtHelp off of, so a self-allocated one is
+     * required to get the second-"?" extended help at all. */
+    rda = (struct RDArgs *)AllocDosObject(DOS_RDARGS, NULL);
+    if (!rda) {
+        fprintf(stderr, "AmiSnap: out of memory\n");
+        return RETURN_FAIL;
+    }
+    rda->RDA_ExtHelp = (STRPTR)exthelp;
+
+    rdargs = ReadArgs((STRPTR)TEMPLATE, args, rda);
     if (!rdargs) {
         fprintf(stderr, "AmiSnap: bad arguments. Template: %s\n", TEMPLATE);
+        FreeDosObject(DOS_RDARGS, rda);
         return RETURN_ERROR;
     }
 
@@ -1921,6 +1953,7 @@ static int real_main(void *arg)
         if (!g_log) {
             fprintf(stderr, "AmiSnap: cannot open LOG=\"%s\" for writing\n", logpath);
             FreeArgs(rdargs);
+            FreeDosObject(DOS_RDARGS, rda);
             return RETURN_FAIL;
         }
         /* Unbuffered, not stdio's default full-buffering-on-a-non-tty:
@@ -2000,6 +2033,7 @@ static int real_main(void *arg)
         g_log = NULL;
     }
     FreeArgs(rdargs);
+    FreeDosObject(DOS_RDARGS, rda);
     return (int)rc;
 }
 

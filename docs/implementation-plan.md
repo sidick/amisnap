@@ -133,6 +133,33 @@ library version before calling" vs. "function exists but may reject
 this parameter -> check the documented return code and retry."** Both
 are real, and picking the right one matters.
 
+### Considered: resume of an interrupted snapshot (2026-08-18)
+
+Prompted by comparing against Amiga-Backup 2.0 (a third-party AmigaOS
+backup tool, GUI-only, external-LHA-based, reverse-engineered from its
+binary/catalog strings for this comparison -- no source available).
+Its author targets AmigaOS 3.2, with an unverified "maybe it works with
+3.5/3.9" -- i.e. no runtime version gating, just a hope, which is the
+exact anti-pattern the OS-floor decision above rules out for AmiSnap.
+
+The one feature of theirs worth noting: multipart backups can be
+resumed after an interrupted run, with an explicit check that the
+source hasn't changed since (`.resume.tmp`/`.resume.bak` markers,
+inventory validation, reject-if-source-changed). AmiSnap's atomic
+commit already guarantees a crashed run leaves the *previous* snapshot
+intact (trust principle, see above), but that's a correctness
+guarantee, not a resume feature -- today a crashed in-flight snapshot
+is simply discarded and the next run starts over from scratch, which
+is expensive for a large source restarted after a late-stage failure.
+
+**Not adopted yet, deferred for a later phase to design properly**:
+resuming needs its own consistency story (how does resumed work
+interact with the archive-bit/metadata-compare skip rule if the source
+mutated mid-gap? what invalidates a partial snapshot vs. lets it
+continue?) rather than being retrofitted onto the Phase 1 model. Revisit
+once the snapshot/index format (Phase 1) and pruning are in place and
+real interrupted-run cost is measured.
+
 ## Minimum requirements
 
 - **68020, AmigaOS 2.04 (V37), no FPU** (`-m68020 -msoft-float
