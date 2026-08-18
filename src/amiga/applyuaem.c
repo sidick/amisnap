@@ -17,6 +17,7 @@
  * a subdirectory, or the parent scan's own state is lost).
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <dos/dos.h>
@@ -186,25 +187,50 @@ static void apply_one_uaem(const char *dir_path, const char *uaem_name,
 static int walk_dir(const char *dir_path, amisnap_applyuaem_result *result)
 {
     BPTR lock;
-    struct FileInfoBlock fib; /* plain struct, longword-aligned by any
-                                * normal m68k compiler -- scan.c's own
-                                * established reasoning for skipping
-                                * AllocDosObject(DOS_FIB,...) here too. */
+    struct FileInfoBlock *fib; /* AllocDosObject(DOS_FIB), NOT a stack
+                                * struct: Examine()/ExNext() hand the FIB
+                                * to the handler as a BPTR (addr >> 2), so
+                                * it MUST be longword-aligned (dos.doc's
+                                * Examine SPECIAL NOTE); m68k gcc only
+                                * 2-byte-aligns a stack struct, so a
+                                * mis-aligned FIB gets written two bytes
+                                * early, clobbering the stack -- and here
+                                * the FIB is also the live ExNext
+                                * iteration state, so corrupting it
+                                * derails the whole directory walk. */
+    char *child_path;          /* heap, NOT a UAEM_PATH_BUF_LEN stack
+                                * array: this recurses once per directory
+                                * level against the fixed 32KB swap stack
+                                * (stackswap.h), and a ~2KB buffer per
+                                * frame overflows it a dozen levels deep
+                                * -- silent corruption on Amiga (no guard
+                                * page). One heap buffer per level bounds
+                                * the stack cost to a small fixed frame. */
     int rc = AMISNAP_OK;
 
     lock = Lock((STRPTR)dir_path, ACCESS_READ);
     if (!lock) return AMISNAP_ERR_IO;
 
-    if (!Examine(lock, &fib)) { UnLock(lock); return AMISNAP_ERR_IO; }
+    fib = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
+    if (!fib) { UnLock(lock); return AMISNAP_ERR_NOMEM; }
 
-    while (ExNext(lock, &fib)) {
-        const char *filename = (const char *)fib.fib_FileName;
+    child_path = (char *)malloc(UAEM_PATH_BUF_LEN);
+    if (!child_path) { FreeDosObject(DOS_FIB, fib); UnLock(lock); return AMISNAP_ERR_NOMEM; }
+
+    if (!Examine(lock, fib)) {
+        free(child_path);
+        FreeDosObject(DOS_FIB, fib);
+        UnLock(lock);
+        return AMISNAP_ERR_IO;
+    }
+
+    while (ExNext(lock, fib)) {
+        const char *filename = (const char *)fib->fib_FileName;
         size_t namelen = strlen(filename);
 
-        if (fib.fib_DirEntryType > 0) {
-            char child_path[UAEM_PATH_BUF_LEN];
+        if (fib->fib_DirEntryType > 0) {
             if (amisnap_join_amiga_path(dir_path, (const uint8_t *)filename, namelen,
-                                         child_path, sizeof(child_path)) != AMISNAP_OK ||
+                                         child_path, UAEM_PATH_BUF_LEN) != AMISNAP_OK ||
                 walk_dir(child_path, result) != AMISNAP_OK) /* fresh FileInfoBlock -- see header */
                 result->failed++;
         } else if (namelen > UAEM_SUFFIX_LEN &&
@@ -214,6 +240,8 @@ static int walk_dir(const char *dir_path, amisnap_applyuaem_result *result)
     }
     if (IoErr() != ERROR_NO_MORE_ENTRIES) rc = AMISNAP_ERR_IO;
 
+    free(child_path);
+    FreeDosObject(DOS_FIB, fib);
     UnLock(lock);
     return rc;
 }

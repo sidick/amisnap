@@ -41,6 +41,7 @@
  * -- worth remembering when deciding how "smoke" a smoke test needs
  * to be.
  */
+#include <stdlib.h>
 #include <string.h>
 
 #include <dos/dos.h>
@@ -162,19 +163,37 @@ static int process_entry(const char *root_path, struct ExAllData *ead, LONG type
     if (entry.type == AMISNAP_ETYPE_DIR) {
         BPTR child_lock;
         int abort_rc;
-        char lock_path[AMISNAP_SCAN_PATH_BUF_LEN + 256];
+        /* Heap, NOT a (AMISNAP_SCAN_PATH_BUF_LEN + 256) stack array:
+         * this recurses once per directory level (process_entry ->
+         * scan_dir -> process_entry) against the fixed 32KB swap stack
+         * (stackswap.h), and a ~2.3KB buffer live across the recursive
+         * scan_dir call would overflow it about a dozen levels deep --
+         * silent corruption on Amiga (no guard page), the very budget
+         * scan_dir's own ExAll buffer is heap-allocated to protect.
+         * Freed before recursing (child_lock already holds the dir, so
+         * lock_path isn't needed during the walk), so peak heap is one
+         * buffer, not one per level. */
+        char *lock_path = (char *)malloc(AMISNAP_SCAN_PATH_BUF_LEN + 256);
+
+        if (!lock_path)
+            return AMISNAP_ERR_NOMEM;
 
         result->dirs_seen++;
         rc = visitor->on_entry(visitor->user, &entry);
-        if (rc != 0)
+        if (rc != 0) {
+            free(lock_path);
             return rc;
+        }
 
         rc = amisnap_join_amiga_path(root_path, (const uint8_t *)path_buf, strlen(path_buf),
-                                      lock_path, sizeof(lock_path));
-        if (rc != AMISNAP_OK)
+                                      lock_path, AMISNAP_SCAN_PATH_BUF_LEN + 256);
+        if (rc != AMISNAP_OK) {
+            free(lock_path);
             return rc;
+        }
 
         child_lock = Lock((STRPTR)lock_path, ACCESS_READ);
+        free(lock_path);
         if (!child_lock)
             return AMISNAP_ERR_IO;
 
@@ -262,13 +281,19 @@ int amisnap_scan_volume(const char *root_path, const amisnap_scan_visitor *visit
 {
     BPTR root_lock;
     struct InfoData id;
-    struct FileInfoBlock fib; /* plain struct decl, not AllocDosObject: a
-                                * normal m68k compiler already longword-
-                                * aligns it (all-LONG-leading layout),
-                                * satisfying Examine()'s stated requirement --
-                                * AllocDosObject(DOS_FIB,...) buys nothing
-                                * extra for a value only needed within this
-                                * function's own scope. */
+    struct FileInfoBlock *fib; /* AllocDosObject(DOS_FIB), NOT a stack
+                                * struct: Examine() hands the FIB to the
+                                * handler as a BPTR (addr >> 2), so it
+                                * MUST be longword-aligned (dos.doc's own
+                                * Examine SPECIAL NOTE). m68k gcc's ABI
+                                * only 2-byte-aligns a struct on the
+                                * stack, so a stack FIB at an address == 2
+                                * (mod 4) loses its low bits and the
+                                * filesystem writes the 260-byte FIB two
+                                * bytes early, clobbering the stack --
+                                * intermittent, layout-dependent
+                                * corruption. AllocDosObject guarantees
+                                * the alignment, its documented purpose. */
     amisnap_entry_meta entry;
     int rc;
 
@@ -279,6 +304,12 @@ int amisnap_scan_volume(const char *root_path, const amisnap_scan_visitor *visit
     if (!root_lock)
         return AMISNAP_ERR_IO;
 
+    fib = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
+    if (!fib) {
+        UnLock(root_lock);
+        return AMISNAP_ERR_NOMEM;
+    }
+
     memset(&id, 0, sizeof(id));
     if (Info(root_lock, &id))
         caps->dostype = (uint32_t)id.id_DiskType;
@@ -286,8 +317,8 @@ int amisnap_scan_volume(const char *root_path, const amisnap_scan_visitor *visit
     /* The root's own metadata: nothing else will emit it, since
      * nothing enumerates the root as a child of anything within this
      * scan (format.md E_PATH: "Empty = the root itself"). */
-    memset(&fib, 0, sizeof(fib));
-    if (!Examine(root_lock, &fib)) {
+    if (!Examine(root_lock, fib)) {
+        FreeDosObject(DOS_FIB, fib);
         UnLock(root_lock);
         return AMISNAP_ERR_IO;
     }
@@ -296,14 +327,14 @@ int amisnap_scan_volume(const char *root_path, const amisnap_scan_visitor *visit
     entry.path = (const uint8_t *)"";
     entry.path_len = 0;
     entry.type = AMISNAP_ETYPE_DIR;
-    entry.prot = (uint32_t)fib.fib_Protection;
-    entry.date_days = (uint32_t)fib.fib_Date.ds_Days;
-    entry.date_mins = (uint32_t)fib.fib_Date.ds_Minute;
-    entry.date_ticks = (uint32_t)fib.fib_Date.ds_Tick;
-    if (fib.fib_Comment[0] != '\0') {
+    entry.prot = (uint32_t)fib->fib_Protection;
+    entry.date_days = (uint32_t)fib->fib_Date.ds_Days;
+    entry.date_mins = (uint32_t)fib->fib_Date.ds_Minute;
+    entry.date_ticks = (uint32_t)fib->fib_Date.ds_Tick;
+    if (fib->fib_Comment[0] != '\0') {
         entry.has_comment = 1;
-        entry.comment = (const uint8_t *)fib.fib_Comment;
-        entry.comment_len = strlen((const char *)fib.fib_Comment);
+        entry.comment = (const uint8_t *)fib->fib_Comment;
+        entry.comment_len = strlen((const char *)fib->fib_Comment);
     }
     /* Owner support isn't known yet at this point (it's negotiated
      * inside scan_dir(), which hasn't run for this volume yet) -- the
@@ -316,6 +347,10 @@ int amisnap_scan_volume(const char *root_path, const amisnap_scan_visitor *visit
 
     result->dirs_seen++;
     rc = visitor->on_entry(visitor->user, &entry);
+    /* entry.comment borrowed into fib->fib_Comment above, so the FIB
+     * had to stay alive across on_entry -- done with it now, and
+     * scan_dir below uses ExAll (its own buffer), never this FIB. */
+    FreeDosObject(DOS_FIB, fib);
     if (rc != 0) {
         UnLock(root_lock);
         return rc;

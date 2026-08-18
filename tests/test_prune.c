@@ -161,4 +161,34 @@ void run_prune_tests(void)
 
     amisnap_backend_close(&repo);
     TEST_CHECK(system("rm -rf " REPODIR) == 0);
+
+    /* --- Safety guard: a repository whose snapshots/ directory is
+     * missing (accidentally removed, or a half-finished copy that has
+     * objects/ but not snapshots/) must NOT let one prune wipe every
+     * object. The directory backend maps a missing dir to an empty
+     * listing, so without the guard the sweep would delete all of
+     * objects/. prune must refuse (error, objects intact) when it saw
+     * zero snapshots AND deleted none of its own this run. --- */
+    {
+        amisnap_backend repo2;
+
+        TEST_CHECK(system("rm -rf " REPODIR) == 0);
+        TEST_CHECK(amisnap_backend_dir_open(REPODIR, &repo2) == AMISNAP_OK);
+        commit_snapshot(&repo2, 2002, "c", snapid_a_buf);
+        /* Blow away just snapshots/, leaving objects/ intact. */
+        TEST_CHECK(system("rm -rf " REPODIR "/snapshots") == 0);
+
+        /* A KEEP_LAST-style no-op (empty delete list): nothing deleted,
+         * zero snapshots seen -> must refuse rather than sweep. */
+        TEST_CHECK(amisnap_prune_execute(&repo2, NULL, NULL, 0, &result)
+                   == AMISNAP_ERR_MISSING_FIELD);
+        /* Objects survived -- the whole point. */
+        {
+            amisnap_blake2s256("same bytes", 10, hash);
+            amisnap_repo_object_key(hash, obj_shared);
+            TEST_CHECK(amisnap_backend_exists(&repo2, obj_shared) == 1);
+        }
+        amisnap_backend_close(&repo2);
+        TEST_CHECK(system("rm -rf " REPODIR) == 0);
+    }
 }

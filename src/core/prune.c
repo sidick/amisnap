@@ -75,6 +75,7 @@ typedef struct {
     amisnap_backend *repo;
     const amisnap_repo_subkeys *subkeys;
     hashset *hs;
+    size_t seen;   /* snapshots actually visited this mark pass */
     int status;
 } mark_snap_ctx;
 
@@ -90,6 +91,7 @@ static void mark_snap_cb(void *user, const char *snapid)
     if (msc->status != AMISNAP_OK)
         return; /* already failed elsewhere in this pass -- stop doing work */
 
+    msc->seen++;
     snprintf(key, sizeof(key), "snapshots/%s.mf", snapid);
     rc = amisnap_backend_get(msc->repo, key, &mf);
     if (rc != AMISNAP_OK) { msc->status = rc; return; }
@@ -215,10 +217,34 @@ int amisnap_prune_execute(amisnap_backend *repo, const amisnap_repo_subkeys *sub
     msc.repo = repo;
     msc.subkeys = subkeys;
     msc.hs = &hs;
+    msc.seen = 0;
     msc.status = AMISNAP_OK;
     rc = amisnap_repo_list_snapshots(repo, mark_snap_cb, &msc);
     if (rc == AMISNAP_OK) rc = msc.status;
     if (rc != AMISNAP_OK) { free(hs.hashes); return rc; }
+
+    /* Refuse to sweep objects/ when the mark pass saw ZERO surviving
+     * snapshots and this run deleted none of its own -- because in
+     * that state the sweep below would delete every object in the
+     * repository, and "no snapshots" is indistinguishable from a real
+     * structural anomaly the backend can silently produce: the
+     * directory backend maps a MISSING snapshots/ directory to an
+     * empty listing (backend_dir.c's opendir ENOENT -> AMISNAP_OK),
+     * so an accidentally-removed or half-copied snapshots/ (objects/
+     * present, snapshots/ not) would otherwise trigger a
+     * whole-repository wipe on one prune run -- a data-loss bug fatal
+     * under principle 1. A LEGITIMATE "reclaim everything" always
+     * deletes >= 1 snapshot in step 1 above (KEEP_LAST=0, or SNAPID=
+     * the last one), so snapshots_deleted > 0 there distinguishes it;
+     * only the anomaly reaches here with both counts zero. (Garbage-
+     * collecting orphaned objects from an already-empty repo is the
+     * one legitimate case this refuses -- an acceptable safe-side
+     * trade, and rare, since a normal run never leaves a repo with
+     * objects but no snapshots.) */
+    if (msc.seen == 0 && result->snapshots_deleted == 0) {
+        free(hs.hashes);
+        return AMISNAP_ERR_MISSING_FIELD;
+    }
 
     qsort(hs.hashes, hs.count, sizeof(*hs.hashes), hexcmp);
 
