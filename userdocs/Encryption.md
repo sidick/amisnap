@@ -45,7 +45,7 @@ usual `REPO=`:
 ```
 1.C:> AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=Backup:MyRepo
 AmiSnap passphrase: ********
-Snapshot 20260818120000: ...
+Snapshot 0000000000000605: ...
 ```
 
 A wrong passphrase fails closed with a clear error (`RETURN_FAIL`) --

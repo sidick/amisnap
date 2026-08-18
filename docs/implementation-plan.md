@@ -1318,10 +1318,16 @@ Amiga-specific metadata field rather than literally applying it.
    same convention this file's own `LOG=` handling already uses, not a
    raw Amiga `Open`/`Read` pair) and threads the parsed list through
    both of `cmd_snapshot`'s scan passes (the caps-only walk and the
-   real one) so excluded entries influence neither. Cross-build-
-   verified clean (`make m68k-docker`); on-target Copperline
-   confirmation is still open, matching this item's own not-yet-tested
-   status for anything beyond a cross-build.
+   real one) so excluded entries influence neither. **On-target
+   Copperline confirmation done (2026-08-18)**, during the Phase 6 docs
+   walkthrough dry-run below: a real `SNAPSHOT ... EXCLUDE=S:exclude.txt`
+   against `arm64` Copperline (the boot volume's own `S:` assign, real
+   68020 execution) excluding one fixture file by a non-anchored
+   pattern (`empty.txt`) reported `0 dirs and 1 files excluded` and
+   `2 files` instead of the unfiltered `3`, and the independent Python
+   reference reader confirmed the excluded file is genuinely absent
+   from the repository (not merely unlisted) on both `list` and
+   `restore`.
 
 **Deferred design note: media-spanning + parity (2026-08-12, not
 scheduled to a phase yet).** Two related, separable features raised in
@@ -2924,15 +2930,39 @@ states no tagged release exists yet rather than fabricating one).
 existing method" framing this item calls for directly, sourced from
 the same reasoning as `AmiSnap.readme`'s existing text.
 
+**Getting Started walkthrough dry-run (2026-08-18): done, and it found
+a real doc bug.** Built a real `AmiSnap` (`make m68k-docker`,
+`arm64` image variant -- faster than the emulated `amd64` one on
+Apple Silicon) plus the existing `copperline-fixtures`, then drove a
+scratch Copperline boot (a `build/`-local variant of `tests/copperline/`'s
+own `boot`/`machine.toml` shape, not the committed regression test
+itself) through the exact command sequence `Getting-Started.md`
+describes: `SNAPSHOT` twice (with `modify` between them to exercise
+the incremental path for real), `LIST`, `VERIFY`, `VERIFY FULL`,
+`RESTORE`, `PRUNE KEEP_LAST=`. Every summary-line *shape* the docs
+describe was confirmed correct against real output -- but the
+**snapshot id format was wrong in five pages**: the docs had
+fabricated timestamp-looking ids (`20260812153044`) as if
+`snapid_encode()` (`src/core/repo.c`) produced a human-readable date
+string; the real id is 16 hex digits (the packed
+days/minutes/ticks bytes, e.g. `0000000000000605`), confirmed
+directly from a real snapshot. Also found and fixed: `LIST`'s real
+line shape is `<id>  <N> entries  "<comment>"` (one combined
+entry count, not a separate dirs/files split, which only
+`SNAPSHOT`'s own summary line has), and `RESTORE`'s real output is
+two lines (`Restored <id>: ...` plus a second `Metadata: protection
+a/b, comment c/d, date e/f, owner g/h ok` line the docs had omitted
+entirely) -- both transcribed from real output and from the exact
+`amilog()` format strings in `src/cli/main.c`, not reconstructed from
+memory a second time. Fixed in `Getting-Started.md`,
+`Disaster-Recovery.md`, `Encryption.md`, `Exclude-Lists.md`. Same dry-run
+also produced the real on-target `EXCLUDE=` confirmation recorded
+above.
+
 **Not done yet, tracked honestly rather than glossed over**: the
 MkDocs site has not been published (no `.github/workflows/docs.yml`
 wired up, no GitHub Pages `mike` deploy) -- `mkdocs serve` works
-locally but nothing publishes it yet. The docs describe today's real
-CLI/behavior throughout, but have not been read end-to-end by a fresh
-user attempting the Getting Started walkthrough against a real
-(on-target or host) AmiSnap binary -- a real dry-run against
-Copperline, not just cross-build/lint verification, is a reasonable
-next check before calling this item done. The Aminet release itself
+locally but nothing publishes it yet. The Aminet release itself
 (tag-driven publish) and the 1.0 "one full backup rotation on real
 hardware" gate remain entirely open.
 

@@ -78,7 +78,7 @@ directory anywhere else in the tree).
 and files, e.g.:
 
 ```
-Snapshot 20260818120000: 12 dirs, 340 files (338 unchanged, 0 failed), 0 links skipped, 2 dirs and 5 files excluded
+Snapshot 0000000000000605: 12 dirs, 340 files (338 unchanged, 0 failed), 0 links skipped, 2 dirs and 5 files excluded
 ```
 
 so an `EXCLUDE=` list that's excluding more (or less) than you expect

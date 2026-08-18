@@ -34,9 +34,13 @@ rubber-stamping whatever it's given.
 
 ```
 $ python3 tools/amisnap_reader.py list /path/to/MyRepo
-20260812153044  318 entries
-20260813091200  320 entries
+0000000000000605  318 entries
+0000000000000616  320 entries
 ```
+
+(The id is a 16-hex-digit encoding of the snapshot's real AmigaDOS
+timestamp -- days/minutes/ticks since 1978-01-01 -- not a
+human-readable date string.)
 
 ## Verifying a snapshot
 
