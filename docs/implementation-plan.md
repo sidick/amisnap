@@ -2994,6 +2994,31 @@ ClassAct GUI + ARexx, repository mirroring.
   `rtc_time` makes "byte-identical repository given identical input" a
   testable property. Skips honestly (like today's `run.sh`) when local
   ROM/Workbench config is absent.
+  **Ad-hoc verification: `--run`/`--run-args` (Copperline 0.16+),
+  confirmed live (2026-08-18).** For a one-off manual check (a doc
+  dry-run, reproducing a bug report, trying a single `ACTION=...`
+  invocation) that doesn't need a permanent fixture, `copperline --run
+  build/AmiSnap --run-args "ACTION=SNAPSHOT SOURCE=Source: REPO=Repo:
+  LOG=Results:x.log" --config <toml> --benchmark-until <secs> <ROM>`
+  boots straight from ROM into DOS and execs the given host binary
+  directly with `--run-args` as real argv (auto-mounting its own
+  containing directory as `RunProg:`) -- no `boot/` HOSTFS volume, no
+  hand-staged `Startup-Sequence` file, just the same `[[filesys]]`
+  mounts (`Source:`/`Repo:`/etc.) a `--config` TOML would set up
+  either way. Confirmed real end-to-end: a `SNAPSHOT` run this way
+  produced a real manifest under `Repo:`/the configured host directory,
+  same as through a committed `Startup-Sequence`. **Deliberately not
+  adopted for the committed regression harness** (`tests/copperline/
+  run.sh` and siblings): that harness chains ~8 commands (`stage` ->
+  two `SNAPSHOT`s -> `modify` -> `SNAPSHOT` -> `LIST`/`VERIFY`/
+  `RESTORE` -> `readback`) inside one boot, paying Kickstart's ~3-4s
+  boot cost once; `--run` pays that cost per invocation, and the
+  existing `Startup-Sequence` file is already committed and stable, not
+  something hand-maintained per run -- so it's a net loss there, not a
+  win. Good for exactly the ad-hoc case: a benchmark timeout during
+  testing needs headroom for the OS to actually load and run the
+  binary, not just boot (a real 30s window undershot in practice; 60s
+  was enough for a single `SNAPSHOT`).
 - **On-target (Amiberry):** smoke test against a real Samba mount,
   muFS owner round-trip.
 - **Exotic-source cases in the matrix:** a FAT95-mounted image as a
