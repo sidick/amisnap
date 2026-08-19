@@ -48,6 +48,7 @@ nav:
       - Getting Started: Getting-Started.md
   - Using AmiSnap:
       - CLI Reference: CLI-Reference.md
+      - Examples: Examples.md
       - Exclude Lists: Exclude-Lists.md
       - Destinations (Backends): Backends.md
       - Encryption: Encryption.md

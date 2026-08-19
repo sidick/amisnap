@@ -3148,6 +3148,40 @@ root, one-time, since `mike` commits the built site to `gh-pages`
 itself rather than using the "GitHub Actions" Pages source. Until the
 first `v*` tag (or a manual `workflow_dispatch` run) actually deploys,
 the `gh-pages` branch doesn't exist yet and Pages has nothing to serve.
+Confirmed live the same day: Settings -> Pages configured, a manual
+`workflow_dispatch` run created `gh-pages`, and
+`https://sidick.github.io/amisnap/` (redirecting to `/latest/`) serves
+real content.
+
+**`ACTION=HELP` + `--help`/`-h`/`-?` aliases added (2026-08-19)**: the
+only prior way to see usage text was the AmigaDOS-native `AmiSnap ?`
+prompt-twice convention, not discoverable from a Unix background and
+unusable non-interactively. Since `ACTION/A` is a plain positional
+string, `AmiSnap --help` already parsed successfully with
+`ACTION="--help"` (ReadArgs has no opinion on content) and fell
+through to the "unknown ACTION" error -- recognizing `HELP`/`--help`/
+`-h`/`-?` as one more `ACTION` value in the existing dispatch chain was
+enough, no special pre-`ReadArgs` argument scanning needed. Verified
+under vamos: both exit `RETURN_OK` and print the full template +
+`RDA_ExtHelp` text; an unrecognized action still exits `RETURN_ERROR`.
+
+**`userdocs/Examples.md` added (2026-08-19)**: a command-line cookbook
+(mounted volume, WebDAV plain/TLS/insecure, S3 with URL and
+environment credentials, encrypted, compressed, encrypted+compressed,
+`EXCLUDE=`, `PARANOID`, subtree/`SNAPID=` restore, `PRUNE` by count and
+by id, structural vs. `FULL` verify, `BENCHMARK` with and without
+`SOURCE=`/`SIZE=`, the re-run-per-`CIPHERS=` comparison workflow,
+`LOG=`, `APPLYUAEM`, and every `HELP` spelling) complementing
+`Getting-Started.md`'s single guided walkthrough with real verified
+output. Every command line checked against the real `TEMPLATE`/
+`ARG_*`/dispatch in `src/cli/main.c`, not reconstructed from memory --
+caught and fixed one real error in an early draft (`RESTORE ... UAEM`
+does not exist; `--uaem` is a `tools/amisnap_reader.py restore` flag,
+not an AmiSnap CLI keyword). Added to `mkdocs.yml`'s nav and
+`tools/docs2guide.py`'s `PAGES` list (AmigaGuide export); both
+`mkdocs build --strict` and `make guide` verified clean afterward, and
+the new page's cross-page anchor link (`CLI-Reference.md#benchmark`)
+confirmed to resolve against the real rendered heading id.
 
 **Not done yet, tracked honestly rather than glossed over**: the
 Aminet release itself (tag-driven publish) and the 1.0 "one full

@@ -31,6 +31,7 @@ PAGES = [
     ('Installation', 'Installation'),
     ('Getting-Started', 'Getting Started'),
     ('CLI-Reference', 'CLI Reference'),
+    ('Examples', 'Examples'),
     ('Exclude-Lists', 'Exclude Lists'),
     ('Backends', 'Destinations (Backends)'),
     ('Encryption', 'Encryption'),
