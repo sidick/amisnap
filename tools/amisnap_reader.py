@@ -72,6 +72,7 @@ import hmac
 import os
 import struct
 import sys
+import zlib
 
 MAGIC = b"ASNP"
 FORMAT_VERSION = 1
@@ -94,6 +95,7 @@ TAG_CHUNK_SIZE = 0x0012
 TAG_KDF = 0x8013
 TAG_WRAPPED_KEY = 0x8014
 TAG_FORMAT_APP = 0x0015
+TAG_OBJCOMP = 0x8016
 
 # REC_SNAP fields
 TAG_CREATED = 0x8020
@@ -132,6 +134,14 @@ ETYPE_HARDLINK = 4
 # Encryption (docs/format.md "Encryption (CIPHER 1)")
 CIPHER_NONE = 0
 CIPHER_CHACHA20_BLAKE2S = 1
+
+# Object compression (docs/format.md "Content objects")
+OBJCOMP_RAW = 0
+OBJCOMP_FRAMED = 1
+COMP_STORED = 0
+COMP_LZ4 = 1
+COMP_ZLIB = 2
+FRAME_HDR_SIZE = 9  # alg:u8 + usize:u64 BE
 KDF_PBKDF2_HMAC_SHA256 = 1
 REPO_KEY_SIZE = 32
 NONCE_SIZE = 12
@@ -400,15 +410,20 @@ def parse_repo_header(buf):
         raise FormatError("amisnap.repo: expected exactly one REC_REPO record")
 
     fields = parse_fields(records[0][1])
-    known = {TAG_REPO_ID, TAG_CIPHER, TAG_CHUNK_SIZE, TAG_KDF, TAG_WRAPPED_KEY, TAG_FORMAT_APP}
+    known = {TAG_REPO_ID, TAG_CIPHER, TAG_CHUNK_SIZE, TAG_KDF, TAG_WRAPPED_KEY,
+             TAG_FORMAT_APP, TAG_OBJCOMP}
     require_no_unknown_critical(fields, known, "REC_REPO")
 
-    out = {"cipher": 0}
+    # objcomp defaults to 0: headers written before OBJCOMP existed are
+    # raw by construction (format.md "Repository header").
+    out = {"cipher": 0, "objcomp": 0}
     for tag, value in fields:
         if tag == TAG_REPO_ID:
             out["repo_id"] = value
         elif tag == TAG_CIPHER:
             out["cipher"] = decode_u8(value)
+        elif tag == TAG_OBJCOMP:
+            out["objcomp"] = decode_u8(value)
         elif tag == TAG_CHUNK_SIZE:
             out["chunk_size"] = decode_u32(value)
         elif tag == TAG_FORMAT_APP:
@@ -439,6 +454,11 @@ def parse_repo_header(buf):
             % out["cipher"])
     if out["cipher"] == CIPHER_CHACHA20_BLAKE2S and ("kdf_iters" not in out or "wrapped_key" not in out):
         raise FormatError("amisnap.repo declares CIPHER=1 but is missing KDF/WRAPPED_KEY")
+    if out["objcomp"] not in (OBJCOMP_RAW, OBJCOMP_FRAMED):
+        raise FormatError(
+            "amisnap.repo declares OBJCOMP=%d -- this reader only implements "
+            "OBJCOMP=0 (raw objects) and OBJCOMP=1 (framed objects)"
+            % out["objcomp"])
     return out
 
 
@@ -721,7 +741,7 @@ def read_repo_header(repo_dir):
         # plain one.
         print("note: no amisnap.repo (never INIT'd -- a plain repository doesn't need "
               "one) -- assuming CIPHER=0", file=sys.stderr)
-        return {"cipher": 0}
+        return {"cipher": 0, "objcomp": 0}
     with open(path, "rb") as f:
         return parse_repo_header(f.read())
 
@@ -747,14 +767,113 @@ def open_repo_key(header):
     return derive_subkeys(repo_key)
 
 
-def read_object(repo_dir, hash32, expected_size, subkeys=None):
+
+# --------------------------------------------------------------------------
+# OBJCOMP=1 object frames (docs/format.md "Content objects") -- kept
+# stdlib-only like everything else here: zlib is in the standard
+# library, and the LZ4 *block* format is simple enough to decode in a
+# few dozen lines of Python, implemented below from the documented
+# format (https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md)
+# and cross-checked in CI against objects the vendored upstream LZ4
+# writes. Decode-only on purpose: a disaster-recovery reader never
+# needs to compress.
+# --------------------------------------------------------------------------
+
+def lz4_block_decompress(src, usize):
+    dst = bytearray()
+    i, n = 0, len(src)
+    while i < n:
+        token = src[i]
+        i += 1
+        lit = token >> 4
+        if lit == 15:
+            while True:
+                if i >= n:
+                    raise FormatError("LZ4 block: truncated literal length")
+                b = src[i]
+                i += 1
+                lit += b
+                if b != 255:
+                    break
+        if i + lit > n:
+            raise FormatError("LZ4 block: literals overrun the input")
+        dst += src[i:i + lit]
+        i += lit
+        if i == n:
+            break  # last sequence is literals-only
+        if i + 2 > n:
+            raise FormatError("LZ4 block: truncated match offset")
+        offset = src[i] | (src[i + 1] << 8)
+        i += 2
+        if offset == 0 or offset > len(dst):
+            raise FormatError("LZ4 block: match offset %d out of range" % offset)
+        mlen = (token & 0xF) + 4
+        if (token & 0xF) == 15:
+            while True:
+                if i >= n:
+                    raise FormatError("LZ4 block: truncated match length")
+                b = src[i]
+                i += 1
+                mlen += b
+                if b != 255:
+                    break
+        # Matches may overlap their own output; copy byte-by-byte.
+        pos = len(dst) - offset
+        for _ in range(mlen):
+            dst.append(dst[pos])
+            pos += 1
+        if len(dst) > usize:
+            raise FormatError("LZ4 block: output exceeds declared usize")
+    if len(dst) != usize:
+        raise FormatError("LZ4 block: decoded %d bytes, frame declared %d"
+                          % (len(dst), usize))
+    return bytes(dst)
+
+
+def decode_object_frame(data, expected_usize, key):
+    """Decodes an OBJCOMP=1 frame (alg:u8 + usize:u64 BE + payload) to
+    the uncompressed content bytes. expected_usize comes from the
+    manifest's E_CONTENT ref -- format.md requires the frame to agree,
+    and checking first also stops a corrupt frame from demanding an
+    arbitrary allocation."""
+    if len(data) < FRAME_HDR_SIZE:
+        raise FormatError("%s: framed object shorter than the frame header" % key)
+    alg = data[0]
+    usize = struct.unpack_from(">Q", data, 1)[0]
+    if usize != expected_usize:
+        raise FormatError("%s: frame usize %d, E_CONTENT declared %d"
+                          % (key, usize, expected_usize))
+    payload = data[FRAME_HDR_SIZE:]
+    if alg == COMP_STORED:
+        if len(payload) != usize:
+            raise FormatError("%s: stored payload is %d bytes, frame declared %d"
+                              % (key, len(payload), usize))
+        return payload
+    if alg == COMP_LZ4:
+        return lz4_block_decompress(payload, usize)
+    if alg == COMP_ZLIB:
+        try:
+            out = zlib.decompress(payload)
+        except zlib.error as e:
+            raise FormatError("%s: zlib payload does not decompress (%s)" % (key, e))
+        if len(out) != usize:
+            raise FormatError("%s: zlib payload decoded to %d bytes, frame declared %d"
+                              % (key, len(out), usize))
+        return out
+    raise FormatError("%s: frame names compression alg %d -- this reader only "
+                      "implements 0 (stored), 1 (LZ4 block), 2 (zlib)" % (key, alg))
+
+
+def read_object(repo_dir, hash32, expected_size, subkeys=None, objcomp=OBJCOMP_RAW):
     key = object_key(hash32)
     path = os.path.join(repo_dir, key)
     with open(path, "rb") as f:
         data = f.read()
 
     if subkeys is None:
-        if len(data) != expected_size:
+        if objcomp == OBJCOMP_FRAMED:
+            data = decode_object_frame(data, expected_size, key)
+        elif len(data) != expected_size:
             raise FormatError("%s: size %d, E_CONTENT declared %d" % (key, len(data), expected_size))
         got_hash = hashlib.blake2s(data, digest_size=32).digest()
         if got_hash != hash32:
@@ -762,17 +881,30 @@ def read_object(repo_dir, hash32, expected_size, subkeys=None):
                                % (key, got_hash.hex()))
         return data
 
-    expect_len = NONCE_SIZE + expected_size + MAC_SIZE
-    if len(data) != expect_len:
-        raise FormatError("%s: stored size %d, expected %d (E_CONTENT declared %d plaintext "
-                           "bytes + the encryption frame overhead)"
-                           % (key, len(data), expect_len, expected_size))
+    if objcomp == OBJCOMP_FRAMED:
+        # A compressed payload's stored size isn't predictable, only
+        # bounded: at least the frame header, at most stored-plus-header
+        # (the writer's store-raw fallback guarantees the ceiling), plus
+        # the encryption envelope either way (compress-then-encrypt).
+        lo = NONCE_SIZE + FRAME_HDR_SIZE + MAC_SIZE
+        hi = NONCE_SIZE + FRAME_HDR_SIZE + expected_size + MAC_SIZE
+        if not lo <= len(data) <= hi:
+            raise FormatError("%s: stored size %d outside the possible framed range %d-%d"
+                               % (key, len(data), lo, hi))
+    else:
+        expect_len = NONCE_SIZE + expected_size + MAC_SIZE
+        if len(data) != expect_len:
+            raise FormatError("%s: stored size %d, expected %d (E_CONTENT declared %d plaintext "
+                               "bytes + the encryption frame overhead)"
+                               % (key, len(data), expect_len, expected_size))
     expect_nonce = object_nonce(subkeys["nonce"], hash32)
     if data[:NONCE_SIZE] != expect_nonce:
         raise FormatError("%s: nonce doesn't match the deterministic derivation from its "
                            "own content hash -- this object wasn't produced the way this "
                            "repository's own writer produces them" % key)
     plaintext = decrypt_frame(subkeys, data)
+    if objcomp == OBJCOMP_FRAMED:
+        plaintext = decode_object_frame(plaintext, expected_size, key)
     got_hash = hashlib.blake2s(plaintext, digest_size=32).digest()
     if got_hash != hash32:
         raise FormatError("%s: decrypted content does not hash to its own name (got %s)"
@@ -816,7 +948,8 @@ def cmd_verify(args):
                 continue
             if args.full:
                 try:
-                    read_object(args.repo, ref["hash"], ref["size"], subkeys)
+                    read_object(args.repo, ref["hash"], ref["size"], subkeys,
+                                header["objcomp"])
                 except FormatError as e:
                     corrupt += 1
                     print("CORRUPT: %s: %s" % (key, e))
@@ -992,7 +1125,8 @@ def cmd_restore(args):
             os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
             with open(dest_path, "wb") as out:
                 for ref in entry["content"]:
-                    out.write(read_object(args.repo, ref["hash"], ref["size"], subkeys))
+                    out.write(read_object(args.repo, ref["hash"], ref["size"], subkeys,
+                                          header["objcomp"]))
             files += 1
 
         if args.uaem and path:  # no sidecar for the root entry -- see write_uaem_sidecar

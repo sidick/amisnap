@@ -36,8 +36,61 @@ void run_repo_header_tests(void)
         TEST_CHECK(decoded.has_format_app && decoded.format_app_len == 7 &&
                    memcmp(decoded.format_app, "AmiSnap", 7) == 0);
         TEST_CHECK(decoded.salt == NULL && decoded.wrapped_key == NULL);
+        TEST_CHECK(decoded.objcomp == AMISNAP_OBJCOMP_RAW);
 
         amisnap_buf_free(&out);
+    }
+
+    /* --- OBJCOMP: framed round-trips; unknown values refused on both
+     * sides; a header missing the tag entirely (written before OBJCOMP
+     * existed) decodes as RAW. --- */
+    {
+        amisnap_repo_header hdr, decoded;
+        amisnap_buf out;
+
+        memset(&hdr, 0, sizeof(hdr));
+        fill_repo_id(hdr.repo_id);
+        hdr.objcomp = AMISNAP_OBJCOMP_FRAMED;
+
+        TEST_CHECK(amisnap_repo_header_encode(&hdr, &out) == AMISNAP_OK);
+        TEST_CHECK(amisnap_repo_header_decode(out.data, out.len, &decoded) == AMISNAP_OK);
+        TEST_CHECK(decoded.objcomp == AMISNAP_OBJCOMP_FRAMED);
+
+        /* Corrupt the encoded OBJCOMP value in place: the field body is
+         * the single byte 1; flipping it to an unimplemented value must
+         * be refused as loudly as an unknown CIPHER. */
+        {
+            size_t i;
+            int patched = 0;
+            for (i = 0; i + 1 < out.len; i++) {
+                /* tag 0x8016, length 1, value 1 */
+                if (out.data[i] == 0x80 && out.data[i + 1] == 0x16) {
+                    out.data[i + 2 + 4] = 9; /* tag(2) + len(4) + value */
+                    patched = 1;
+                    break;
+                }
+            }
+            TEST_CHECK(patched);
+            TEST_CHECK(amisnap_repo_header_decode(out.data, out.len, &decoded)
+                       == AMISNAP_ERR_CRITICAL_TAG);
+
+            /* Same spot, now demoted to an unknown *non-critical* tag
+             * (0x0016): the field is skipped, which is exactly the
+             * pre-OBJCOMP-header shape -- decode defaults to RAW. */
+            for (i = 0; i + 1 < out.len; i++) {
+                if (out.data[i] == 0x80 && out.data[i + 1] == 0x16) {
+                    out.data[i] = 0x00;
+                    break;
+                }
+            }
+            TEST_CHECK(amisnap_repo_header_decode(out.data, out.len, &decoded)
+                       == AMISNAP_OK);
+            TEST_CHECK(decoded.objcomp == AMISNAP_OBJCOMP_RAW);
+        }
+        amisnap_buf_free(&out);
+
+        hdr.objcomp = 9;
+        TEST_CHECK(amisnap_repo_header_encode(&hdr, &out) == AMISNAP_ERR_MALFORMED);
     }
 
     /* --- CIPHER 0 with key material set is rejected at encode time. --- */

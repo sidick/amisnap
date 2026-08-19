@@ -18,10 +18,21 @@
 #define AMISNAP_REPO_ID_SIZE 16
 #define AMISNAP_KDF_PBKDF2_HMAC_SHA256 1u
 
+#define AMISNAP_OBJCOMP_RAW    0u  /* objects are the raw content bytes */
+#define AMISNAP_OBJCOMP_FRAMED 1u  /* objects carry the compress.h frame */
+
 typedef struct {
     uint8_t repo_id[AMISNAP_REPO_ID_SIZE];
 
     uint8_t cipher;                 /* 0 = none, 1 = ChaCha20 + keyed-BLAKE2s-256 */
+
+    uint8_t objcomp;                /* AMISNAP_OBJCOMP_*: raw vs framed objects,
+                                     * fixed at init (format.md "Repository
+                                     * header"). Writers always emit the tag;
+                                     * decode defaults an absent tag to RAW so
+                                     * headers written before OBJCOMP existed
+                                     * stay readable (they are raw by
+                                     * construction). */
 
     int has_chunk_size;
     uint32_t chunk_size;            /* informational only -- format.md "Repository header" */
