@@ -45,3 +45,18 @@ jobs:
           readme: AmiSnap.readme
           category: disk/bakup
           validate-only: true
+
+  docs-build:
+    name: Docs site + AmigaGuide build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Install docs toolchain
+        run: pip install -r tools/docs-requirements.txt
+      - name: Strict MkDocs build
+        run: mkdocs build --strict
+      - name: AmigaGuide conversion
+        run: make guide

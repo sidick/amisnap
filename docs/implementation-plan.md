@@ -3132,12 +3132,26 @@ memory a second time. Fixed in `Getting-Started.md`,
 also produced the real on-target `EXCLUDE=` confirmation recorded
 above.
 
+**MkDocs site publishing wired up (2026-08-19)**, now that the repo is
+public: `.github/workflows/docs.yml` (tag-triggered + `workflow_dispatch`,
+delegating to `sidick/amiga-workflows/docs.yml@v1` -- MkDocs Material +
+`mike` -> GitHub Pages, versioned per release tag plus a floating
+`latest`, exactly sibling AmiAuth's own convention) and `ci.yml`'s new
+`docs-build` job (strict `mkdocs build --strict` + `make guide`, so a
+docs-breaking PR fails CI instead of only being discovered at release
+time). `tools/docs-requirements.txt` pins the toolchain
+(`mkdocs-material==9.7.7`, `mike==2.2.0`, matching AmiAuth's pin so the
+two stay on the same known-good MkDocs 1.x line rather than drifting
+independently). One remaining manual step this repo's own CI can't
+do: Settings -> Pages -> Source: "Deploy from a branch" / `gh-pages` /
+root, one-time, since `mike` commits the built site to `gh-pages`
+itself rather than using the "GitHub Actions" Pages source. Until the
+first `v*` tag (or a manual `workflow_dispatch` run) actually deploys,
+the `gh-pages` branch doesn't exist yet and Pages has nothing to serve.
+
 **Not done yet, tracked honestly rather than glossed over**: the
-MkDocs site has not been published (no `.github/workflows/docs.yml`
-wired up, no GitHub Pages `mike` deploy) -- `mkdocs serve` works
-locally but nothing publishes it yet. The Aminet release itself
-(tag-driven publish) and the 1.0 "one full backup rotation on real
-hardware" gate remain entirely open.
+Aminet release itself (tag-driven publish) and the 1.0 "one full
+backup rotation on real hardware" gate remain entirely open.
 
 Post-1.0 (proposal "Future goals", unchanged): `amisnap-tool` host
 client growing out of the reference reader, commodity scheduler,

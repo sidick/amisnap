@@ -1,6 +1,10 @@
 # Build output
 /build/
 
+# MkDocs local build output (mkdocs build / mkdocs serve) -- the published
+# site is committed to gh-pages by mike in CI, never to this branch.
+/site/
+
 # Locally-cached AmiSSL SDK (scripts/fetch-amissl-sdk.sh) -- pinned
 # outside $(BUILD) so it survives `make clean`, but never committed.
 /.amissl-cache/
