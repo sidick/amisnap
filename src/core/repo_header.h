@@ -34,6 +34,13 @@ typedef struct {
                                      * stay readable (they are raw by
                                      * construction). */
 
+    int has_comp_pref;
+    uint8_t comp_pref;              /* AMISNAP_COMP_* (compress.h): the init-time
+                                     * default frame algorithm, present iff
+                                     * objcomp = FRAMED. Informational -- frames
+                                     * are self-describing; only writers with no
+                                     * per-run override consult it. */
+
     int has_chunk_size;
     uint32_t chunk_size;            /* informational only -- format.md "Repository header" */
 

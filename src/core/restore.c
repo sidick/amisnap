@@ -10,6 +10,7 @@ typedef struct {
     amisnap_backend *repo;
     amisnap_backend *dest;
     const amisnap_repo_subkeys *subkeys;
+    uint8_t objcomp;
     const amisnap_restore_options *opts;
     amisnap_restore_result *result;
 } restore_ctx;
@@ -81,7 +82,8 @@ static int restore_file(restore_ctx *rc, const amisnap_entry_meta *entry, const 
          * rc->subkeys is set) and verifies against the declared hash in
          * one call, so a corrupt or tampered object never reaches
          * put_append below. */
-        status = amisnap_repo_fetch_object(rc->repo, rc->subkeys, &entry->content[i], &obj);
+        status = amisnap_repo_fetch_object(rc->repo, rc->subkeys, rc->objcomp,
+                                           &entry->content[i], &obj);
         if (status != AMISNAP_OK) { amisnap_backend_put_abort(rc->dest, handle); return status; }
 
         status = amisnap_backend_put_append(rc->dest, handle, obj.data, obj.len);
@@ -222,7 +224,8 @@ static int apply_metadata_reverse(restore_ctx *rc, const meta_collect_ctx *cc)
 }
 
 int amisnap_restore_manifest(amisnap_backend *repo, amisnap_backend *dest,
-                              const amisnap_repo_subkeys *subkeys, const char *snapid,
+                              const amisnap_repo_subkeys *subkeys, uint8_t objcomp,
+                              const char *snapid,
                               const uint8_t *manifest_data, size_t manifest_len,
                               const amisnap_restore_options *opts,
                               amisnap_restore_result *result)
@@ -240,6 +243,7 @@ int amisnap_restore_manifest(amisnap_backend *repo, amisnap_backend *dest,
     rc.repo = repo;
     rc.dest = dest;
     rc.subkeys = subkeys;
+    rc.objcomp = objcomp;
     rc.opts = opts;
     rc.result = result;
 

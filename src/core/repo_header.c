@@ -15,6 +15,7 @@
 #define TAG_WRAPPED_KEY  0x8014u
 #define TAG_FORMAT_APP   0x0015u
 #define TAG_OBJCOMP      0x8016u
+#define TAG_COMP_PREF    0x0017u
 
 int amisnap_repo_header_encode(const amisnap_repo_header *hdr, amisnap_buf *out)
 {
@@ -43,6 +44,8 @@ int amisnap_repo_header_encode(const amisnap_repo_header *hdr, amisnap_buf *out)
         rc = amisnap_buf_field_u8(&body, TAG_CIPHER, hdr->cipher);
     if (rc == AMISNAP_OK)
         rc = amisnap_buf_field_u8(&body, TAG_OBJCOMP, hdr->objcomp);
+    if (rc == AMISNAP_OK && hdr->has_comp_pref)
+        rc = amisnap_buf_field_u8(&body, TAG_COMP_PREF, hdr->comp_pref);
     if (rc == AMISNAP_OK && hdr->has_chunk_size)
         rc = amisnap_buf_field_u32(&body, TAG_CHUNK_SIZE, hdr->chunk_size);
 
@@ -172,6 +175,11 @@ int amisnap_repo_header_decode(const uint8_t *data, size_t len, amisnap_repo_hea
             if (out->objcomp != AMISNAP_OBJCOMP_RAW &&
                 out->objcomp != AMISNAP_OBJCOMP_FRAMED)
                 return AMISNAP_ERR_CRITICAL_TAG;
+            break;
+        case TAG_COMP_PREF:
+            rc = amisnap_decode_u8(val, vlen, &out->comp_pref);
+            if (rc != AMISNAP_OK) return rc;
+            out->has_comp_pref = 1;
             break;
         case TAG_CHUNK_SIZE:
             rc = amisnap_decode_u32(val, vlen, &out->chunk_size);

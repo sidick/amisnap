@@ -40,6 +40,7 @@
 
 #include "amipath.h"
 #include "backend_dir.h"
+#include "compress.h"
 #include "entropy.h"
 #include "exclude.h"
 #include "index.h"
@@ -450,6 +451,8 @@ static int fetch_manifest(amisnap_backend *be, const char *snapid, amisnap_buf *
 typedef struct {
     amisnap_repo_subkeys sk;
     int have; /* 0 = CIPHER 0 (or no amisnap.repo at all -- see below) */
+    uint8_t objcomp;   /* AMISNAP_OBJCOMP_*: raw when there's no header at all */
+    uint8_t comp_pref; /* AMISNAP_COMP_*: header's COMP_PREF, LZ4 if unset */
 } repo_key_ctx;
 
 #define AMISNAP_REPO_HEADER_KEY "amisnap.repo"
@@ -469,6 +472,8 @@ static int open_repo_key(amisnap_backend *be, repo_key_ctx *out)
     int rc;
 
     out->have = 0;
+    out->objcomp = AMISNAP_OBJCOMP_RAW;
+    out->comp_pref = AMISNAP_COMP_LZ4;
 
     rc = amisnap_backend_get(be, AMISNAP_REPO_HEADER_KEY, &raw);
     if (rc == AMISNAP_ERR_NOT_FOUND) return AMISNAP_OK;
@@ -483,6 +488,9 @@ static int open_repo_key(amisnap_backend *be, repo_key_ctx *out)
      * unwrap fail nondeterministically -- a "wrong passphrase" that
      * isn't. */
     if (rc != AMISNAP_OK) { amisnap_buf_free(&raw); return rc; }
+
+    out->objcomp = hdr.objcomp;
+    if (hdr.has_comp_pref) out->comp_pref = hdr.comp_pref;
 
     if (hdr.cipher == 0) { amisnap_buf_free(&raw); return AMISNAP_OK; }
 
@@ -907,8 +915,32 @@ static int load_exclude_file(const char *path, amisnap_exclude_list *out, int *h
     return rc;
 }
 
+static int str_ieq(const char *a, const char *b)
+{
+    while (*a && *b) {
+        char ca = (*a >= 'a' && *a <= 'z') ? (char)(*a - 32) : *a;
+        char cb = (*b >= 'a' && *b <= 'z') ? (char)(*b - 32) : *b;
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+/* COMPRESS= keyword to a frame algorithm (compress.h). NONE is only
+ * meaningful per-snapshot (frame everything as stored -- the repository
+ * stays framed, the CPU cost drops to zero); INIT rejects it because a
+ * repository that never compresses is just a raw one. Returns -1 on an
+ * unrecognised word. */
+static int parse_compress_arg(const char *word, int allow_none)
+{
+    if (str_ieq(word, "LZ4")) return AMISNAP_COMP_LZ4;
+    if (str_ieq(word, "DEFLATE") || str_ieq(word, "ZLIB")) return AMISNAP_COMP_ZLIB;
+    if (allow_none && str_ieq(word, "NONE")) return AMISNAP_COMP_STORED;
+    return -1;
+}
+
 static LONG cmd_snapshot(const char *source, const char *repo, const char *comment, int paranoid,
-                          const char *exclude_path)
+                          const char *exclude_path, const char *compress_arg)
 {
     amisnap_backend be;
     amisnap_repo_writer rw;
@@ -982,6 +1014,25 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     }
 
     amisnap_repo_writer_init(&rw, &be, rk.have ? &rk.sk : NULL);
+
+    if (rk.objcomp == AMISNAP_OBJCOMP_FRAMED) {
+        int alg = compress_arg ? parse_compress_arg(compress_arg, 1) : (int)rk.comp_pref;
+        if (alg < 0) {
+            amilog_err("AmiSnap: COMPRESS=\"%s\" -- expected LZ4, DEFLATE, or NONE\n", compress_arg);
+            amisnap_repo_writer_free(&rw);
+            amisnap_backend_close(&be);
+            if (have_exclude) amisnap_exclude_free(&exclude);
+            return RETURN_ERROR;
+        }
+        amisnap_repo_writer_set_compression(&rw, (uint8_t)alg);
+    } else if (compress_arg) {
+        amilog_err("AmiSnap: COMPRESS given, but \"%s\" is a raw (uncompressed) repository -- "
+                   "compression is fixed at INIT (INIT REPO=... COMPRESS=LZ4|DEFLATE)\n", repo);
+        amisnap_repo_writer_free(&rw);
+        amisnap_backend_close(&be);
+        if (have_exclude) amisnap_exclude_free(&exclude);
+        return RETURN_ERROR;
+    }
 
     DateStamp(&now);
     memset(&snap, 0, sizeof(snap));
@@ -1243,7 +1294,8 @@ static LONG cmd_verify(const char *repo, const char *snapid_arg, int full)
         return RETURN_FAIL;
     }
 
-    rc = amisnap_verify_manifest(&be, rk.have ? &rk.sk : NULL, snapid, mf.data, mf.len, full, &result);
+    rc = amisnap_verify_manifest(&be, rk.have ? &rk.sk : NULL, rk.objcomp, snapid,
+                                 mf.data, mf.len, full, &result);
     amisnap_buf_free(&mf);
     amisnap_backend_close(&be);
     if (rc != AMISNAP_OK) {
@@ -1447,7 +1499,8 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
     opts.on_entry_restored = amisnap_restore_meta_on_entry;
     opts.user = &meta_ctx;
 
-    rc = amisnap_restore_manifest(&repo_be, &dest_be, rk.have ? &rk.sk : NULL, snapid,
+    rc = amisnap_restore_manifest(&repo_be, &dest_be, rk.have ? &rk.sk : NULL,
+                                   rk.objcomp, snapid,
                                    mf.data, mf.len, &opts, &result);
     amisnap_buf_free(&mf);
     amisnap_backend_close(&repo_be);
@@ -1484,13 +1537,15 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
 
 /* --- init ------------------------------------------------------------- */
 
-/* INIT REPO=<path> PASSPHRASE: creates amisnap.repo with a fresh,
- * randomly-generated repository key, wrapped under the given
- * passphrase (docs/format.md "Encryption (CIPHER 1)"). A plain
- * (CIPHER 0) repository has never needed this step -- repo.c's writer
- * creates snapshots/objects the first time it's used, no header
- * required -- so INIT only exists for the encrypted case; there is
- * nothing else useful for it to do. Refuses to run against a
+/* INIT REPO=<path> [PASSPHRASE] [COMPRESS=LZ4|DEFLATE]: creates
+ * amisnap.repo. PASSPHRASE makes the repository encrypted (a fresh,
+ * randomly-generated repository key wrapped under the passphrase --
+ * docs/format.md "Encryption (CIPHER 1)"); COMPRESS makes it framed
+ * (OBJCOMP 1, with the chosen algorithm recorded as COMP_PREF, the
+ * per-snapshot default). Both options compose. A plain, uncompressed
+ * repository still needs no header at all -- repo.c's writer creates
+ * snapshots/objects the first time it's used -- so INIT with neither
+ * option is refused as useless. Refuses to run against a
  * repository that already has an amisnap.repo, encrypted or not --
  * this is a one-time setup step, not an idempotent one (re-running it
  * would either silently keep the old key under a new passphrase's
@@ -1581,21 +1636,29 @@ static int calibrate_and_wrap(const char *passphrase,
     return AMISNAP_OK;
 }
 
-static LONG cmd_init(const char *repo, int want_passphrase)
+static LONG cmd_init(const char *repo, int want_passphrase, const char *compress_arg)
 {
     amisnap_backend be;
     amisnap_repo_header hdr;
     amisnap_buf hdr_bytes;
+    int comp_alg = -1;
     int rc;
 
     if (!repo) {
         amilog_err("AmiSnap: INIT needs REPO=<path>\n");
         return RETURN_ERROR;
     }
-    if (!want_passphrase) {
-        amilog_err("AmiSnap: INIT only does something useful with PASSPHRASE -- "
-                   "a plain repository needs no init step at all, just SNAPSHOT "
-                   "straight to REPO=\"%s\"\n", repo);
+    if (compress_arg) {
+        comp_alg = parse_compress_arg(compress_arg, 0);
+        if (comp_alg < 0) {
+            amilog_err("AmiSnap: COMPRESS=\"%s\" -- expected LZ4 or DEFLATE\n", compress_arg);
+            return RETURN_ERROR;
+        }
+    }
+    if (!want_passphrase && comp_alg < 0) {
+        amilog_err("AmiSnap: INIT only does something useful with PASSPHRASE and/or "
+                   "COMPRESS -- a plain, uncompressed repository needs no init step at "
+                   "all, just SNAPSHOT straight to REPO=\"%s\"\n", repo);
         return RETURN_ERROR;
     }
 
@@ -1620,54 +1683,61 @@ static LONG cmd_init(const char *repo, int want_passphrase)
         uint8_t repo_key[AMISNAP_REPO_KEY_SIZE];
         uint8_t salt[AMISNAP_INIT_SALT_LEN];
         uint8_t wrapped[AMISNAP_WRAPPED_KEY_SIZE];
-        uint32_t iters;
-
-        rc = prompt_new_passphrase(passphrase);
-        if (rc != AMISNAP_OK) {
-            amilog_err(rc == AMISNAP_ERR_IO
-                       ? "AmiSnap: no passphrase entered (need an interactive console)\n"
-                       : "AmiSnap: passphrases did not match\n");
-            amisnap_backend_close(&be);
-            return RETURN_ERROR;
-        }
-
-        if (amisnap_random(repo_key, sizeof(repo_key)) != 0) {
-            amilog_err("AmiSnap: could not gather entropy for the repository key\n");
-            memset(passphrase, 0, sizeof(passphrase));
-            amisnap_backend_close(&be);
-            return RETURN_FAIL;
-        }
-
-        rc = calibrate_and_wrap(passphrase, repo_key, salt, &iters, wrapped);
-        memset(passphrase, 0, sizeof(passphrase));
-        memset(repo_key, 0, sizeof(repo_key));
-        if (rc != AMISNAP_OK) {
-            amilog_err("AmiSnap: could not gather entropy for the repository salt/nonce\n");
-            amisnap_backend_close(&be);
-            return RETURN_FAIL;
-        }
+        uint32_t iters = 0;
 
         memset(&hdr, 0, sizeof(hdr));
         if (amisnap_random(hdr.repo_id, AMISNAP_REPO_ID_SIZE) != 0) {
             amilog_err("AmiSnap: could not gather entropy for REPO_ID\n");
-            memset(wrapped, 0, sizeof(wrapped));
             amisnap_backend_close(&be);
             return RETURN_FAIL;
         }
-        hdr.cipher = 1;
         hdr.has_chunk_size = 1;
         hdr.chunk_size = AMISNAP_DEFAULT_CHUNK_SIZE;
-        hdr.kdf_id = AMISNAP_KDF_PBKDF2_HMAC_SHA256;
-        hdr.kdf_iters = iters;
-        hdr.salt = salt;
-        hdr.salt_len = sizeof(salt);
-        hdr.wrapped_key = wrapped;
         hdr.has_format_app = 1;
         hdr.format_app = (const uint8_t *)"AmiSnap";
         hdr.format_app_len = 7;
+        if (comp_alg >= 0) {
+            hdr.objcomp = AMISNAP_OBJCOMP_FRAMED;
+            hdr.has_comp_pref = 1;
+            hdr.comp_pref = (uint8_t)comp_alg;
+        }
+
+        if (want_passphrase) {
+            rc = prompt_new_passphrase(passphrase);
+            if (rc != AMISNAP_OK) {
+                amilog_err(rc == AMISNAP_ERR_IO
+                           ? "AmiSnap: no passphrase entered (need an interactive console)\n"
+                           : "AmiSnap: passphrases did not match\n");
+                amisnap_backend_close(&be);
+                return RETURN_ERROR;
+            }
+
+            if (amisnap_random(repo_key, sizeof(repo_key)) != 0) {
+                amilog_err("AmiSnap: could not gather entropy for the repository key\n");
+                memset(passphrase, 0, sizeof(passphrase));
+                amisnap_backend_close(&be);
+                return RETURN_FAIL;
+            }
+
+            rc = calibrate_and_wrap(passphrase, repo_key, salt, &iters, wrapped);
+            memset(passphrase, 0, sizeof(passphrase));
+            memset(repo_key, 0, sizeof(repo_key));
+            if (rc != AMISNAP_OK) {
+                amilog_err("AmiSnap: could not gather entropy for the repository salt/nonce\n");
+                amisnap_backend_close(&be);
+                return RETURN_FAIL;
+            }
+
+            hdr.cipher = 1;
+            hdr.kdf_id = AMISNAP_KDF_PBKDF2_HMAC_SHA256;
+            hdr.kdf_iters = iters;
+            hdr.salt = salt;
+            hdr.salt_len = sizeof(salt);
+            hdr.wrapped_key = wrapped;
+        }
 
         rc = amisnap_repo_header_encode(&hdr, &hdr_bytes);
-        memset(wrapped, 0, sizeof(wrapped));
+        if (want_passphrase) memset(wrapped, 0, sizeof(wrapped));
         if (rc != AMISNAP_OK) {
             amilog_err("AmiSnap: could not encode the repository header (error %d)\n", rc);
             amisnap_backend_close(&be);
@@ -1682,8 +1752,13 @@ static LONG cmd_init(const char *repo, int want_passphrase)
             return RETURN_FAIL;
         }
 
-        amilog("AmiSnap: initialized encrypted repository \"%s\" (%lu PBKDF2 iterations)\n",
-               repo, (unsigned long)iters);
+        if (want_passphrase)
+            amilog("AmiSnap: initialized %s repository \"%s\" (%lu PBKDF2 iterations)\n",
+                   comp_alg >= 0 ? "encrypted, compressed" : "encrypted",
+                   repo, (unsigned long)iters);
+        else
+            amilog("AmiSnap: initialized compressed repository \"%s\" (%s)\n",
+                   repo, comp_alg == AMISNAP_COMP_ZLIB ? "DEFLATE" : "LZ4");
         return RETURN_OK;
     }
 }
@@ -1858,20 +1933,9 @@ static LONG cmd_rekey(const char *repo)
 
 /* --- dispatch --------------------------------------------------------- */
 
-static int str_ieq(const char *a, const char *b)
-{
-    while (*a && *b) {
-        char ca = (*a >= 'a' && *a <= 'z') ? (char)(*a - 32) : *a;
-        char cb = (*b >= 'a' && *b <= 'z') ? (char)(*b - 32) : *b;
-        if (ca != cb) return 0;
-        a++; b++;
-    }
-    return *a == '\0' && *b == '\0';
-}
-
-#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,TLS13/S,TLSINSECURE/S,CIPHERS/K,EXCLUDE/K"
+#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,COMPRESS/K,TLS13/S,TLSINSECURE/S,CIPHERS/K,EXCLUDE/K"
 enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_LOG,
-       ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_TLS13, ARG_TLSINSECURE, ARG_CIPHERS, ARG_EXCLUDE,
+       ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_COMPRESS, ARG_TLS13, ARG_TLSINSECURE, ARG_CIPHERS, ARG_EXCLUDE,
        ARG_COUNT };
 
 /* Second "?" at the ReadArgs() prompt prints this (RDA_ExtHelp,
@@ -1880,7 +1944,8 @@ enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_
 static const char exthelp[] =
     "ACTION is one of:\n"
     "  SNAPSHOT   take a new snapshot -- SOURCE, REPO required; COMMENT,\n"
-    "             PARANOID, EXCLUDE optional\n"
+    "             PARANOID, EXCLUDE optional; COMPRESS=LZ4|DEFLATE|NONE\n"
+    "             overrides a compressed repository's default\n"
     "  RESTORE    restore a snapshot -- REPO, DEST required; SNAPID\n"
     "             (default latest), SUBTREE optional\n"
     "  LIST       list snapshots in a repository -- REPO required\n"
@@ -1889,7 +1954,7 @@ static const char exthelp[] =
     "  PRUNE      apply retention -- REPO required; SNAPID or KEEP_LAST\n"
     "  APPLYUAEM  apply a .uaem metadata sidecar -- SOURCE required\n"
     "  INIT       create a new repository -- REPO required; PASSPHRASE\n"
-    "             to encrypt it\n"
+    "             to encrypt it, COMPRESS=LZ4|DEFLATE to compress it\n"
     "  REKEY      change a repository's passphrase -- REPO required\n";
 
 static int real_main(void *arg)
@@ -1972,7 +2037,7 @@ static int real_main(void *arg)
     if (str_ieq(action, "SNAPSHOT")) {
         rc = cmd_snapshot((const char *)args[ARG_SOURCE], (const char *)args[ARG_REPO],
                            (const char *)args[ARG_COMMENT], args[ARG_PARANOID] != 0,
-                           (const char *)args[ARG_EXCLUDE]);
+                           (const char *)args[ARG_EXCLUDE], (const char *)args[ARG_COMPRESS]);
     } else if (str_ieq(action, "RESTORE")) {
         rc = cmd_restore((const char *)args[ARG_REPO], (const char *)args[ARG_DEST],
                           (const char *)args[ARG_SNAPID], (const char *)args[ARG_SUBTREE]);
@@ -1987,7 +2052,8 @@ static int real_main(void *arg)
     } else if (str_ieq(action, "APPLYUAEM")) {
         rc = cmd_applyuaem((const char *)args[ARG_SOURCE]);
     } else if (str_ieq(action, "INIT")) {
-        rc = cmd_init((const char *)args[ARG_REPO], args[ARG_PASSPHRASE] != 0);
+        rc = cmd_init((const char *)args[ARG_REPO], args[ARG_PASSPHRASE] != 0,
+                       (const char *)args[ARG_COMPRESS]);
     } else if (str_ieq(action, "REKEY")) {
         rc = cmd_rekey((const char *)args[ARG_REPO]);
     } else {

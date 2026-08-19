@@ -36,6 +36,7 @@
 #include "backend.h"
 #include "manifest.h"
 #include "repo_crypto.h"
+#include "repo_header.h"
 
 /* "objects/" + 2 fan-out chars + "/" + 64 hex + NUL, generous. */
 #define AMISNAP_OBJECT_KEY_LEN 80
@@ -46,18 +47,25 @@
 void amisnap_repo_object_key(const uint8_t hash[32], char out[AMISNAP_OBJECT_KEY_LEN]);
 
 /* Fetches content object `ref` from `repo`, decrypts it if `subkeys`
- * is non-NULL, and verifies the resulting plaintext against
- * `ref->hash` -- every caller needs fetch+decrypt+verify together
- * (format.md's disaster-recovery procedure: "verifying each against
- * its name"), so this does all three in one call rather than making
- * restore.c and verify's own full-mode duplicate the sequence. `out`
- * receives the plaintext (caller amisnap_buf_free()s it). Returns
- * AMISNAP_OK, AMISNAP_ERR_NOT_FOUND, AMISNAP_ERR_MALFORMED (stored
- * size doesn't match `ref->size` once the encryption frame overhead,
- * when `subkeys` is set, is accounted for), AMISNAP_ERR_HASH_MISMATCH
- * (MAC or content hash mismatch), or another backend error. */
+ * is non-NULL, decodes the compression frame if `objcomp` is
+ * AMISNAP_OBJCOMP_FRAMED (compress.h; decrypt-then-decompress, the
+ * inverse of the writer's compress-then-encrypt), and verifies the
+ * resulting content against `ref->hash` -- every caller needs
+ * fetch+decrypt+decode+verify together (format.md's disaster-recovery
+ * procedure: "verifying each against its name"), so this does all of
+ * it in one call rather than making restore.c and verify's own
+ * full-mode duplicate the sequence. `objcomp` comes from the
+ * repository header (repo_header.h; a repository with no amisnap.repo
+ * is RAW). `out` receives the content (caller amisnap_buf_free()s
+ * it). Returns AMISNAP_OK, AMISNAP_ERR_NOT_FOUND,
+ * AMISNAP_ERR_MALFORMED (stored size impossible for `ref->size` given
+ * the encryption/frame overheads, or a frame that doesn't decode),
+ * AMISNAP_ERR_CRITICAL_TAG (frame names an unimplemented compression
+ * alg), AMISNAP_ERR_HASH_MISMATCH (MAC or content hash mismatch), or
+ * another backend error. */
 int amisnap_repo_fetch_object(amisnap_backend *repo, const amisnap_repo_subkeys *subkeys,
-                               const amisnap_content_ref *ref, amisnap_buf *out);
+                               uint8_t objcomp, const amisnap_content_ref *ref,
+                               amisnap_buf *out);
 
 /* Given the raw bytes of a manifest file as fetched from the backend
  * (snapshots/<snapid>.mf), returns its plaintext body via
@@ -82,6 +90,8 @@ typedef struct {
     uint32_t snap_days, snap_mins, snap_ticks;
     int have_snap;
     const amisnap_repo_subkeys *subkeys;   /* NULL = CIPHER 0 (plaintext) */
+    uint8_t objcomp;                       /* AMISNAP_OBJCOMP_*: from the repo header */
+    uint8_t comp_alg;                      /* AMISNAP_COMP_*: preference when FRAMED */
 } amisnap_repo_writer;
 
 /* `be` is borrowed -- the writer never opens or closes it. `subkeys`
@@ -93,6 +103,18 @@ typedef struct {
 void amisnap_repo_writer_init(amisnap_repo_writer *rw, amisnap_backend *be,
                                const amisnap_repo_subkeys *subkeys);
 void amisnap_repo_writer_free(amisnap_repo_writer *rw);
+
+/* Switches this writer to framed objects (a repository whose header
+ * says OBJCOMP=1 -- the caller reads amisnap.repo and calls this
+ * accordingly; the default after init is RAW, matching a repository
+ * with no header at all). `comp_alg` is the *preference*
+ * (AMISNAP_COMP_LZ4/ZLIB/STORED, compress.h): every object is framed,
+ * but incompressible ones fall back to stored inside the frame. All
+ * objects in a framed repository must be framed -- a frame is how a
+ * dedup hit from a later snapshot knows the object's encoding -- so
+ * this must be called before the first file is written, not
+ * mid-snapshot. */
+void amisnap_repo_writer_set_compression(amisnap_repo_writer *rw, uint8_t comp_alg);
 
 /* Forwards to the manifest writer (see manifest.h for the ordering
  * rules this enforces) and additionally remembers the creation
@@ -231,9 +253,13 @@ typedef struct {
  * fetched from the backend, still carrying the common header) --
  * decrypted internally via amisnap_repo_open_manifest() using
  * `subkeys`/`snapid` when the manifest turns out to be encrypted;
- * pass subkeys=NULL, snapid=NULL for a CIPHER 0 repository. */
+ * pass subkeys=NULL, snapid=NULL for a CIPHER 0 repository.
+ * `objcomp` is the repository header's object encoding, forwarded to
+ * amisnap_repo_fetch_object() in FULL mode (structural mode never
+ * reads content, so framing doesn't change it). */
 int amisnap_verify_manifest(amisnap_backend *repo, const amisnap_repo_subkeys *subkeys,
-                             const char *snapid, const uint8_t *manifest_data, size_t manifest_len,
+                             uint8_t objcomp, const char *snapid,
+                             const uint8_t *manifest_data, size_t manifest_len,
                              int full, amisnap_verify_result *result);
 
 #endif /* AMISNAP_REPO_H */

@@ -185,7 +185,7 @@ void run_crash_safety_tests(void)
         char key[32];
         snprintf(key, sizeof(key), "snapshots/%s.mf", baseline_snapid);
         TEST_CHECK(amisnap_backend_get(&repo, key, &mf) == AMISNAP_OK);
-        TEST_CHECK(amisnap_verify_manifest(&repo, NULL, NULL, mf.data, mf.len, 1, &vresult) == AMISNAP_OK);
+        TEST_CHECK(amisnap_verify_manifest(&repo, NULL, AMISNAP_OBJCOMP_RAW, NULL, mf.data, mf.len, 1, &vresult) == AMISNAP_OK);
         TEST_CHECK(vresult.objects_missing == 0 && vresult.objects_corrupt == 0);
         amisnap_buf_free(&mf);
     }
@@ -239,7 +239,7 @@ void run_crash_safety_tests(void)
 
         snprintf(key, sizeof(key), "snapshots/%s.mf", new_snapid);
         TEST_CHECK(amisnap_backend_get(&repo, key, &mf) == AMISNAP_OK);
-        TEST_CHECK(amisnap_verify_manifest(&repo, NULL, NULL, mf.data, mf.len, 1, &vresult) == AMISNAP_OK);
+        TEST_CHECK(amisnap_verify_manifest(&repo, NULL, AMISNAP_OBJCOMP_RAW, NULL, mf.data, mf.len, 1, &vresult) == AMISNAP_OK);
         TEST_CHECK(vresult.objects_missing == 0 && vresult.objects_corrupt == 0);
         amisnap_buf_free(&mf);
     }

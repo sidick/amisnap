@@ -101,9 +101,12 @@ typedef struct {
  * `subkeys`/`snapid` when the manifest turns out to be encrypted, and
  * every content object is likewise decrypted via
  * amisnap_repo_fetch_object() before being written to `dest`. Pass
- * subkeys=NULL, snapid=NULL for a CIPHER 0 repository. */
+ * subkeys=NULL, snapid=NULL for a CIPHER 0 repository. `objcomp` is
+ * the repository header's object encoding (repo_header.h), forwarded
+ * to every object fetch. */
 int amisnap_restore_manifest(amisnap_backend *repo, amisnap_backend *dest,
-                              const amisnap_repo_subkeys *subkeys, const char *snapid,
+                              const amisnap_repo_subkeys *subkeys, uint8_t objcomp,
+                              const char *snapid,
                               const uint8_t *manifest_data, size_t manifest_len,
                               const amisnap_restore_options *opts,
                               amisnap_restore_result *result);

@@ -7,7 +7,14 @@
  * so the driving script can pass it to tools/amisnap_reader.py without
  * having to parse anything itself.
  *
- * With a third argument (a passphrase), also writes a CIPHER=1
+ * With `--compress` as the second argument the repository is framed
+ * (OBJCOMP=1, LZ4 preference): an amisnap.repo header is written even
+ * in the plain case (a framed repository always needs one), and an
+ * extra, genuinely compressible entry (big.txt) is added so at least
+ * one object really is LZ4 inside its frame (the small fixtures fall
+ * back to stored frames -- itself worth exercising).
+ *
+ * With a further argument (a passphrase), also writes a CIPHER=1
  * amisnap.repo and encrypts the same snapshot -- implementation-plan.md
  * Phase 4 item 6's "cross-check keeps proving the two agree once
  * CIPHER=1 repositories exist". The repository key itself is a fixed,
@@ -28,6 +35,7 @@
 #include <string.h>
 
 #include "backend_dir.h"
+#include "compress.h"
 #include "pbkdf2.h"
 #include "repo.h"
 #include "repo_header.h"
@@ -39,7 +47,7 @@
  * via *sk_out for the writer to use. Exits the process on failure --
  * this is a fixture generator, not a library, so a short, loud death
  * is more useful than plumbing an error code back through main(). */
-static void init_encrypted_repo(amisnap_backend *be, const char *passphrase,
+static void init_encrypted_repo(amisnap_backend *be, const char *passphrase, int framed,
                                  uint8_t repo_key[AMISNAP_REPO_KEY_SIZE],
                                  amisnap_repo_subkeys *sk_out)
 {
@@ -66,11 +74,45 @@ static void init_encrypted_repo(amisnap_backend *be, const char *passphrase,
     memset(&hdr, 0, sizeof(hdr));
     for (i = 0; i < AMISNAP_REPO_ID_SIZE; i++) hdr.repo_id[i] = (uint8_t)(0xc0 + i);
     hdr.cipher = 1;
+    if (framed) {
+        hdr.objcomp = AMISNAP_OBJCOMP_FRAMED;
+        hdr.has_comp_pref = 1;
+        hdr.comp_pref = AMISNAP_COMP_LZ4;
+    }
     hdr.kdf_id = AMISNAP_KDF_PBKDF2_HMAC_SHA256;
     hdr.kdf_iters = TEST_KDF_ITERS;
     hdr.salt = salt;
     hdr.salt_len = sizeof(salt);
     hdr.wrapped_key = wrapped;
+    hdr.has_format_app = 1;
+    hdr.format_app = (const uint8_t *)"AmiSnap";
+    hdr.format_app_len = 7;
+
+    if (amisnap_repo_header_encode(&hdr, &hdr_bytes) != AMISNAP_OK) {
+        fprintf(stderr, "gen_sample_repo: repo_header_encode failed\n");
+        exit(1);
+    }
+    if (amisnap_backend_put(be, "amisnap.repo", hdr_bytes.data, hdr_bytes.len) != AMISNAP_OK) {
+        fprintf(stderr, "gen_sample_repo: writing amisnap.repo failed\n");
+        exit(1);
+    }
+    amisnap_buf_free(&hdr_bytes);
+}
+
+/* Writes the CIPHER=0, OBJCOMP=1 amisnap.repo a plain framed
+ * repository needs (unlike a raw plain one, which needs no header at
+ * all). */
+static void init_plain_framed_repo(amisnap_backend *be)
+{
+    amisnap_repo_header hdr;
+    amisnap_buf hdr_bytes;
+    size_t i;
+
+    memset(&hdr, 0, sizeof(hdr));
+    for (i = 0; i < AMISNAP_REPO_ID_SIZE; i++) hdr.repo_id[i] = (uint8_t)(0xc0 + i);
+    hdr.objcomp = AMISNAP_OBJCOMP_FRAMED;
+    hdr.has_comp_pref = 1;
+    hdr.comp_pref = AMISNAP_COMP_LZ4;
     hdr.has_format_app = 1;
     hdr.format_app = (const uint8_t *)"AmiSnap";
     hdr.format_app_len = 7;
@@ -99,9 +141,14 @@ int main(int argc, char **argv)
     uint8_t repo_key[AMISNAP_REPO_KEY_SIZE];
     amisnap_repo_subkeys sk;
     const amisnap_repo_subkeys *subkeys = NULL;
+    const char *passphrase = NULL;
+    int framed = 0;
+    int argn = 2;
 
-    if (argc != 2 && argc != 3) {
-        fprintf(stderr, "usage: %s <repo-dir> [passphrase]\n", argv[0]);
+    if (argc >= 3 && strcmp(argv[2], "--compress") == 0) { framed = 1; argn = 3; }
+    if (argc == argn + 1) passphrase = argv[argn];
+    else if (argc != argn) {
+        fprintf(stderr, "usage: %s <repo-dir> [--compress] [passphrase]\n", argv[0]);
         return 1;
     }
 
@@ -110,12 +157,16 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (argc == 3) {
-        init_encrypted_repo(&be, argv[2], repo_key, &sk);
+    if (passphrase) {
+        init_encrypted_repo(&be, passphrase, framed, repo_key, &sk);
         subkeys = &sk;
+    } else if (framed) {
+        init_plain_framed_repo(&be);
     }
 
     amisnap_repo_writer_init(&rw, &be, subkeys);
+    if (framed)
+        amisnap_repo_writer_set_compression(&rw, AMISNAP_COMP_LZ4);
 
     memset(&snap, 0, sizeof(snap));
     snap.created_days = 17000; snap.created_mins = 600; snap.created_ticks = 10;
@@ -199,6 +250,28 @@ int main(int argc, char **argv)
     if (amisnap_repo_writer_file(&rw, &e, NULL, 0) != AMISNAP_OK) {
         fprintf(stderr, "gen_sample_repo: empty.dat write failed\n");
         return 1;
+    }
+
+    /* Framed mode only: a genuinely compressible file, so the fixture
+     * holds one real LZ4 frame alongside the small files' stored-
+     * fallback frames. Repeating text, generated in place -- keeps the
+     * raw fixtures byte-identical to what they were before framing
+     * existed. */
+    if (framed) {
+        static char big[4352];
+        size_t off;
+
+        for (off = 0; off < sizeof(big); off += 17)
+            memcpy(big + off, "AmigaOS forever! ", 17);
+        memset(&e, 0, sizeof(e));
+        e.path = (const uint8_t *)"big.txt"; e.path_len = strlen((const char *)e.path);
+        e.type = AMISNAP_ETYPE_FILE;
+        e.prot = 0;
+        e.date_days = 17000; e.date_mins = 15; e.date_ticks = 0;
+        if (amisnap_repo_writer_file(&rw, &e, big, sizeof(big)) != AMISNAP_OK) {
+            fprintf(stderr, "gen_sample_repo: big.txt write failed\n");
+            return 1;
+        }
     }
 
     if (amisnap_repo_writer_finish(&rw, snapid) != AMISNAP_OK) {

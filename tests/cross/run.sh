@@ -100,6 +100,92 @@ if ! echo "$CORRUPT_OUT" | grep -q "CORRUPT"; then
     fail=1
 fi
 
+echo "--- compressed (OBJCOMP=1) repository ---"
+# Same fixture plus one genuinely compressible file (big.txt), written
+# framed with LZ4 preference: proves the Python reader's pure-stdlib
+# frame decoding (including its own LZ4 block decoder) against objects
+# the vendored upstream LZ4 wrote, and that the small files' stored-
+# fallback frames round-trip too.
+C_REPO="$ROOT/build/cross-check-repo-compressed"
+C_DEST="$ROOT/build/cross-check-restored-compressed"
+
+rm -rf "$C_REPO" "$C_DEST"
+C_SNAPID=$("$GEN" "$C_REPO" --compress)
+echo "generated compressed snapshot: $C_SNAPID"
+
+C_LIST_OUT=$(python3 "$READER" list "$C_REPO")
+echo "$C_LIST_OUT"
+if ! echo "$C_LIST_OUT" | grep -q "^$C_SNAPID  6 entries\$"; then
+    echo "FAIL: compressed list output mismatch (want '$C_SNAPID  6 entries')"
+    fail=1
+fi
+
+C_VERIFY_OUT=$(python3 "$READER" verify "$C_REPO" --full)
+echo "$C_VERIFY_OUT"
+if ! echo "$C_VERIFY_OUT" | grep -q "^Verify $C_SNAPID (FULL): 3 objects checked, 0 missing, 0 corrupt\$"; then
+    echo "FAIL: compressed verify output mismatch"
+    fail=1
+fi
+
+# At least one stored object really is an LZ4 frame (first frame byte
+# 0x01), and it is genuinely smaller than its 4352-byte content --
+# otherwise this section would silently only ever test the stored
+# fallback.
+if ! python3 -c '
+import glob, os, sys
+for f in glob.glob(sys.argv[1] + "/objects/*/*"):
+    with open(f, "rb") as fh:
+        if fh.read(1) == b"\x01" and os.path.getsize(f) < 4352:
+            sys.exit(0)
+sys.exit(1)' "$C_REPO"; then
+    echo "FAIL: no object is actually LZ4-compressed"
+    fail=1
+fi
+
+python3 "$READER" restore "$C_REPO" "$C_DEST" >/dev/null
+if [ ! -f "$C_DEST/readme.txt" ] || ! grep -q "^Hello from AmiSnap\$" "$C_DEST/readme.txt"; then
+    echo "FAIL: compressed readme.txt content mismatch"
+    fail=1
+fi
+python3 -c 'import sys; sys.stdout.write("AmigaOS forever! " * 256)' > "$ROOT/build/cross-check-big-expected"
+if ! cmp -s "$C_DEST/big.txt" "$ROOT/build/cross-check-big-expected"; then
+    echo "FAIL: compressed big.txt did not round-trip bit-for-bit"
+    fail=1
+fi
+
+# Corrupt one byte inside a frame payload: the reader must call it
+# corrupt (decompression failure or hash mismatch, never silence).
+C_OBJ=$(find "$C_REPO/objects" -type f | head -1)
+printf 'X' >> "$C_OBJ"
+set +e
+C_CORRUPT_OUT=$(python3 "$READER" verify "$C_REPO" --full 2>&1)
+C_CORRUPT_RC=$?
+set -e
+if [ "$C_CORRUPT_RC" -eq 0 ] || ! echo "$C_CORRUPT_OUT" | grep -q "CORRUPT"; then
+    echo "FAIL: corrupted framed object not reported"
+    fail=1
+fi
+
+echo "--- compressed + encrypted repository ---"
+CE_REPO="$ROOT/build/cross-check-repo-comp-enc"
+CE_DEST="$ROOT/build/cross-check-restored-comp-enc"
+PASSPHRASE="correct horse battery staple"
+rm -rf "$CE_REPO" "$CE_DEST"
+CE_SNAPID=$("$GEN" "$CE_REPO" --compress "$PASSPHRASE")
+echo "generated compressed+encrypted snapshot: $CE_SNAPID"
+
+CE_VERIFY_OUT=$(printf '%s\n' "$PASSPHRASE" | python3 "$READER" verify "$CE_REPO" --full 2>/dev/null)
+echo "$CE_VERIFY_OUT"
+if ! echo "$CE_VERIFY_OUT" | grep -q "^Verify $CE_SNAPID (FULL): 3 objects checked, 0 missing, 0 corrupt\$"; then
+    echo "FAIL: compressed+encrypted verify output mismatch"
+    fail=1
+fi
+printf '%s\n' "$PASSPHRASE" | python3 "$READER" restore "$CE_REPO" "$CE_DEST" >/dev/null 2>&1
+if ! cmp -s "$CE_DEST/big.txt" "$ROOT/build/cross-check-big-expected"; then
+    echo "FAIL: compressed+encrypted big.txt did not round-trip bit-for-bit"
+    fail=1
+fi
+
 echo "--- encrypted (CIPHER=1) repository ---"
 # implementation-plan.md Phase 4 item 6: same fixture, same assertions,
 # but generated with a passphrase (gen_sample_repo.c's own optional

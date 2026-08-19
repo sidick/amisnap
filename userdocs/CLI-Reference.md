@@ -34,7 +34,7 @@ etc.:
 
 ```
 AmiSnap ACTION=SNAPSHOT SOURCE=<path> REPO=<path> [COMMENT=<text>]
-                        [PARANOID] [EXCLUDE=<path>]
+                        [PARANOID] [EXCLUDE=<path>] [COMPRESS=LZ4|DEFLATE|NONE]
 ```
 
 Creates a new snapshot of `SOURCE=` (an AmigaDOS path -- a volume,
@@ -55,6 +55,14 @@ assign, or subdirectory) inside `REPO=` (see
 - `EXCLUDE=<path>` -- a plain-text pattern file naming entries to skip
   entirely (never scanned, never emitted). See
   [Exclude Lists](Exclude-Lists.md) for the file format.
+- `COMPRESS=LZ4|DEFLATE|NONE` -- only valid against a repository that
+  was created with `INIT ... COMPRESS=` (compression is a repository
+  property, fixed at init): overrides that repository's default
+  algorithm for this run's new objects. `NONE` stores this run's new
+  objects uncompressed (zero CPU cost) while the repository stays a
+  compressed one; already-stored objects are never rewritten either
+  way. On an uncompressed repository this keyword is an error, not a
+  silent no-op.
 
 The summary line reports dirs/files seen, how many files were unchanged
 (reused without reading), how many failed to read, how many soft/hard
@@ -146,15 +154,28 @@ needs `.uaem` sidecars for itself.
 ## INIT
 
 ```
-AmiSnap ACTION=INIT REPO=<path> PASSPHRASE
+AmiSnap ACTION=INIT REPO=<path> [PASSPHRASE] [COMPRESS=LZ4|DEFLATE]
 ```
 
-One-time setup for an encrypted repository -- see
-[Encryption](Encryption.md) for the full picture. Refuses to run against
-a repository that's already initialized. `PASSPHRASE` is required
-(giving `INIT` without it is a usage error): a plain, unencrypted
-repository needs no `INIT` step at all -- just `SNAPSHOT` straight to
-`REPO=`.
+One-time setup for an encrypted and/or compressed repository. Refuses
+to run against a repository that's already initialized.
+
+- `PASSPHRASE` -- make the repository encrypted; see
+  [Encryption](Encryption.md) for the full picture.
+- `COMPRESS=LZ4|DEFLATE` -- make the repository compressed: every
+  content object is stored inside a compression frame, with the chosen
+  algorithm as the default for every future `SNAPSHOT` (overridable
+  per run -- see `SNAPSHOT`'s own `COMPRESS=`). `LZ4` is the
+  CPU-budget choice (fast on a 68030, modest ratios); `DEFLATE`
+  compresses harder and costs more CPU -- the right trade for a slow
+  uplink. Files that don't shrink (LhA archives, ADFs, mods) are
+  detected and stored raw inside their frame automatically, so
+  compression is never a net loss. This choice is fixed for the
+  repository's lifetime.
+
+The two options compose. `INIT` with neither is a usage error: a
+plain, uncompressed repository needs no `INIT` step at all -- just
+`SNAPSHOT` straight to `REPO=`.
 
 ## REKEY
 

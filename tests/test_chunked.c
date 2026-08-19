@@ -162,7 +162,7 @@ void run_chunked_tests(void)
         snprintf(key, sizeof(key), "snapshots/%s.mf", snapid);
         TEST_CHECK(amisnap_backend_get(&repo, key, &mf) == AMISNAP_OK);
 
-        TEST_CHECK(amisnap_restore_manifest(&repo, &dest, NULL, NULL, mf.data, mf.len, NULL, &rresult) == AMISNAP_OK);
+        TEST_CHECK(amisnap_restore_manifest(&repo, &dest, NULL, AMISNAP_OBJCOMP_RAW, NULL, mf.data, mf.len, NULL, &rresult) == AMISNAP_OK);
         TEST_CHECK(rresult.files_written == 2);
 
         TEST_CHECK(amisnap_backend_get(&dest, "a.bin", &got) == AMISNAP_OK);
@@ -173,7 +173,7 @@ void run_chunked_tests(void)
         TEST_CHECK(got.len == CONTENT_B_LEN && memcmp(got.data, content_b, CONTENT_B_LEN) == 0);
         amisnap_buf_free(&got);
 
-        TEST_CHECK(amisnap_verify_manifest(&repo, NULL, NULL, mf.data, mf.len, 1, &vresult) == AMISNAP_OK);
+        TEST_CHECK(amisnap_verify_manifest(&repo, NULL, AMISNAP_OBJCOMP_RAW, NULL, mf.data, mf.len, 1, &vresult) == AMISNAP_OK);
         TEST_CHECK(vresult.objects_checked == 5); /* 3 refs for a.bin + 2 for b.bin, occurrence-counted */
         TEST_CHECK(vresult.objects_missing == 0 && vresult.objects_corrupt == 0);
 

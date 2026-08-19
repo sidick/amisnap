@@ -33,6 +33,7 @@ void run_s3_tests(void);
 void run_amipath_tests(void);
 void run_exclude_tests(void);
 void run_compress_tests(void);
+void run_repo_framed_tests(void);
 
 int main(void)
 {
@@ -66,6 +67,7 @@ int main(void)
     run_amipath_tests();
     run_exclude_tests();
     run_compress_tests();
+    run_repo_framed_tests();
 
     fprintf(stderr, "passed=%d failed=%d pending=%d\n",
             g_test.passed, g_test.failed, g_test.pending);

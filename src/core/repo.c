@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "blake2s.h"
+#include "compress.h"
 #include "repo.h"
 #include "xxhash32.h"
 
@@ -47,6 +48,14 @@ void amisnap_repo_writer_init(amisnap_repo_writer *rw, amisnap_backend *be,
     rw->snap_days = rw->snap_mins = rw->snap_ticks = 0;
     rw->have_snap = 0;
     rw->subkeys = subkeys;
+    rw->objcomp = AMISNAP_OBJCOMP_RAW;
+    rw->comp_alg = AMISNAP_COMP_STORED;
+}
+
+void amisnap_repo_writer_set_compression(amisnap_repo_writer *rw, uint8_t comp_alg)
+{
+    rw->objcomp = AMISNAP_OBJCOMP_FRAMED;
+    rw->comp_alg = comp_alg;
 }
 
 void amisnap_repo_writer_free(amisnap_repo_writer *rw)
@@ -78,23 +87,36 @@ int amisnap_repo_writer_volume(amisnap_repo_writer *rw, const amisnap_volume_met
  * however many of these they need (one whole-file object, or several
  * chunks).
  *
- * `subkeys` NULL writes `data`/`len` as-is (CIPHER 0). Non-NULL
+ * `subkeys` NULL writes the object body as-is (CIPHER 0). Non-NULL
  * encrypts it first (format.md "Encryption ... Objects": nonce||
  * ciphertext||mac) -- the object's *name* is still the plaintext
  * hash (dedup and content-addressing stay plaintext-identity, per
  * that same section), only the stored bytes and ref_out->size (still
  * the plaintext length -- callers/readers need that to know how much
  * plaintext to expect after decrypting) differ from the CIPHER 0
- * path. */
-static int write_object(amisnap_backend *be, const amisnap_repo_subkeys *subkeys,
+ * path.
+ *
+ * In a FRAMED repository (rw->objcomp) the object body is the
+ * compress.h frame around `data` rather than `data` itself --
+ * compress-then-encrypt, and the hash/dedup identity is still the
+ * uncompressed `data`. The dedup existence check is unchanged: an
+ * object already present keeps whatever frame its original writer
+ * gave it (the frame is self-describing precisely so this is safe). */
+static int write_object(const amisnap_repo_writer *rw,
                          const void *data, size_t len, amisnap_content_ref *ref_out)
 {
+    amisnap_backend *be = rw->be;
+    const amisnap_repo_subkeys *subkeys = rw->subkeys;
     uint8_t hash[32];
     char key[AMISNAP_OBJECT_KEY_LEN];
+    amisnap_buf framed;
+    const void *body = data;
+    size_t bodylen = len;
     int rc;
 
     amisnap_blake2s256(data, len, hash);
     amisnap_repo_object_key(hash, key);
+    amisnap_buf_init(&framed);
 
     rc = amisnap_backend_exists(be, key);
     if (rc < 0) return rc;
@@ -102,19 +124,26 @@ static int write_object(amisnap_backend *be, const amisnap_repo_subkeys *subkeys
         /* Object genuinely new: write it. rc == 1 (already present)
          * skips this entirely -- format.md "Objects already present
          * are never rewritten." */
+        if (rw->objcomp == AMISNAP_OBJCOMP_FRAMED) {
+            rc = amisnap_frame_encode(rw->comp_alg, (const uint8_t *)data, len, &framed);
+            if (rc != AMISNAP_OK) return rc;
+            body = framed.data;
+            bodylen = framed.len;
+        }
         if (subkeys) {
             uint8_t nonce[AMISNAP_REPO_NONCE_SIZE];
-            size_t framelen = AMISNAP_REPO_NONCE_SIZE + len + AMISNAP_REPO_MAC_SIZE;
+            size_t framelen = AMISNAP_REPO_NONCE_SIZE + bodylen + AMISNAP_REPO_MAC_SIZE;
             uint8_t *frame = (uint8_t *)malloc(framelen);
-            if (!frame) return AMISNAP_ERR_NOMEM;
+            if (!frame) { amisnap_buf_free(&framed); return AMISNAP_ERR_NOMEM; }
 
             amisnap_repo_object_nonce(subkeys->nonce, hash, nonce);
-            amisnap_repo_encrypt_frame(subkeys, nonce, (const uint8_t *)data, len, frame);
+            amisnap_repo_encrypt_frame(subkeys, nonce, (const uint8_t *)body, bodylen, frame);
             rc = amisnap_backend_put(be, key, frame, framelen);
             free(frame);
         } else {
-            rc = amisnap_backend_put(be, key, data, len);
+            rc = amisnap_backend_put(be, key, body, bodylen);
         }
+        amisnap_buf_free(&framed);
         if (rc != AMISNAP_OK) return rc;
     }
 
@@ -151,7 +180,7 @@ int amisnap_repo_writer_file(amisnap_repo_writer *rw, amisnap_entry_meta *entry,
         return amisnap_manifest_writer_entry(&rw->mw, entry);
     }
 
-    rc = write_object(rw->be, rw->subkeys, data, len, &ref);
+    rc = write_object(rw, data, len, &ref);
     if (rc != AMISNAP_OK) return rc;
 
     entry->content = &ref;
@@ -200,7 +229,7 @@ int amisnap_repo_writer_file_chunked(amisnap_repo_writer *rw, amisnap_entry_meta
             ref_cap = newcap;
         }
 
-        rc = write_object(rw->be, rw->subkeys, buf, got, &refs[ref_count]);
+        rc = write_object(rw, buf, got, &refs[ref_count]);
         if (rc != AMISNAP_OK) goto out;
         ref_count++;
 
@@ -330,11 +359,13 @@ int amisnap_repo_list_snapshots(amisnap_backend *be,
 }
 
 int amisnap_repo_fetch_object(amisnap_backend *repo, const amisnap_repo_subkeys *subkeys,
-                               const amisnap_content_ref *ref, amisnap_buf *out)
+                               uint8_t objcomp, const amisnap_content_ref *ref,
+                               amisnap_buf *out)
 {
     char key[AMISNAP_OBJECT_KEY_LEN];
     amisnap_buf raw;
     uint8_t actual_hash[32];
+    int framed = (objcomp == AMISNAP_OBJCOMP_FRAMED);
     int rc;
 
     amisnap_repo_object_key(ref->hash, key);
@@ -342,7 +373,17 @@ int amisnap_repo_fetch_object(amisnap_backend *repo, const amisnap_repo_subkeys 
     if (rc != AMISNAP_OK) return rc;
 
     if (!subkeys) {
-        if (raw.len != ref->size) { amisnap_buf_free(&raw); return AMISNAP_ERR_MALFORMED; }
+        if (framed) {
+            amisnap_buf content;
+
+            rc = amisnap_frame_decode(raw.data, raw.len, ref->size, &content);
+            amisnap_buf_free(&raw);
+            if (rc != AMISNAP_OK) return rc;
+            raw = content; /* take over: hash-check the decoded content below */
+        } else if (raw.len != ref->size) {
+            amisnap_buf_free(&raw);
+            return AMISNAP_ERR_MALFORMED;
+        }
         amisnap_blake2s256(raw.data, raw.len, actual_hash);
         if (memcmp(actual_hash, ref->hash, 32) != 0) {
             amisnap_buf_free(&raw);
@@ -353,22 +394,46 @@ int amisnap_repo_fetch_object(amisnap_backend *repo, const amisnap_repo_subkeys 
     }
 
     {
-        size_t expect_len = AMISNAP_REPO_NONCE_SIZE + ref->size + AMISNAP_REPO_MAC_SIZE;
-        uint8_t *plain;
+        /* Encrypted: the plaintext inside the envelope is the raw
+         * content (RAW) or the compression frame (FRAMED) -- a framed
+         * body's stored size is only bounded, not predictable (the
+         * store-raw fallback caps it at frame header + content). */
+        size_t overhead = AMISNAP_REPO_NONCE_SIZE + AMISNAP_REPO_MAC_SIZE;
+        size_t bodylen;
+        uint8_t *body;
 
-        if (raw.len != expect_len) { amisnap_buf_free(&raw); return AMISNAP_ERR_MALFORMED; }
+        if (framed) {
+            if (raw.len < overhead + AMISNAP_FRAME_HDR_SIZE ||
+                raw.len > overhead + AMISNAP_FRAME_HDR_SIZE + ref->size) {
+                amisnap_buf_free(&raw);
+                return AMISNAP_ERR_MALFORMED;
+            }
+        } else if (raw.len != overhead + ref->size) {
+            amisnap_buf_free(&raw);
+            return AMISNAP_ERR_MALFORMED;
+        }
+        bodylen = raw.len - overhead;
 
-        plain = (uint8_t *)malloc(ref->size ? ref->size : 1);
-        if (!plain) { amisnap_buf_free(&raw); return AMISNAP_ERR_NOMEM; }
+        body = (uint8_t *)malloc(bodylen ? bodylen : 1);
+        if (!body) { amisnap_buf_free(&raw); return AMISNAP_ERR_NOMEM; }
 
-        rc = amisnap_repo_decrypt_frame(subkeys, raw.data, raw.len, plain);
+        rc = amisnap_repo_decrypt_frame(subkeys, raw.data, raw.len, body);
         amisnap_buf_free(&raw);
-        if (rc != AMISNAP_OK) { free(plain); return rc; }
+        if (rc != AMISNAP_OK) { free(body); return rc; }
 
-        amisnap_blake2s256(plain, ref->size, actual_hash);
-        if (memcmp(actual_hash, ref->hash, 32) != 0) { free(plain); return AMISNAP_ERR_HASH_MISMATCH; }
+        if (framed) {
+            amisnap_buf content;
 
-        out->data = plain;
+            rc = amisnap_frame_decode(body, bodylen, ref->size, &content);
+            free(body);
+            if (rc != AMISNAP_OK) return rc;
+            body = content.data;
+        }
+
+        amisnap_blake2s256(body, ref->size, actual_hash);
+        if (memcmp(actual_hash, ref->hash, 32) != 0) { free(body); return AMISNAP_ERR_HASH_MISMATCH; }
+
+        out->data = body;
         out->len = ref->size;
         out->cap = ref->size;
         return AMISNAP_OK;
@@ -444,6 +509,7 @@ int amisnap_repo_open_manifest(const amisnap_repo_subkeys *subkeys, const char *
 typedef struct {
     amisnap_backend *repo;
     const amisnap_repo_subkeys *subkeys;
+    uint8_t objcomp;
     int full;
     amisnap_verify_result *result;
 } verify_ctx;
@@ -468,7 +534,8 @@ static int verify_on_entry(void *user, const amisnap_entry_meta *entry)
 
         {
             amisnap_buf plain;
-            int rc = amisnap_repo_fetch_object(vc->repo, vc->subkeys, &entry->content[i], &plain);
+            int rc = amisnap_repo_fetch_object(vc->repo, vc->subkeys, vc->objcomp,
+                                               &entry->content[i], &plain);
 
             if (rc == AMISNAP_ERR_NOT_FOUND) {
                 vc->result->objects_missing++;
@@ -489,7 +556,8 @@ static int verify_on_entry(void *user, const amisnap_entry_meta *entry)
 }
 
 int amisnap_verify_manifest(amisnap_backend *repo, const amisnap_repo_subkeys *subkeys,
-                             const char *snapid, const uint8_t *manifest_data, size_t manifest_len,
+                             uint8_t objcomp, const char *snapid,
+                             const uint8_t *manifest_data, size_t manifest_len,
                              int full, amisnap_verify_result *result)
 {
     verify_ctx vc;
@@ -504,6 +572,7 @@ int amisnap_verify_manifest(amisnap_backend *repo, const amisnap_repo_subkeys *s
 
     vc.repo = repo;
     vc.subkeys = subkeys;
+    vc.objcomp = objcomp;
     vc.full = full;
     vc.result = result;
 

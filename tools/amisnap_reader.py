@@ -96,6 +96,7 @@ TAG_KDF = 0x8013
 TAG_WRAPPED_KEY = 0x8014
 TAG_FORMAT_APP = 0x0015
 TAG_OBJCOMP = 0x8016
+TAG_COMP_PREF = 0x0017
 
 # REC_SNAP fields
 TAG_CREATED = 0x8020
@@ -411,7 +412,7 @@ def parse_repo_header(buf):
 
     fields = parse_fields(records[0][1])
     known = {TAG_REPO_ID, TAG_CIPHER, TAG_CHUNK_SIZE, TAG_KDF, TAG_WRAPPED_KEY,
-             TAG_FORMAT_APP, TAG_OBJCOMP}
+             TAG_FORMAT_APP, TAG_OBJCOMP, TAG_COMP_PREF}
     require_no_unknown_critical(fields, known, "REC_REPO")
 
     # objcomp defaults to 0: headers written before OBJCOMP existed are
@@ -424,6 +425,10 @@ def parse_repo_header(buf):
             out["cipher"] = decode_u8(value)
         elif tag == TAG_OBJCOMP:
             out["objcomp"] = decode_u8(value)
+        elif tag == TAG_COMP_PREF:
+            # Informational writer default -- a reader never needs it
+            # (frames are self-describing); surfaced for completeness.
+            out["comp_pref"] = decode_u8(value)
         elif tag == TAG_CHUNK_SIZE:
             out["chunk_size"] = decode_u32(value)
         elif tag == TAG_FORMAT_APP:

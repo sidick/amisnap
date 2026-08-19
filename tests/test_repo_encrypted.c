@@ -143,7 +143,7 @@ void run_repo_encrypted_tests(void)
     /* --- verify (full mode): decrypts, re-hashes, and confirms clean. --- */
     {
         amisnap_verify_result vresult;
-        TEST_CHECK(amisnap_verify_manifest(&be, &sk, snapid, mf_raw.data, mf_raw.len, 1, &vresult)
+        TEST_CHECK(amisnap_verify_manifest(&be, &sk, AMISNAP_OBJCOMP_RAW, snapid, mf_raw.data, mf_raw.len, 1, &vresult)
                    == AMISNAP_OK);
         TEST_CHECK(vresult.objects_checked == 1);
         TEST_CHECK(vresult.objects_missing == 0);
@@ -154,7 +154,7 @@ void run_repo_encrypted_tests(void)
      * reporting a false-clean result. --- */
     {
         amisnap_verify_result vresult;
-        TEST_CHECK(amisnap_verify_manifest(&be, NULL, NULL, mf_raw.data, mf_raw.len, 1, &vresult)
+        TEST_CHECK(amisnap_verify_manifest(&be, NULL, AMISNAP_OBJCOMP_RAW, NULL, mf_raw.data, mf_raw.len, 1, &vresult)
                    == AMISNAP_ERR_MISSING_FIELD);
     }
 
@@ -163,7 +163,7 @@ void run_repo_encrypted_tests(void)
      * before ever reaching the per-object check. --- */
     {
         amisnap_verify_result vresult;
-        int rc = amisnap_verify_manifest(&be, &wrong_sk, snapid, mf_raw.data, mf_raw.len, 1, &vresult);
+        int rc = amisnap_verify_manifest(&be, &wrong_sk, AMISNAP_OBJCOMP_RAW, snapid, mf_raw.data, mf_raw.len, 1, &vresult);
         TEST_CHECK(rc != AMISNAP_OK);
     }
 
@@ -175,7 +175,7 @@ void run_repo_encrypted_tests(void)
         size_t got = 0;
 
         TEST_CHECK(amisnap_backend_dir_open(DESTDIR, &dest) == AMISNAP_OK);
-        TEST_CHECK(amisnap_restore_manifest(&be, &dest, &sk, snapid, mf_raw.data, mf_raw.len,
+        TEST_CHECK(amisnap_restore_manifest(&be, &dest, &sk, AMISNAP_OBJCOMP_RAW, snapid, mf_raw.data, mf_raw.len,
                                              NULL, &rresult) == AMISNAP_OK);
         TEST_CHECK(rresult.files_written == 1);
         TEST_CHECK(rresult.bytes_written == sizeof(plaintext) - 1);
@@ -316,7 +316,7 @@ void run_prune_encrypted_tests(void)
         amisnap_verify_result vresult;
         snprintf(mf_key, sizeof(mf_key), "snapshots/%s.mf", snapid_b);
         TEST_CHECK(amisnap_backend_get(&be, mf_key, &mf) == AMISNAP_OK);
-        TEST_CHECK(amisnap_verify_manifest(&be, &sk, snapid_b, mf.data, mf.len, 1, &vresult)
+        TEST_CHECK(amisnap_verify_manifest(&be, &sk, AMISNAP_OBJCOMP_RAW, snapid_b, mf.data, mf.len, 1, &vresult)
                    == AMISNAP_OK);
         TEST_CHECK(vresult.objects_checked == 2);
         TEST_CHECK(vresult.objects_missing == 0);

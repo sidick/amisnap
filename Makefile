@@ -51,6 +51,12 @@ M68K_CFLAGS ?= -std=c99 -O2 -Wall -Wextra -Werror -m68020 -msoft-float -noixemul
                $(CORE_INC) -Isrc/amiga \
                -DVERSION=$(VERSION) -DREVISION=$(REVISION)
 M68K_CFLAGS += $(MINIZ_DEFS)
+# Vendored miniz's 64-bit-overflow guards ("(mz_uint64)(len) >
+# 0xFFFFFFFF") are always-false on a target whose unsigned long is 32
+# bits, and m68k gcc's -Wextra flags that (-Wtype-limits) where host
+# clang doesn't. The guard is correct upstream code, not a bug to patch
+# in a vendored file -- suppress just that warning class here.
+M68K_CFLAGS += -Wno-type-limits
 
 CORE_SRCS  := $(wildcard src/core/*.c)
 AMIGA_SRCS := $(wildcard src/amiga/*.c)
@@ -118,11 +124,11 @@ CROSS_GEN_BIN := $(BUILD)/gen_sample_repo
 $(CROSS_GEN_BIN): $(CROSS_GEN_SRC) src/core/backend_dir.c src/core/repo.c src/core/repo_crypto.c \
 	src/core/repo_header.c src/core/pbkdf2.c src/core/hmac_sha256.c src/core/sha256.c \
 	src/core/manifest.c src/core/meta.c src/core/tlv.c src/core/blake2s.c src/core/chacha20.c \
-	src/core/xxhash32.c $(CORE_HDRS) | $(BUILD)/.dir
+	src/core/xxhash32.c src/core/compress.c src/core/lz4.c src/core/miniz.c $(CORE_HDRS) | $(BUILD)/.dir
 	$(CC) $(CFLAGS) $(CORE_INC) $(CROSS_GEN_SRC) src/core/backend_dir.c src/core/repo.c \
 		src/core/repo_crypto.c src/core/repo_header.c src/core/pbkdf2.c src/core/hmac_sha256.c \
 		src/core/sha256.c src/core/manifest.c src/core/meta.c src/core/tlv.c src/core/blake2s.c \
-		src/core/chacha20.c src/core/xxhash32.c -o $@
+		src/core/chacha20.c src/core/xxhash32.c src/core/compress.c src/core/lz4.c src/core/miniz.c -o $@
 
 cross-check: $(CROSS_GEN_BIN)
 	sh tests/cross/run.sh

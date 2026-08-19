@@ -50,6 +50,17 @@ one simply never becomes visible (its manifest was never renamed into
 `snapshots/`), and a later `PRUNE` cleans up whatever partial objects it
 left behind.
 
+## Compression is per-object, chosen at INIT
+
+A repository created with `INIT ... COMPRESS=LZ4|DEFLATE` stores every
+object inside a small self-describing frame naming its own algorithm
+(LZ4, deflate, or stored-raw where compression didn't shrink the
+content). Object names and dedup are always based on the
+*uncompressed* bytes, so compression changes nothing about content
+addressing, and `VERIFY FULL` always re-hashes the decompressed
+content. A repository without that INIT choice stores objects as the
+raw content bytes -- recoverable with nothing but a hash tool.
+
 ## Encryption is a per-object frame, not a whole-repository wrapper
 
 When a repository is encrypted (see [Encryption](Encryption.md)), each
