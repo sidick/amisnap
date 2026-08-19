@@ -134,4 +134,52 @@ void run_exclude_tests(void)
         TEST_CHECK(matches(&list, "x.keep", 0) == 1);
         amisnap_exclude_free(&list);
     }
+
+    /* AmigaDOS's '#?' wildcard is a synonym for '*': same behavior,
+     * whether '#?' appears in the middle of a pattern, replaces a bare
+     * '*' entirely, or is combined with '*' in the same pattern. */
+    {
+        const char *text = "Foo#?.info\n";
+        TEST_CHECK(amisnap_exclude_parse(text, strlen(text), &list) == AMISNAP_OK);
+        TEST_CHECK(list.count == 1);
+        TEST_CHECK(matches(&list, "FooBar.info", 0) == 1);
+        TEST_CHECK(matches(&list, "Foo.info", 0) == 1); /* '#?' also matches zero chars */
+        TEST_CHECK(matches(&list, "Bar.info", 0) == 0);
+        amisnap_exclude_free(&list);
+    }
+    {
+        const char *text = "#?.info\n";
+        TEST_CHECK(amisnap_exclude_parse(text, strlen(text), &list) == AMISNAP_OK);
+        TEST_CHECK(list.count == 1);
+        TEST_CHECK(matches(&list, "Foo.info", 0) == 1);
+        TEST_CHECK(matches(&list, "Sub/Deeper/Foo.info", 0) == 1); /* non-anchored, like '*.info' */
+        amisnap_exclude_free(&list);
+    }
+    {
+        /* '#?' and '*' freely combine within one pattern, and neither
+         * crosses '/' -- same rule as the plain '*'/'?' test above. */
+        const char *text = "Work/#?.b*k\n";
+        TEST_CHECK(amisnap_exclude_parse(text, strlen(text), &list) == AMISNAP_OK);
+        TEST_CHECK(matches(&list, "Work/Foo.bak", 0) == 1);
+        TEST_CHECK(matches(&list, "Work/Sub/Foo.bak", 0) == 0);
+        amisnap_exclude_free(&list);
+    }
+
+    /* A '#' NOT immediately followed by '?' is still an ordinary
+     * comment marker at line-start, and a literal character mid-
+     * pattern -- only the exact two-byte '#?' token is special. */
+    {
+        const char *text = "# a real comment, unaffected\n*.info\n";
+        TEST_CHECK(amisnap_exclude_parse(text, strlen(text), &list) == AMISNAP_OK);
+        TEST_CHECK(list.count == 1);
+        amisnap_exclude_free(&list);
+    }
+    {
+        const char *text = "Foo#Bar\n";
+        TEST_CHECK(amisnap_exclude_parse(text, strlen(text), &list) == AMISNAP_OK);
+        TEST_CHECK(list.count == 1);
+        TEST_CHECK(matches(&list, "Foo#Bar", 0) == 1);
+        TEST_CHECK(matches(&list, "FooXBar", 0) == 0); /* '#' alone is literal, not '?' */
+        amisnap_exclude_free(&list);
+    }
 }

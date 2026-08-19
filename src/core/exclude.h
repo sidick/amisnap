@@ -12,15 +12,24 @@
  * repository implementation, free to change shape without a format
  * version bump.
  *
- * File format, one pattern per line (gitignore's well-known subset,
- * deliberately not AmigaDOS's own '#?'/'~' pattern syntax -- this is a
- * plain list a user hand-edits, and gitignore's rules are the more
- * widely understood convention for "one path pattern per line"):
+ * File format, one pattern per line (gitignore's well-known subset --
+ * this is a plain list a user hand-edits, and gitignore's rules are
+ * the more widely understood convention for "one path pattern per
+ * line" -- plus one deliberate concession to the platform: AmigaDOS's
+ * own '#?' wildcard token is accepted as a synonym for '*', so a
+ * pattern typed the way AmigaDOS itself would show it (a Shell habit,
+ * or copied from a List/Protect PAT= argument) also works. Only that
+ * one token, not the rest of AmigaDOS pattern matching -- no '%', no
+ * '(a|b)' alternation, no '[...]' character classes, no '~' negation;
+ * none of those have an equivalent in this grammar):
  *
  *   - Blank lines and lines whose first non-blank character is '#' are
- *     ignored (comments).
+ *     ignored (comments) -- UNLESS that '#' starts a '#?' token, the
+ *     one place this syntax and AmigaDOS's own disagree; exclude.c's
+ *     own comment has the disambiguation rule.
  *   - '*' matches any run of characters (including none) within one
- *     path component; '?' matches exactly one. Neither crosses a '/'.
+ *     path component; '?' matches exactly one; '#?' is a synonym for
+ *     '*' (see above). None of the three crosses a '/'.
  *   - A pattern containing no '/' (other than an optional trailing
  *     one) matches against every path component at any depth -- e.g.
  *     "*.info" excludes ANY entry named "*.info", not just one at the

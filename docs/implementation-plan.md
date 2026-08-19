@@ -1502,6 +1502,30 @@ Amiga-specific metadata field rather than literally applying it.
    from the repository (not merely unlisted) on both `list` and
    `restore`.
 
+   **`#?` accepted as a synonym for `*` (2026-08-19)**: the header
+   comment's original "deliberately not AmigaDOS's own `#?`/`~` syntax"
+   framing under-weighted that `#?` is genuinely the platform default
+   a native user reaches for first. Added as a parse-time
+   normalization (`amisnap_exclude_parse()` rewrites every `#?` token
+   to `*` before the pattern is stored, so `glob_match_one()` itself
+   never needs to know a second syntax exists) rather than teaching the
+   matcher a second wildcard -- same semantics as `*` throughout
+   (never crosses `/`, works anchored/non-anchored/dir-only exactly
+   the same). One real ambiguity this creates: comment detection was
+   "line starts with `#`", which would have swallowed a pattern
+   starting `#?...` (e.g. `#?.info`, the `#?`-flavored equivalent of
+   `*.info`) as a comment instead. Resolved narrowly: a leading `#` is
+   still a comment unless immediately followed by `?`. Still
+   deliberately NOT the rest of AmigaDOS's own pattern grammar (`%`,
+   `(a|b)` alternation, `[...]` character classes, `~` negation) --
+   only the one token that's actually the everyday default, not a full
+   switch away from the gitignore-subset syntax this feature shipped
+   with. `tests/test_exclude.c` covers `#?` alone, combined with `*`
+   in one pattern, at the start of a pattern (the comment-ambiguity
+   case), and confirms a bare `#` not followed by `?` is unaffected
+   (still literal / still a comment marker) -- 1148 tests pass overall
+   (was 1130), `make m68k-docker` confirmed clean.
+
 **Deferred design note: media-spanning + parity (2026-08-12, not
 scheduled to a phase yet).** Two related, separable features raised in
 discussion, worth designing for but not building yet:

@@ -12,6 +12,7 @@ file is simply never captured.
 ```
 # lines starting with '#' are comments; blank lines are ignored
 *.info
+#?.bak
 T/
 Work/Projects/scratch
 /Trash
@@ -23,6 +24,16 @@ log?.txt
   (including none) within one path component; `?` matches exactly one
   character. Neither ever crosses a `/` -- a wildcard can't accidentally
   reach into an unrelated subtree.
+- **AmigaDOS's own `#?` wildcard** is accepted as a synonym for `*` --
+  same meaning, same rules (never crosses `/`), so a pattern typed the
+  way AmigaDOS itself would show it (a Shell habit, or copied from a
+  `List`/`Protect PAT=` argument) works exactly like the equivalent
+  `*` pattern. `#?.bak` and `*.bak` exclude the same files. A `#` *not*
+  immediately followed by `?` is unaffected -- still a comment marker
+  at the start of a line, still just a literal character in the
+  middle of one. Only that one two-character token is recognized; the
+  rest of AmigaDOS's own pattern language (`%`, `(a|b)` alternation,
+  `[...]` character classes, `~` negation) is not.
 - **A pattern with no interior `/`** (e.g. `*.info`) matches against
   *any* path component at *any* depth -- it excludes an entry named
   that way wherever it occurs in the tree, not just at the source root.

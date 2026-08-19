@@ -59,8 +59,42 @@ int amisnap_exclude_parse(const char *text, size_t len, amisnap_exclude_list *ou
         while (le > ls && (le[-1] == ' ' || le[-1] == '\t'))
             le--;
 
-        if (ls >= le || *ls == '#')
+        /* A line whose first character is '#' is a comment -- UNLESS
+         * it's actually the start of an AmigaDOS '#?' wildcard token
+         * (below), the one real ambiguity that syntax introduces. Any
+         * genuine comment in practice starts '# ' or '#<word>', never
+         * '#?', so this never mistakes a real comment for a pattern. */
+        if (ls >= le || (*ls == '#' && (ls + 1 >= le || ls[1] != '?')))
             continue; /* blank line or comment */
+
+        /* AmigaDOS's own '#?' wildcard (dos.library pattern matching:
+         * zero or more of any character) is recognized as a synonym
+         * for this file's own '*' -- same semantics, same place in the
+         * grammar (never crosses '/', one match per path component) --
+         * normalized here at parse time so glob_match_one() below only
+         * ever has to know about '*'/'?'. A synonym, not a switch away
+         * from the gitignore-subset syntax exclude.h's own header
+         * describes: existing '*'/'?' patterns are completely
+         * unaffected, and a pattern typed the way AmigaDOS itself
+         * would show it (copied from a Shell habit, or a List/Protect
+         * PAT= argument) also works. Deliberately narrower than full
+         * AmigaDOS pattern matching -- no '%' (a lone '#?' meaning
+         * "here" is unambiguous already via a bare '*'), no
+         * alternation ('(a|b)'), no character classes ('[...]'), no
+         * '~' negation; those have no equivalent in this grammar and
+         * adding them is a separate decision, not implied by this one. */
+        {
+            char *w = ls, *r = ls;
+            while (r < le) {
+                if (r + 1 < le && r[0] == '#' && r[1] == '?') {
+                    *w++ = '*';
+                    r += 2;
+                } else {
+                    *w++ = *r++;
+                }
+            }
+            le = w;
+        }
 
         if (le > ls && le[-1] == '/') {
             dir_only = 1;
