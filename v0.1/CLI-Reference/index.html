@@ -16,7 +16,7 @@
         <link rel="prev" href="../Getting-Started/">
       
       
-        <link rel="next" href="../Exclude-Lists/">
+        <link rel="next" href="../Examples/">
       
       
         
@@ -630,6 +630,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#help" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HELP
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cross-action-keywords" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -655,6 +666,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1146,6 +1185,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#help" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HELP
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cross-action-keywords" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1203,10 +1253,18 @@ LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,COMPRESS/K,TLS13/S,
 TLSINSECURE/S,CIPHERS/K,EXCLUDE/K,SIZE/K/N
 </code></pre>
 <p><code>ACTION</code> is one of <code>SNAPSHOT</code>, <code>RESTORE</code>, <code>LIST</code>, <code>VERIFY</code>, <code>PRUNE</code>,
-<code>APPLYUAEM</code>, <code>INIT</code>, <code>REKEY</code>, <code>BENCHMARK</code> (case-insensitive). Each keyword below only
-does something for the actions it's listed under; giving it elsewhere is
-silently ignored, not an error, since one shared template covers every
-action (see "Why one template" at the end of this page).</p>
+<code>APPLYUAEM</code>, <code>INIT</code>, <code>REKEY</code>, <code>BENCHMARK</code>, <code>HELP</code> (case-insensitive).
+Each keyword below only does something for the actions it's listed
+under; giving it elsewhere is silently ignored, not an error, since one
+shared template covers every action (see "Why one template" at the end
+of this page).</p>
+<p>Two ways to get usage help: <code>AmiSnap ?</code> is the native AmigaDOS
+convention (ReadArgs' own interactive prompt; answer <code>?</code> again at that
+prompt for the same per-action detail <code>HELP</code> prints). <code>AmiSnap
+ACTION=HELP</code> -- or, since a bare <code>--help</code>/<code>-h</code>/<code>-?</code> parses as the
+<code>ACTION</code> value directly, <code>AmiSnap --help</code> / <code>AmiSnap -h</code> / <code>AmiSnap
+-?</code> -- print the same text non-interactively and exit <code>RETURN_OK</code>, for
+anyone coming from a Unix background or invoking it from a script.</p>
 <h2 id="return-codes">Return codes<a class="headerlink" href="#return-codes" title="Permanent link">&para;</a></h2>
 <p>Every AmigaDOS-standard value, checkable from a script with <code>IF WARN</code>
 etc.:</p>
@@ -1393,6 +1451,14 @@ documented history of handshake fragility on this platform (see
 <code>docs/implementation-plan.md</code>'s TLS section), and reopening it
 repeatedly inside a shipped command is exactly the kind of thing that
 provoked it before.</p>
+<h2 id="help">HELP<a class="headerlink" href="#help" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=HELP
+</code></pre>
+<p>Prints the template plus the per-action detail above and exits
+<code>RETURN_OK</code>. <code>--help</code>, <code>-h</code>, and <code>-?</code> are recognized as aliases (a
+bare <code>AmiSnap --help</code> parses <code>--help</code> straight into the positional
+<code>ACTION</code> value, so no special argument handling was needed beyond
+recognizing those strings alongside the other action names).</p>
 <h2 id="cross-action-keywords">Cross-action keywords<a class="headerlink" href="#cross-action-keywords" title="Permanent link">&para;</a></h2>
 <ul>
 <li><code>LOG=&lt;path&gt;</code> -- also write every diagnostic/summary line to this file
@@ -1461,13 +1527,13 @@ is a normal <code>RETURN_ERROR</code>, not a template-level rejection).</p>
         
         
           
-          <a href="../Exclude-Lists/" class="md-footer__link md-footer__link--next" aria-label="Next: Exclude Lists">
+          <a href="../Examples/" class="md-footer__link md-footer__link--next" aria-label="Next: Examples">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Exclude Lists
+                Examples
               </div>
             </div>
             <div class="md-footer__button md-icon">

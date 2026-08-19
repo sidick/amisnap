@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://sidick.github.io/amisnap/v0.1/Repository-Format/">
+        <link rel="canonical" href="https://sidick.github.io/amisnap/v0.1/Examples/">
       
       
-        <link rel="prev" href="../Disaster-Recovery/">
+        <link rel="prev" href="../CLI-Reference/">
       
       
-        <link rel="next" href="../Building-from-Source/">
+        <link rel="next" href="../Exclude-Lists/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>Repository Format - AmiSnap</title>
+        <title>Examples - AmiSnap</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#repository-format" class="md-skip">
+        <a href="#examples" class="md-skip">
           Skip to content
         </a>
       
@@ -118,7 +118,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Repository Format
+              Examples
             
           </span>
         </div>
@@ -403,8 +403,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -415,11 +417,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
           <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
@@ -440,7 +442,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -483,10 +485,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../Examples/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -502,6 +531,180 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#mounted-volume-the-common-case" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mounted volume, the common case
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#webdav" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        WebDAV
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#s3-compatible-object-storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        S3-compatible object storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#an-encrypted-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        An encrypted repository
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-compressed-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A compressed repository
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#excluding-files-from-a-snapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Excluding files from a snapshot
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#paranoid-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Paranoid mode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#restoring-a-specific-snapshot-or-just-part-of-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Restoring a specific snapshot, or just part of one
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#retention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Retention
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verifying-integrity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verifying integrity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmarking-compression-and-a-destination-together" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmarking compression and a destination together
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#logging-a-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Logging a run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recovering-metadata-that-couldnt-be-restored-directly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recovering metadata that couldn't be restored directly
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#getting-help" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Getting help
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -602,8 +805,6 @@
       
   
   
-    
-  
   
   
     
@@ -616,11 +817,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
         
           
           <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
@@ -641,7 +842,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
@@ -712,37 +913,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Repository Format
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../Repository-Format/" class="md-nav__link">
         
   
   
@@ -758,92 +932,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#the-shape-of-a-repository" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The shape of a repository
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#content-addressing-and-deduplication" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Content addressing and deduplication
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#snapshots-are-atomic" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Snapshots are atomic
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#compression-is-per-object-chosen-at-init" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Compression is per-object, chosen at INIT
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#encryption-is-a-per-object-frame-not-a-whole-repository-wrapper" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Encryption is a per-object frame, not a whole-repository wrapper
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#what-isnt-captured-yet" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        What isn't captured yet
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -998,10 +1086,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#the-shape-of-a-repository" class="md-nav__link">
+  <a href="#mounted-volume-the-common-case" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The shape of a repository
+        Mounted volume, the common case
       
     </span>
   </a>
@@ -1009,10 +1097,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#content-addressing-and-deduplication" class="md-nav__link">
+  <a href="#webdav" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Content addressing and deduplication
+        WebDAV
       
     </span>
   </a>
@@ -1020,10 +1108,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#snapshots-are-atomic" class="md-nav__link">
+  <a href="#s3-compatible-object-storage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Snapshots are atomic
+        S3-compatible object storage
       
     </span>
   </a>
@@ -1031,10 +1119,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#compression-is-per-object-chosen-at-init" class="md-nav__link">
+  <a href="#an-encrypted-repository" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Compression is per-object, chosen at INIT
+        An encrypted repository
       
     </span>
   </a>
@@ -1042,10 +1130,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#encryption-is-a-per-object-frame-not-a-whole-repository-wrapper" class="md-nav__link">
+  <a href="#a-compressed-repository" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Encryption is a per-object frame, not a whole-repository wrapper
+        A compressed repository
       
     </span>
   </a>
@@ -1053,10 +1141,98 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-isnt-captured-yet" class="md-nav__link">
+  <a href="#excluding-files-from-a-snapshot" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What isn't captured yet
+        Excluding files from a snapshot
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#paranoid-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Paranoid mode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#restoring-a-specific-snapshot-or-just-part-of-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Restoring a specific snapshot, or just part of one
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#retention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Retention
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verifying-integrity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verifying integrity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmarking-compression-and-a-destination-together" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmarking compression and a destination together
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#logging-a-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Logging a run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recovering-metadata-that-couldnt-be-restored-directly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recovering metadata that couldn't be restored directly
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#getting-help" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Getting help
       
     </span>
   </a>
@@ -1080,7 +1256,7 @@
 
 
   
-    <a href="https://github.com/sidick/amisnap/edit/main/userdocs/Repository-Format.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/sidick/amisnap/edit/main/userdocs/Examples.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1088,79 +1264,140 @@
   
 
 
-<h1 id="repository-format">Repository Format<a class="headerlink" href="#repository-format" title="Permanent link">&para;</a></h1>
-<p>You don't need to know AmiSnap's on-disk format to use it -- this page
-exists for the confidence that it's real, documented, and not a black
-box, and to point you at the full specification if you ever need it
-(writing a third-party tool, recovering from something unusual, or just
-curiosity).</p>
-<p>The complete, normative specification lives in
-<a href="https://github.com/sidick/amisnap/blob/main/docs/format.md"><code>docs/format.md</code></a>
-in the source tree. It is the single source of truth: both the Amiga-
-side C implementation and the independent Python reference reader (see
-<a href="../Disaster-Recovery/">Disaster Recovery</a>) are written from it, and the
-project's own CI checks that the two agree on real generated
-repositories. Anything below is a summary, not a substitute for it.</p>
-<h2 id="the-shape-of-a-repository">The shape of a repository<a class="headerlink" href="#the-shape-of-a-repository" title="Permanent link">&para;</a></h2>
-<ul>
-<li>A repository is a directory tree (on whichever destination you chose
-  -- see <a href="../Backends/">Destinations</a>): <code>objects/</code> (content, addressed
-  by hash), <code>snapshots/</code> (one manifest file per snapshot), <code>tmp/</code>
-  (staging area for atomic writes), and optionally <code>amisnap.repo</code>
-  (present only if the repository is encrypted).</li>
-<li>Every structured file is built from simple, extensible
-  tag-length-value fields -- a reader that doesn't understand a
-  particular optional field can skip it and still read everything else,
-  and new fields can be added without breaking old repositories.</li>
-<li>Filenames, comments, and other strings are stored as the exact bytes
-  the filesystem returned (Latin-1 on classic AmigaOS) -- no
-  length-107 assumption anywhere, no silent character-set conversion.</li>
-<li>Datestamps are stored as the native AmigaOS <code>struct DateStamp</code> triple
-  (days/minutes/ticks) -- no lossy conversion to Unix time.</li>
-</ul>
-<h2 id="content-addressing-and-deduplication">Content addressing and deduplication<a class="headerlink" href="#content-addressing-and-deduplication" title="Permanent link">&para;</a></h2>
-<p>Every file's content is stored as one or more objects named by their own
-BLAKE2s-256 hash. Two files with identical bytes -- in the same
-snapshot, or across different snapshots -- are stored exactly once.
-This is also how <code>RESTORE</code> verifies content: it re-hashes every object
-before writing it out and aborts on a mismatch, so silently restoring
-corrupted content is not possible.</p>
-<h2 id="snapshots-are-atomic">Snapshots are atomic<a class="headerlink" href="#snapshots-are-atomic" title="Permanent link">&para;</a></h2>
-<p>A snapshot's manifest is written into place last, only after every
-object it references has already been written successfully. A crash or
-power loss at any point during <code>SNAPSHOT</code> leaves the previous, already-
-completed snapshot untouched and still fully usable -- the interrupted
-one simply never becomes visible (its manifest was never renamed into
-<code>snapshots/</code>), and a later <code>PRUNE</code> cleans up whatever partial objects it
-left behind.</p>
-<h2 id="compression-is-per-object-chosen-at-init">Compression is per-object, chosen at INIT<a class="headerlink" href="#compression-is-per-object-chosen-at-init" title="Permanent link">&para;</a></h2>
-<p>A repository created with <code>INIT ... COMPRESS=LZ4|DEFLATE</code> stores every
-object inside a small self-describing frame naming its own algorithm
-(LZ4, deflate, or stored-raw where compression didn't shrink the
-content). Object names and dedup are always based on the
-<em>uncompressed</em> bytes, so compression changes nothing about content
-addressing, and <code>VERIFY FULL</code> always re-hashes the decompressed
-content. A repository without that INIT choice stores objects as the
-raw content bytes -- recoverable with nothing but a hash tool.</p>
-<h2 id="encryption-is-a-per-object-frame-not-a-whole-repository-wrapper">Encryption is a per-object frame, not a whole-repository wrapper<a class="headerlink" href="#encryption-is-a-per-object-frame-not-a-whole-repository-wrapper" title="Permanent link">&para;</a></h2>
-<p>When a repository is encrypted (see <a href="../Encryption/">Encryption</a>), each
-object and manifest is individually encrypted and MAC-checked -- object
-<em>names</em> stay the plaintext content hash either way, since
-content-addressing depends on it and a hash reveals nothing about the
-underlying bytes.</p>
-<h2 id="what-isnt-captured-yet">What isn't captured yet<a class="headerlink" href="#what-isnt-captured-yet" title="Permanent link">&para;</a></h2>
-<ul>
-<li>Soft and hard link <em>targets</em> aren't captured or restored yet (links
-  are detected and counted as skipped, never silently dropped or
-  treated as plain files) -- creating a real link on restore needs
-  Amiga-specific work (<code>MakeLink()</code>) not yet done.</li>
-<li>Owner/group (<code>ED_OWNER</code>) needs AmigaOS V39+ and a filesystem that
-  supports it; on an older system or filesystem it's captured as
-  unsupported, not guessed at.</li>
-</ul>
-<p>Both are honest, tracked gaps in the format's current implementation,
-not silent data loss -- restore reports exactly what it could and
-couldn't do.</p>
+<h1 id="examples">Examples<a class="headerlink" href="#examples" title="Permanent link">&para;</a></h1>
+<p>A quick-reference cookbook of real AmiSnap invocations, covering the
+variety of ways it's meant to be used. For a guided first run with real
+verified output, see <a href="../Getting-Started/">Getting Started</a>; for every
+keyword's full contract, see <a href="../CLI-Reference/">CLI Reference</a>.</p>
+<h2 id="mounted-volume-the-common-case">Mounted volume, the common case<a class="headerlink" href="#mounted-volume-the-common-case" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=Backup:MyRepo COMMENT=&quot;nightly&quot;
+AmiSnap ACTION=LIST REPO=Backup:MyRepo
+AmiSnap ACTION=VERIFY REPO=Backup:MyRepo
+AmiSnap ACTION=RESTORE REPO=Backup:MyRepo DEST=RAM:Restored
+</code></pre>
+<p>No <code>INIT</code> step needed for a plain, unencrypted, uncompressed
+repository -- the first <code>SNAPSHOT</code> creates whatever it needs. This is
+Tier 1 (see <a href="../Backends/">Destinations</a>): a local partition or a
+network share mounted as a real DOS device (<code>smbfs</code>, <code>AmiNFS</code>), the
+fastest tier and the primary recommendation for stock-speed hardware.</p>
+<h2 id="webdav">WebDAV<a class="headerlink" href="#webdav" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=http://nas.lan/dav/backups
+AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=https://nas.lan/dav/backups TLS13
+AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=https://nas.lan/dav/backups TLSINSECURE
+AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=https://user:pass@nas.lan/dav/backups
+</code></pre>
+<p>Plain <code>http://</code> on a trusted home LAN has no TLS overhead at all --
+see <a href="../Performance/">Performance</a> for why <code>https://</code> is not recommended
+on stock-speed hardware. <code>TLSINSECURE</code> is for a self-signed certificate
+on a home-lab server (an explicit, deliberate opt-out, never a
+default); credentials can be embedded in the URL or left out (WebDAV
+servers that don't require auth).</p>
+<h2 id="s3-compatible-object-storage">S3-compatible object storage<a class="headerlink" href="#s3-compatible-object-storage" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=s3://key:secret@minio.lan:9000/backups
+</code></pre>
+<p>Or, with credentials from the environment instead of the URL:</p>
+<pre><code>1.C:&gt; Setenv AWS_ACCESS_KEY_ID &lt;key&gt;
+1.C:&gt; Setenv AWS_SECRET_ACCESS_KEY &lt;secret&gt;
+1.C:&gt; AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=s3://minio.lan:9000/backups
+</code></pre>
+<p>See <a href="../Backends/">Destinations</a> for the region caveat (<code>?region=</code>
+can't currently be passed safely on the command line -- use
+<code>AWS_REGION</code> instead).</p>
+<h2 id="an-encrypted-repository">An encrypted repository<a class="headerlink" href="#an-encrypted-repository" title="Permanent link">&para;</a></h2>
+<pre><code>1.C:&gt; AmiSnap ACTION=INIT REPO=Backup:MyRepo PASSPHRASE
+AmiSnap passphrase: ********
+Confirm passphrase: ********
+1.C:&gt; AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=Backup:MyRepo
+AmiSnap passphrase: ********
+</code></pre>
+<p>One-time <code>INIT ... PASSPHRASE</code> before the first snapshot; every command
+against an encrypted repository afterward prompts for the passphrase.
+See <a href="../Encryption/">Encryption</a>, including <code>REKEY</code> for changing the
+passphrase without re-encrypting existing content.</p>
+<h2 id="a-compressed-repository">A compressed repository<a class="headerlink" href="#a-compressed-repository" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=INIT REPO=Backup:MyRepo COMPRESS=LZ4
+AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=Backup:MyRepo
+</code></pre>
+<p><code>COMPRESS=</code> at <code>INIT</code> is fixed for the repository's lifetime and picks
+the default algorithm; override it per run with <code>SNAPSHOT ...
+COMPRESS=DEFLATE</code> (harder compression, more CPU -- the right trade for
+a slow uplink) or <code>COMPRESS=NONE</code> (skip compression for this run's new
+objects without leaving the repository's own setting). Not sure which
+algorithm suits your machine and destination? See <code>BENCHMARK</code> below.
+<code>PASSPHRASE</code> and <code>COMPRESS=</code> compose freely on the same <code>INIT</code>.</p>
+<h2 id="excluding-files-from-a-snapshot">Excluding files from a snapshot<a class="headerlink" href="#excluding-files-from-a-snapshot" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=Backup:MyRepo EXCLUDE=S:amisnap-exclude.txt
+</code></pre>
+<p>Where <code>S:amisnap-exclude.txt</code> is a plain-text pattern file -- see
+<a href="../Exclude-Lists/">Exclude Lists</a> for the wildcard/anchoring rules.</p>
+<h2 id="paranoid-mode">Paranoid mode<a class="headerlink" href="#paranoid-mode" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=Backup:MyRepo PARANOID
+</code></pre>
+<p>Re-checks small "unchanged" files' actual content hash rather than
+trusting metadata alone -- catches a file whose bytes changed while
+every other piece of metadata (including the archive bit) happens to
+still match. Costs real I/O on every run; see
+<a href="../Performance/">Performance</a>.</p>
+<h2 id="restoring-a-specific-snapshot-or-just-part-of-one">Restoring a specific snapshot, or just part of one<a class="headerlink" href="#restoring-a-specific-snapshot-or-just-part-of-one" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=RESTORE REPO=Backup:MyRepo DEST=RAM:Restored SNAPID=0000000000000605
+AmiSnap ACTION=RESTORE REPO=Backup:MyRepo DEST=RAM:Restored SUBTREE=Projects/Amiga
+</code></pre>
+<p><code>SNAPID=</code> defaults to the latest snapshot if omitted. <code>SUBTREE=</code>
+restores only that path (and everything under it), preserving the full
+relative path under <code>DEST=</code> rather than flattening it.</p>
+<h2 id="retention">Retention<a class="headerlink" href="#retention" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=PRUNE REPO=Backup:MyRepo KEEP_LAST=7
+AmiSnap ACTION=PRUNE REPO=Backup:MyRepo SNAPID=0000000000000605
+</code></pre>
+<p><code>KEEP_LAST=&lt;n&gt;</code> keeps the <code>n</code> most recent snapshots and deletes the
+rest; <code>SNAPID=</code> deletes exactly one, named snapshot instead.</p>
+<h2 id="verifying-integrity">Verifying integrity<a class="headerlink" href="#verifying-integrity" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=VERIFY REPO=Backup:MyRepo
+AmiSnap ACTION=VERIFY REPO=Backup:MyRepo FULL
+</code></pre>
+<p>Structural (default) confirms every object a snapshot's manifest
+references actually exists at the right size -- fast, no content read.
+<code>FULL</code> additionally re-reads and re-hashes every object's real bytes
+against its declared hash, catching bit-rot a structural check can't.</p>
+<h2 id="benchmarking-compression-and-a-destination-together">Benchmarking compression and a destination together<a class="headerlink" href="#benchmarking-compression-and-a-destination-together" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=BENCHMARK REPO=Backup:MyRepo
+AmiSnap ACTION=BENCHMARK REPO=Backup:MyRepo SOURCE=Work: SIZE=1048576
+</code></pre>
+<p>The first samples synthetic mixed data; the second samples up to 1MiB
+of real content from <code>Work:</code> instead, more representative of your
+actual data. Reports measured LZ4/DEFLATE compression speed against
+this destination's real write throughput and recommends a <code>COMPRESS=</code>
+choice -- see <a href="../CLI-Reference/#benchmark">CLI Reference</a>. To compare
+<code>CIPHERS=</code> choices for an <code>https://</code> destination, re-run with each
+candidate:</p>
+<pre><code>AmiSnap ACTION=BENCHMARK REPO=https://nas.lan/dav/backups CIPHERS=AES128-SHA
+AmiSnap ACTION=BENCHMARK REPO=https://nas.lan/dav/backups CIPHERS=ECDHE-RSA-AES128-GCM-SHA256
+</code></pre>
+<h2 id="logging-a-run">Logging a run<a class="headerlink" href="#logging-a-run" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=Backup:MyRepo LOG=RAM:snapshot.log
+</code></pre>
+<p><code>LOG=</code> works with every <code>ACTION</code> -- writes every diagnostic/summary
+line to the given file (opened unbuffered, so a hang or crash never
+leaves behind a misleadingly-empty log) in addition to the Shell.
+Useful from a scheduled/unattended run.</p>
+<h2 id="recovering-metadata-that-couldnt-be-restored-directly">Recovering metadata that couldn't be restored directly<a class="headerlink" href="#recovering-metadata-that-couldnt-be-restored-directly" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=APPLYUAEM SOURCE=Work:RestoredFromReader
+</code></pre>
+<p>Applies <code>.uaem</code> sidecar files -- written by
+<code>tools/amisnap_reader.py restore ... --uaem</code> (the Python reference
+reader) on a PC that has no real Amiga to apply metadata directly to,
+or produced by an emulator's own host-directory mount (FS-UAE/
+Amiberry/Copperline) -- once that directory reaches a real Amiga. See
+<a href="../Disaster-Recovery/">Disaster Recovery</a>.</p>
+<h2 id="getting-help">Getting help<a class="headerlink" href="#getting-help" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=HELP
+AmiSnap --help
+AmiSnap -h
+AmiSnap ?
+</code></pre>
+<p>The first three all print the same usage text non-interactively and
+exit cleanly; <code>AmiSnap ?</code> is the native AmigaDOS <code>ReadArgs()</code> prompt
+(answer <code>?</code> again at that prompt for the same per-action detail).</p>
 
 
 
@@ -1190,7 +1427,7 @@ couldn't do.</p>
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../Disaster-Recovery/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Disaster Recovery">
+          <a href="../CLI-Reference/" class="md-footer__link md-footer__link--prev" aria-label="Previous: CLI Reference">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -1200,20 +1437,20 @@ couldn't do.</p>
                 Previous
               </span>
               <div class="md-ellipsis">
-                Disaster Recovery
+                CLI Reference
               </div>
             </div>
           </a>
         
         
           
-          <a href="../Building-from-Source/" class="md-footer__link md-footer__link--next" aria-label="Next: Building from Source">
+          <a href="../Exclude-Lists/" class="md-footer__link md-footer__link--next" aria-label="Next: Exclude Lists">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Building from Source
+                Exclude Lists
               </div>
             </div>
             <div class="md-footer__button md-icon">
