@@ -13,10 +13,19 @@ TLSINSECURE/S,CIPHERS/K,EXCLUDE/K,SIZE/K/N
 ```
 
 `ACTION` is one of `SNAPSHOT`, `RESTORE`, `LIST`, `VERIFY`, `PRUNE`,
-`APPLYUAEM`, `INIT`, `REKEY`, `BENCHMARK` (case-insensitive). Each keyword below only
-does something for the actions it's listed under; giving it elsewhere is
-silently ignored, not an error, since one shared template covers every
-action (see "Why one template" at the end of this page).
+`APPLYUAEM`, `INIT`, `REKEY`, `BENCHMARK`, `HELP` (case-insensitive).
+Each keyword below only does something for the actions it's listed
+under; giving it elsewhere is silently ignored, not an error, since one
+shared template covers every action (see "Why one template" at the end
+of this page).
+
+Two ways to get usage help: `AmiSnap ?` is the native AmigaDOS
+convention (ReadArgs' own interactive prompt; answer `?` again at that
+prompt for the same per-action detail `HELP` prints). `AmiSnap
+ACTION=HELP` -- or, since a bare `--help`/`-h`/`-?` parses as the
+`ACTION` value directly, `AmiSnap --help` / `AmiSnap -h` / `AmiSnap
+-?` -- print the same text non-interactively and exit `RETURN_OK`, for
+anyone coming from a Unix background or invoking it from a script.
 
 ## Return codes
 
@@ -224,6 +233,18 @@ documented history of handshake fragility on this platform (see
 `docs/implementation-plan.md`'s TLS section), and reopening it
 repeatedly inside a shipped command is exactly the kind of thing that
 provoked it before.
+
+## HELP
+
+```
+AmiSnap ACTION=HELP
+```
+
+Prints the template plus the per-action detail above and exits
+`RETURN_OK`. `--help`, `-h`, and `-?` are recognized as aliases (a
+bare `AmiSnap --help` parses `--help` straight into the positional
+`ACTION` value, so no special argument handling was needed beyond
+recognizing those strings alongside the other action names).
 
 ## Cross-action keywords
 

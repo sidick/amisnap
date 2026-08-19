@@ -2269,7 +2269,27 @@ static const char exthelp[] =
     "  BENCHMARK  measure this machine + destination's real compression/\n"
     "             throughput trade-off -- REPO required; SOURCE optional\n"
     "             (samples real file content instead of synthetic data),\n"
-    "             SIZE=<bytes> optional (default 512KiB sample)\n";
+    "             SIZE=<bytes> optional (default 512KiB sample)\n"
+    "  HELP       print this usage text and exit (also: --help, -h, -?)\n";
+
+/* HELP / --help / -h / -?: the ReadArgs()-native way to see this text
+ * is `AmiSnap ?` then `?` again at that prompt (RDA_ExtHelp, above) --
+ * idiomatic AmigaDOS, but not what anyone coming in expecting a
+ * Unix-style flag will think to try, and it doesn't work at all from a
+ * script (no interactive prompt to answer). Since ACTION/A is a plain
+ * positional string, `AmiSnap --help` already parses successfully with
+ * ACTION="--help" -- ReadArgs has no opinion on its *content* -- so
+ * this is handled as one more recognized ACTION value in dispatch
+ * below, not a special pre-ReadArgs argv scan (this program has no
+ * argv at all; see main()'s own signature). Prints to stdout (via
+ * amilog(), so LOG= is still honored) and exits RETURN_OK, same as any
+ * other successful, non-mutating command -- `--help` succeeding is the
+ * expected UX, not an error. */
+static void cmd_help(void)
+{
+    amilog("Usage: AmiSnap %s\n\n", TEMPLATE);
+    amilog("%s", exthelp);
+}
 
 static int real_main(void *arg)
 {
@@ -2373,9 +2393,13 @@ static int real_main(void *arg)
     } else if (str_ieq(action, "BENCHMARK")) {
         rc = cmd_benchmark((const char *)args[ARG_REPO], (const char *)args[ARG_SOURCE],
                             (const LONG *)args[ARG_SIZE]);
+    } else if (str_ieq(action, "HELP") || str_ieq(action, "--HELP") ||
+               str_ieq(action, "-H") || str_ieq(action, "-?")) {
+        cmd_help();
+        rc = RETURN_OK;
     } else {
         amilog_err("AmiSnap: unknown ACTION \"%s\" -- expected SNAPSHOT, RESTORE, LIST, VERIFY, "
-                       "PRUNE, APPLYUAEM, INIT, REKEY, or BENCHMARK\n",
+                       "PRUNE, APPLYUAEM, INIT, REKEY, BENCHMARK, or HELP\n",
                    action ? action : "");
         rc = RETURN_ERROR;
     }
