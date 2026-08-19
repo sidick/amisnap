@@ -229,6 +229,41 @@ Binding rules that fall out of this:
   (both are in the Python standard ecosystem: `lz4.block`, `zlib`) and
   must fail loudly, not silently, on an unknown `alg` or `OBJCOMP`.
 
+### BENCHMARK verb: measure, don't guess (2026-08-19)
+
+The right `COMPRESS=` choice depends on the ratio of *this* machine's
+CPU speed to *this* destination's real throughput, and both vary by
+orders of magnitude across the real install base (bare 68020 to
+accelerated 060; a local mounted volume to WebDAV over home
+broadband) — a documented rule of thumb can't substitute for that, so
+`ACTION=BENCHMARK REPO=<path> [SOURCE=<path>] [SIZE=<bytes>]`
+(`src/cli/main.c`) measures it directly: real destination write/read
+throughput (a `tmp/`-scoped probe object, so a failed cleanup is still
+swept by a later `PRUNE`) against LZ4/DEFLATE compression speed on a
+sample (real file content from `SOURCE=` when given — more
+representative than synthetic data — else a deterministic 50/50
+compressible/incompressible mix standing in for a realistic volume's
+blend of text/structured data and already-packed archives). Reports
+each measurement plus an estimated effective throughput for
+NONE/LZ4/DEFLATE (compress time + write time at the measured rates,
+modeled as non-overlapping — conservative, not optimistic) and a
+recommendation.
+
+**Deliberately out of scope: looping over `CIPHERS=` choices
+automatically.** The TLS section above documents a real, hard-won
+investigation into AmiSSL handshake fragility on this platform
+(`tests/copperline/tlsbench.c`, a dev-only diagnostic never linked
+into AmiSnap, exists because of it) — reopening `tls.c`'s AmiSSL
+context in a loop inside a *shipped* command risks reintroducing
+exactly that fragility for a real user, for a feature that already has
+a zero-code-change workaround: re-run `BENCHMARK` once per candidate
+`CIPHERS=` value (a cross-action keyword already read once at
+startup) and compare its "Destination write" line, which already
+reflects the full real pipeline (TLS handshake + bulk cipher) for
+that invocation. Userdocs (`CLI-Reference.md`, `Performance.md`) state
+this workflow explicitly rather than silently omitting cipher
+comparison.
+
 ## Minimum requirements
 
 - **68020, AmigaOS 2.04 (V37), no FPU** (`-m68020 -msoft-float

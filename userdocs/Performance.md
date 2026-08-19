@@ -74,6 +74,17 @@ SHA-256 is never used on the hot path -- it's reserved for
 encryption-related key derivation (`INIT`/`REKEY`'s PBKDF2), a one-time,
 deliberately-slow operation, not something run per file.
 
+## Compression: which algorithm?
+
+There's no single right answer -- it depends on the ratio of this
+machine's CPU speed to this destination's real throughput, and both
+vary enormously across the Amiga install base. Run `AmiSnap
+ACTION=BENCHMARK REPO=<path>` (optionally `SOURCE=<path>` to sample
+real file content instead of synthetic data) to get a real answer for
+your own setup rather than a guess -- see [CLI Reference](
+CLI-Reference.md)'s `BENCHMARK` section for what it measures and how
+to read the result.
+
 ## Destinations: pick the right tier for your hardware
 
 - **Mounted volume (Tier 1)** -- a local partition, or a network share
@@ -109,6 +120,17 @@ deliberately-slow operation, not something run per file.
   hardware acceleration on this platform. (Caveat: this is a first real
   data point from bulk-transfer-only measurement, not a full
   handshake-plus-transfer benchmark against a real certificate.)
+
+  The table above is one machine's data point, not a promise about
+  yours -- if you want to compare `CIPHERS=` choices on your own
+  hardware against your own destination, run `AmiSnap ACTION=BENCHMARK
+  REPO=<path> CIPHERS=<candidate>` once per candidate and compare the
+  "Destination write" line each time (see [CLI Reference](
+  CLI-Reference.md)'s `BENCHMARK` section). `BENCHMARK` itself doesn't
+  loop over ciphers automatically: AmiSSL has a documented history of
+  handshake fragility on this platform (`docs/implementation-plan.md`'s
+  TLS section), and reopening it repeatedly inside one run risks
+  reintroducing exactly that.
 - **`s3://`** -- no TLS support yet, so the same "don't expect wire
   speed over a WAN link on stock hardware" reasoning applies even more
   directly; S3 destinations are inherently remote.

@@ -1931,11 +1931,321 @@ static LONG cmd_rekey(const char *repo)
     }
 }
 
+/* --- benchmark ------------------------------------------------------------
+ *
+ * The right compression choice (docs/implementation-plan.md's own
+ * "Compression: LZ4 + deflate built in" decision) depends on the ratio
+ * of this specific machine's CPU speed to this specific destination's
+ * real throughput -- both vary enormously across the real Amiga
+ * install base (bare 68020 to accelerated 060; a mounted volume on the
+ * same box to WebDAV over home broadband), so a documented rule of
+ * thumb can't substitute for a real measurement. BENCHMARK measures
+ * both against a sample (real file content from SOURCE= if given,
+ * otherwise a synthetic 50/50 compressible/incompressible mix -- real
+ * Amiga volumes are a blend of text/structured data and already-packed
+ * archives, and only sampling one extreme would mislead) and reports
+ * which choice minimizes total time.
+ *
+ * Deliberately out of scope: benchmarking multiple TLS CIPHERS= choices
+ * in one run by reopening AmiSSL in a loop. implementation-plan.md's
+ * TLS section documents a real, hard-won investigation into AmiSSL
+ * handshake fragility on this platform (tests/copperline/tlsbench.c,
+ * a dev-only diagnostic never linked into AmiSnap, exists precisely
+ * because of it) -- looping tls.c's open/close sequence inside a
+ * shipped command risks reintroducing exactly that fragility for a
+ * real user. Comparing ciphers is still possible and already works
+ * with zero extra code: re-run BENCHMARK once per CIPHERS= candidate
+ * (a cross-action keyword, read once at startup) and compare the
+ * "Destination write" line -- that line already reflects the full
+ * real pipeline (TLS handshake + bulk cipher) for whatever CIPHERS=
+ * this invocation used, for both plain and encrypted repositories
+ * alike (ChaCha20 itself is cheap; TLS is the actual CPU-budget lever
+ * here, per tls.h's own doc comment on CIPHERS=). */
+
+#define AMISNAP_BENCHMARK_KEY "tmp/benchmark"  /* under tmp/: prune's sweep
+                                                 * cleans it up even if this
+                                                 * command's own removal
+                                                 * below fails (prune.c:
+                                                 * "nothing legitimately
+                                                 * persists [in tmp/]
+                                                 * between normally-
+                                                 * completed runs") */
+#define AMISNAP_BENCHMARK_DEFAULT_SIZE (512u * 1024u)
+
+typedef struct {
+    const char *source_root;
+    amisnap_buf *out;
+    size_t budget;
+} benchmark_sample_ctx;
+
+/* Scan visitor: reads real file content from SOURCE= into ctx->out up
+ * to ctx->budget bytes, skipping unreadable files (best-effort
+ * sampling, not a hard requirement -- a few unreadable files shouldn't
+ * abort the whole benchmark). Returns 1 (abort the scan) once the
+ * budget is filled or on OOM, 0 to keep scanning otherwise -- both
+ * non-negative, so cmd_benchmark's own `rc < 0` check unambiguously
+ * means a real scan error (amisnap_scan_volume's contract: "Returns
+ * ... a visitor abort value ..." propagated verbatim). */
+static int benchmark_sample_on_entry(void *user, const amisnap_entry_meta *entry)
+{
+    benchmark_sample_ctx *ctx = (benchmark_sample_ctx *)user;
+    char path[AMISNAP_SCAN_PATH_BUF_LEN + 256];
+    BPTR fh;
+    uint8_t buf[4096];
+    size_t remaining;
+
+    if (entry->type != AMISNAP_ETYPE_FILE)
+        return 0;
+    if (ctx->out->len >= ctx->budget)
+        return 1;
+    if (amisnap_join_amiga_path(ctx->source_root, entry->path, entry->path_len,
+                                 path, sizeof(path)) != AMISNAP_OK)
+        return 0;
+
+    fh = Open((STRPTR)path, MODE_OLDFILE);
+    if (!fh) return 0;
+
+    remaining = ctx->budget - ctx->out->len;
+    while (remaining > 0) {
+        LONG want = (LONG)(remaining < sizeof(buf) ? remaining : sizeof(buf));
+        LONG n = Read(fh, buf, want);
+        if (n <= 0) break;
+        if (amisnap_buf_bytes(ctx->out, buf, (size_t)n) != AMISNAP_OK) {
+            Close(fh);
+            return 1;
+        }
+        remaining -= (size_t)n;
+    }
+    Close(fh);
+    return ctx->out->len >= ctx->budget ? 1 : 0;
+}
+
+/* No SOURCE= given (or SOURCE= had nothing readable): a deterministic
+ * 512-byte-block mix, alternating a repeating text-like pattern
+ * (compressible, like structured data/text) with xorshift32 noise
+ * (incompressible, like an LhA archive or a tracker module) -- a
+ * synthetic stand-in for the realistic blend a real Amiga volume
+ * holds, so LZ4/DEFLATE aren't benchmarked against one misleading
+ * extreme. Best-effort: an OOM partway through just yields a shorter
+ * (still usable, still representative) sample. */
+static void benchmark_fill_synthetic(amisnap_buf *out, size_t want)
+{
+    uint32_t x = 0xA1B2C3D4u;
+    uint8_t block[512];
+    size_t i;
+
+    for (i = 0; i < want; i += sizeof(block)) {
+        size_t n = (want - i < sizeof(block)) ? (want - i) : sizeof(block);
+        size_t j;
+
+        if ((i / sizeof(block)) % 2 == 0) {
+            for (j = 0; j < n; j++) block[j] = (uint8_t)('A' + (j % 26));
+        } else {
+            for (j = 0; j < n; j++) {
+                x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+                block[j] = (uint8_t)x;
+            }
+        }
+        if (amisnap_buf_bytes(out, block, n) != AMISNAP_OK) return;
+    }
+}
+
+/* KB/s from a byte count and an elapsed-ms reading, all-integer (no
+ * float use anywhere else in this codebase -- applyuaem.c's own
+ * comment states the same rule for the same reason: soft-float m68k
+ * has no reason to pay for it). ms == 0 means "too fast for this
+ * timer's granularity to resolve" (amisnap_millis()'s own contract),
+ * not division by zero -- reported as "instant" rather than a bogus
+ * infinite rate. */
+static void print_kbps_line(const char *label, size_t len, uint64_t ms)
+{
+    if (ms == 0)
+        amilog("  %-18s instant (increase SIZE= for a precise measurement)\n", label);
+    else
+        amilog("  %-18s %lu KB/s\n", label,
+               (unsigned long)(((uint64_t)len * 1000u / ms) / 1024u));
+}
+
+/* Estimated total time to compress+write `sample_len` source bytes at
+ * this run's measured rates: `compress_ms` once for the whole sample,
+ * plus `compressed_len` bytes at the measured raw destination-write
+ * rate (`put_ms` per `sample_len` raw bytes, scaled -- a multiply, not
+ * a divide, so put_ms == 0, i.e. destination write too fast to
+ * resolve, correctly yields 0 added time rather than a division
+ * fault). A pipeline model: assumes compression and the write don't
+ * overlap, so it's a conservative (not optimistic) estimate. */
+static uint64_t benchmark_effective_ms(uint32_t compress_ms, size_t compressed_len,
+                                        size_t sample_len, uint32_t put_ms)
+{
+    uint64_t write_ms = sample_len ? ((uint64_t)compressed_len * put_ms) / sample_len : 0;
+    return (uint64_t)compress_ms + write_ms;
+}
+
+static LONG cmd_benchmark(const char *repo, const char *source, const LONG *size_arg)
+{
+    amisnap_backend be;
+    amisnap_buf sample, lz4_out, zlib_out;
+    size_t want;
+    uint32_t t0, t1, put_ms, get_ms = 0, lz4_ms, zlib_ms;
+    int have_get = 0;
+    int rc;
+
+    if (!repo) {
+        amilog_err("AmiSnap: BENCHMARK needs REPO=<path>\n");
+        return RETURN_ERROR;
+    }
+    if (amisnap_millis() == 0) {
+        amilog_err("AmiSnap: no hardware timer available on this system -- BENCHMARK "
+                   "needs one to measure anything meaningful\n");
+        return RETURN_WARN;
+    }
+
+    want = (size_arg && *size_arg > 0) ? (size_t)*size_arg : AMISNAP_BENCHMARK_DEFAULT_SIZE;
+
+    amisnap_buf_init(&sample);
+    if (source) {
+        benchmark_sample_ctx ctx;
+        amisnap_scan_visitor visitor;
+        amisnap_scan_caps caps;
+        amisnap_scan_result result;
+
+        ctx.source_root = source;
+        ctx.out = &sample;
+        ctx.budget = want;
+        memset(&visitor, 0, sizeof(visitor));
+        visitor.user = &ctx;
+        visitor.on_entry = benchmark_sample_on_entry;
+        memset(&caps, 0, sizeof(caps));
+        rc = amisnap_scan_volume(source, &visitor, NULL, &caps, &result);
+        if (rc < 0) {
+            amilog_err("AmiSnap: cannot sample SOURCE=\"%s\" (error %d)\n", source, rc);
+            amisnap_buf_free(&sample);
+            return RETURN_FAIL;
+        }
+    }
+    if (sample.len == 0) {
+        if (source)
+            amilog("AmiSnap: no readable file content found under SOURCE=\"%s\" -- "
+                   "using synthetic sample data instead\n", source);
+        benchmark_fill_synthetic(&sample, want);
+    }
+    if (sample.len == 0) {
+        amilog_err("AmiSnap: could not build a sample to benchmark with\n");
+        return RETURN_FAIL;
+    }
+
+    rc = open_backend(repo, &be);
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amisnap_buf_free(&sample);
+        return RETURN_FAIL;
+    }
+
+    t0 = amisnap_millis();
+    rc = amisnap_backend_put(&be, AMISNAP_BENCHMARK_KEY, sample.data, sample.len);
+    t1 = amisnap_millis();
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: cannot write benchmark data to \"%s\" (error %d)\n", repo, rc);
+        amisnap_backend_close(&be);
+        amisnap_buf_free(&sample);
+        return RETURN_FAIL;
+    }
+    put_ms = t1 - t0;
+
+    {
+        amisnap_buf back;
+        t0 = amisnap_millis();
+        rc = amisnap_backend_get(&be, AMISNAP_BENCHMARK_KEY, &back);
+        t1 = amisnap_millis();
+        if (rc == AMISNAP_OK) {
+            amisnap_buf_free(&back);
+            get_ms = t1 - t0;
+            have_get = 1;
+        }
+    }
+
+    rc = amisnap_backend_remove(&be, AMISNAP_BENCHMARK_KEY);
+    if (rc != AMISNAP_OK)
+        amilog_err("AmiSnap: warning: could not remove temporary benchmark data "
+                   "\"" AMISNAP_BENCHMARK_KEY "\" from \"%s\" (error %d) -- a later "
+                   "PRUNE will sweep it, or delete it by hand\n", repo, rc);
+    amisnap_backend_close(&be);
+
+    t0 = amisnap_millis();
+    rc = amisnap_frame_encode(AMISNAP_COMP_LZ4, sample.data, sample.len, &lz4_out);
+    t1 = amisnap_millis();
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: LZ4 benchmark compression failed (error %d)\n", rc);
+        amisnap_buf_free(&sample);
+        return RETURN_FAIL;
+    }
+    lz4_ms = t1 - t0;
+
+    t0 = amisnap_millis();
+    rc = amisnap_frame_encode(AMISNAP_COMP_ZLIB, sample.data, sample.len, &zlib_out);
+    t1 = amisnap_millis();
+    if (rc != AMISNAP_OK) {
+        amilog_err("AmiSnap: DEFLATE benchmark compression failed (error %d)\n", rc);
+        amisnap_buf_free(&sample);
+        amisnap_buf_free(&lz4_out);
+        return RETURN_FAIL;
+    }
+    zlib_ms = t1 - t0;
+
+    {
+        uint64_t none_ms = benchmark_effective_ms(0, sample.len, sample.len, put_ms);
+        uint64_t lz4_eff_ms = benchmark_effective_ms(lz4_ms, lz4_out.len, sample.len, put_ms);
+        uint64_t zlib_eff_ms = benchmark_effective_ms(zlib_ms, zlib_out.len, sample.len, put_ms);
+        const char *best = "NONE";
+        uint64_t best_ms = none_ms;
+
+        if (lz4_eff_ms < best_ms) { best = "LZ4"; best_ms = lz4_eff_ms; }
+        if (zlib_eff_ms < best_ms) { best = "DEFLATE"; best_ms = zlib_eff_ms; }
+
+        amilog("AmiSnap: benchmark using a %lu-byte sample (%s)\n",
+               (unsigned long)sample.len,
+               source ? "real content from SOURCE=" : "synthetic mixed data");
+        print_kbps_line("Destination write:", sample.len, put_ms);
+        if (have_get)
+            print_kbps_line("Destination read:", sample.len, get_ms);
+        else
+            amilog("  %-18s could not read it back (error above)\n", "Destination read:");
+        print_kbps_line("LZ4 compress:", sample.len, lz4_ms);
+        print_kbps_line("DEFLATE compress:", sample.len, zlib_ms);
+        amilog("  LZ4 ratio: %lu%% of original   DEFLATE ratio: %lu%% of original\n",
+               (unsigned long)(lz4_out.len * 100u / sample.len),
+               (unsigned long)(zlib_out.len * 100u / sample.len));
+
+        amilog("AmiSnap: estimated effective throughput (compress + write combined, "
+               "assumes no overlap between the two -- a conservative estimate):\n");
+        print_kbps_line("NONE:", sample.len, none_ms);
+        print_kbps_line("LZ4:", sample.len, lz4_eff_ms);
+        print_kbps_line("DEFLATE:", sample.len, zlib_eff_ms);
+
+        if (strcmp(best, "NONE") == 0)
+            amilog("AmiSnap: recommendation: this destination is fast relative to this "
+                   "CPU -- compression is not worth it here, leave the repository "
+                   "uncompressed\n");
+        else
+            amilog("AmiSnap: recommendation: INIT REPO=\"%s\" ... COMPRESS=%s\n", repo, best);
+
+        amilog("AmiSnap: to compare TLS CIPHERS= choices for an https:// destination, "
+               "re-run BENCHMARK once per candidate CIPHERS= value and compare the "
+               "\"Destination write\" line above -- see userdocs/Performance.md\n");
+    }
+
+    amisnap_buf_free(&sample);
+    amisnap_buf_free(&lz4_out);
+    amisnap_buf_free(&zlib_out);
+    return RETURN_OK;
+}
+
 /* --- dispatch --------------------------------------------------------- */
 
-#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,COMPRESS/K,TLS13/S,TLSINSECURE/S,CIPHERS/K,EXCLUDE/K"
+#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,COMPRESS/K,TLS13/S,TLSINSECURE/S,CIPHERS/K,EXCLUDE/K,SIZE/K/N"
 enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_LOG,
        ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_COMPRESS, ARG_TLS13, ARG_TLSINSECURE, ARG_CIPHERS, ARG_EXCLUDE,
+       ARG_SIZE,
        ARG_COUNT };
 
 /* Second "?" at the ReadArgs() prompt prints this (RDA_ExtHelp,
@@ -1955,7 +2265,11 @@ static const char exthelp[] =
     "  APPLYUAEM  apply a .uaem metadata sidecar -- SOURCE required\n"
     "  INIT       create a new repository -- REPO required; PASSPHRASE\n"
     "             to encrypt it, COMPRESS=LZ4|DEFLATE to compress it\n"
-    "  REKEY      change a repository's passphrase -- REPO required\n";
+    "  REKEY      change a repository's passphrase -- REPO required\n"
+    "  BENCHMARK  measure this machine + destination's real compression/\n"
+    "             throughput trade-off -- REPO required; SOURCE optional\n"
+    "             (samples real file content instead of synthetic data),\n"
+    "             SIZE=<bytes> optional (default 512KiB sample)\n";
 
 static int real_main(void *arg)
 {
@@ -2056,9 +2370,12 @@ static int real_main(void *arg)
                        (const char *)args[ARG_COMPRESS]);
     } else if (str_ieq(action, "REKEY")) {
         rc = cmd_rekey((const char *)args[ARG_REPO]);
+    } else if (str_ieq(action, "BENCHMARK")) {
+        rc = cmd_benchmark((const char *)args[ARG_REPO], (const char *)args[ARG_SOURCE],
+                            (const LONG *)args[ARG_SIZE]);
     } else {
         amilog_err("AmiSnap: unknown ACTION \"%s\" -- expected SNAPSHOT, RESTORE, LIST, VERIFY, "
-                       "PRUNE, APPLYUAEM, INIT, or REKEY\n",
+                       "PRUNE, APPLYUAEM, INIT, REKEY, or BENCHMARK\n",
                    action ? action : "");
         rc = RETURN_ERROR;
     }

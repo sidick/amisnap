@@ -8,12 +8,12 @@ quotes). The full template, verbatim from the binary itself:
 
 ```
 ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,
-LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,TLS13/S,TLSINSECURE/S,
-CIPHERS/K,EXCLUDE/K
+LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,COMPRESS/K,TLS13/S,
+TLSINSECURE/S,CIPHERS/K,EXCLUDE/K,SIZE/K/N
 ```
 
 `ACTION` is one of `SNAPSHOT`, `RESTORE`, `LIST`, `VERIFY`, `PRUNE`,
-`APPLYUAEM`, `INIT`, `REKEY` (case-insensitive). Each keyword below only
+`APPLYUAEM`, `INIT`, `REKEY`, `BENCHMARK` (case-insensitive). Each keyword below only
 does something for the actions it's listed under; giving it elsewhere is
 silently ignored, not an error, since one shared template covers every
 action (see "Why one template" at the end of this page).
@@ -187,6 +187,43 @@ Changes an encrypted repository's passphrase without touching the
 repository key itself, so every already-written object and manifest
 stays readable. Prompts for the current passphrase (failing closed on a
 wrong one) and then the new one, twice.
+
+## BENCHMARK
+
+```
+AmiSnap ACTION=BENCHMARK REPO=<path> [SOURCE=<path>] [SIZE=<bytes>]
+```
+
+Measures this machine and this destination together, so the
+`COMPRESS=` choice at `INIT` (see above) can be a real answer instead
+of a guess -- the right choice depends on the ratio of *this* CPU's
+compression speed to *this* destination's real write throughput, and
+that ratio varies enormously across the Amiga install base (a bare
+68020 to an accelerated 060; a mounted local volume to WebDAV over
+home broadband).
+
+- Builds a sample: if `SOURCE=` is given, real file content read from
+  it (up to `SIZE=`, default 512KiB) -- more representative of your
+  actual data than a synthetic guess. Without `SOURCE=`, a synthetic
+  50/50 mix of compressible and incompressible data, standing in for
+  the realistic blend a real volume holds (text/structured data next
+  to already-packed archives and tracker modules).
+- Writes and reads that sample back from `REPO=` to measure real
+  destination throughput (under `tmp/`, removed afterward; a later
+  `PRUNE` sweeps it up even if removal itself fails).
+- Times LZ4 and DEFLATE compressing the same sample.
+- Reports each measurement, an estimated effective throughput for
+  `NONE`/`LZ4`/`DEFLATE` (compress time plus write time at the
+  measured rates), and which one to pass to `INIT ... COMPRESS=`.
+
+To compare `CIPHERS=` choices for an `https://` destination, re-run
+`BENCHMARK` once per candidate value and compare the "Destination
+write" line -- see [Performance](Performance.md). `BENCHMARK`
+deliberately doesn't loop over ciphers itself: AmiSSL has a real,
+documented history of handshake fragility on this platform (see
+`docs/implementation-plan.md`'s TLS section), and reopening it
+repeatedly inside a shipped command is exactly the kind of thing that
+provoked it before.
 
 ## Cross-action keywords
 
