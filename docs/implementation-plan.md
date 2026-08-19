@@ -264,6 +264,42 @@ that invocation. Userdocs (`CLI-Reference.md`, `Performance.md`) state
 this workflow explicitly rather than silently omitting cipher
 comparison.
 
+### Considered: hand-written 68k assembler for the compression codecs (deferred)
+
+`src/core/lz4.c`/`miniz.c` are vendored upstream C (per the vendor-
+don't-guess rule — see the compression decision above), compiled with
+`-O2` for both the host and `m68k-amigaos-gcc`. Whether either is worth
+hand-optimizing in 68020/030 assembler — the way sibling AmiAuth
+vendors its ChaCha20/PBKDF2 inner loops in asm for exactly this reason
+— is an open question, not a decided one: worth investigating once
+`BENCHMARK` (above) exists on real hardware to say *how much* it would
+matter, rather than guessing.
+
+What "investigate" means before committing effort here:
+
+- Run `BENCHMARK` across a spread of real/emulated CPU classes (bare
+  68020, 030, accelerated 040/060, PiStorm-class) and see where LZ4/
+  DEFLATE's measured compress throughput actually lands relative to
+  destination throughput at each tier — if compression is already
+  faster than the destination write it's compressing for (the common
+  case on a slow WebDAV/S3 link even at stock 68020 speed, per
+  Performance.md's own TLS throughput table), asm work here buys
+  nothing: the destination, not the CPU, is the bottleneck, and no
+  amount of faster compression shortens a snapshot that's write-bound.
+- Only where compression genuinely gates total snapshot time (fast
+  local destinations, e.g. Tier 1 mounted volumes, on slower CPU
+  classes) does hand-optimizing make sense to pursue at all.
+- If it does: LZ4's block-matching inner loop is the standard target
+  (this is where upstream's own SIMD/asm variants on other platforms
+  spend their effort) — profile first (real cycle counts on real or
+  cycle-accurate-emulated hardware) rather than assuming which loop
+  dominates. `-O2` gcc output is already a real baseline to beat, not
+  nothing, so the investigation must show a genuine win before this
+  repository takes on hand-written 68k asm (its own maintenance/
+  verification cost — see AmiAuth's differential-fuzz regime for what
+  "verified" means for vendored/hand-written crypto-adjacent code) for
+  what might turn out to be a case that's rarely CPU-bound anyway.
+
 ## Minimum requirements
 
 - **68020, AmigaOS 2.04 (V37), no FPU** (`-m68020 -msoft-float
