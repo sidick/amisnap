@@ -127,6 +127,7 @@ Common header (`ftype`=1), then records:
 | 0x0012 | CHUNK_SIZE  | u32: fixed chunk split threshold/size in bytes (default 262144 — 256 KiB, corrected from an original 8 MiB after real testing found that too large a buffer to reliably allocate even at Zorro II's own 8 MiB fast-RAM ceiling; see implementation-plan.md); informational — refs are self-describing |
 | 0x8013 | KDF         | present iff CIPHER != 0: `kdfid:u8` (1 = PBKDF2-HMAC-SHA256) `iters:u32` `salt: string` |
 | 0x8014 | WRAPPED_KEY | present iff CIPHER != 0: the 32-byte repository key encrypted with the KDF-derived key (layout per Encryption section) |
+| 0x8016 | OBJCOMP     | u8: 0 = raw objects, 1 = framed objects (see Content objects). Fixed at init, exactly one, always present. Which algorithm a framed repository's writer *prefers* (LZ4 vs deflate) is client configuration, not repository state — each object's frame names its own algorithm, so writers with different preferences can share a repository. |
 | 0x0015 | FORMAT_APP  | string, e.g. `"AmiSnap"`: stamped once at repository init, purely for self-identification — someone who finds a stray `amisnap.repo` with no other context and runs `strings` on it (magic `"ASNP"` plus this) learns what wrote it without needing a parser. Informational only; a reader MUST NOT branch on its value (that's what `ftype`/`version`/`CIPHER` are for) — it names the tool, not a contract. |
 
 A reader that does not implement the stated CIPHER MUST refuse the
@@ -134,15 +135,47 @@ repository (critical tags make this automatic for future ciphers).
 
 ## Content objects (`objects/<hh>/<hex64>`)
 
-The object name is the BLAKE2s-256 of the object's **plaintext**
-content — dedup and `verify` always operate on plaintext identity,
-independent of encryption.
+The object name is the BLAKE2s-256 of the object's **plaintext,
+uncompressed** content — dedup and `verify` always operate on that
+identity, independent of encryption and compression.
 
-- **Plain repository (CIPHER 0):** the object file IS the raw content
-  bytes. No header, no framing — `b2sum`-equivalent tooling can verify
-  a repository with no AmiSnap code at all, and disaster recovery is
-  `cat`.
+- **Raw repository (OBJCOMP 0, CIPHER 0):** the object file IS the raw
+  content bytes. No header, no framing — `b2sum`-equivalent tooling
+  can verify a repository with no AmiSnap code at all, and disaster
+  recovery is `cat`.
+- **Framed repository (OBJCOMP 1):** the object body (the file itself
+  when CIPHER 0; the plaintext inside the encryption envelope when
+  CIPHER != 0) is:
+
+  ```
+  alg      u8    0 = stored, 1 = LZ4 block format, 2 = zlib (RFC 1950)
+  usize    u64   uncompressed content size in bytes
+  payload        alg 0: the raw content bytes
+                 alg 1/2: the compressed stream
+  ```
+
+  A reader MUST refuse an `alg` it does not implement — loudly, never
+  as a silent skip. `usize` makes every object self-contained for
+  buffer allocation and standalone decode (and is what LZ4 block
+  decompression requires); it MUST equal the E_CONTENT ref size.
 - **Encrypted repository (CIPHER != 0):** see Encryption below.
+  Compression sits inside encryption, never outside it
+  (compress-then-encrypt; the reverse achieves nothing).
+
+The frame is a property of the **object**, deliberately not of the
+manifest's content refs: objects are shared across manifests by
+content address and are never rewritten (see Commit protocol), so a
+dedup hit against an object written by an earlier snapshot — possibly
+under a different algorithm preference — must find the encoding on the
+object itself. Per-ref encoding would go stale the moment two
+manifests shared an object.
+
+**Writers in a framed repository MUST fall back to `alg` 0 (stored)
+when compression does not shrink the payload.** Amiga volumes carry a
+lot of already-packed content (LhA, ADF, mods); the fallback keeps the
+CPU cost of enabling compression near zero for it and means a framed
+repository is never larger than necessary. Objects are at most
+CHUNK_SIZE bytes, which bounds compression working memory.
 
 An object holds either a whole file's content or one chunk of a large
 file; the object itself doesn't know which — manifests do.
@@ -283,7 +316,9 @@ at zero extra RNG cost:
   previous salt/nonce pair could repeat.
 
 **Objects:** `nonce:12 bytes` `ciphertext` `mac:16 bytes`, where
-ciphertext = ChaCha20(`K_enc`, nonce, counter=0, plaintext) and mac =
+ciphertext = ChaCha20(`K_enc`, nonce, counter=0, plaintext) — with
+OBJCOMP 1 the "plaintext" here is the framed (possibly compressed)
+object body, i.e. compress-then-encrypt — and mac =
 first 16 bytes of `keyed-BLAKE2s-256(key=K_mac, message=nonce ‖
 ciphertext)`. Object *names* remain the plaintext hash (dedup works;
 accepted trade-off: an attacker with the repository learns plaintext
@@ -316,8 +351,11 @@ comment, not here, precisely so nobody mistakes it for interchange.)
 
 By design, a from-scratch reader (the Python reference reader, or a
 human with this document): parse `amisnap.repo` (refuse unknown
-version/cipher), list `snapshots/`, pick a manifest, check END_HASH,
-then for each entry concatenate its E_CONTENT objects (verifying each
-against its name) and apply metadata as far as the target system
-allows, reporting what it couldn't apply. No index, no AmiSnap
-binaries, no Amiga required.
+version/cipher/objcomp), list `snapshots/`, pick a manifest, check
+END_HASH, then for each entry concatenate its E_CONTENT objects
+(decoding frames where OBJCOMP is 1, verifying each object's
+uncompressed bytes against its name) and apply metadata as far as the
+target system allows, reporting what it couldn't apply. No index, no
+AmiSnap binaries, no Amiga required. Both frame algorithms are in the
+Python standard ecosystem: `lz4.block.decompress(payload,
+uncompressed_size=usize)` and `zlib.decompress(payload)`.

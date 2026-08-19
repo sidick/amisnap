@@ -160,6 +160,75 @@ continue?) rather than being retrofitted onto the Phase 1 model. Revisit
 once the snapshot/index format (Phase 1) and pruning are in place and
 real interrupted-run cost is measured.
 
+### Compression: LZ4 + deflate built in, XPK rejected (2026-08-19)
+
+The proposal had no compression story. Decision: **per-destination
+opt-in compression, with two algorithms built in from day one — LZ4
+and deflate/zlib — selected by the user per destination.** In the
+format this is `OBJCOMP` in REC_REPO (0 = raw objects, 1 = framed
+objects, fixed at init) plus a per-object frame (`alg:u8` +
+`usize:u64`); see format.md "Content objects" for the normative
+layout. The frame lives on the *object*, not in manifest content
+refs, because objects are shared across manifests and never rewritten
+— a dedup hit against an older snapshot's object must find the
+encoding on the object itself, and per-ref encoding would go stale the
+moment two manifests shared an object. `OBJCOMP 0` keeps the existing
+"disaster recovery is `cat`" property for plain repositories exactly
+as it was.
+
+Why not xpkmaster.library, the obvious Amiga-native answer: each XPK
+sublibrary is its own (mostly undocumented) format with no host-side
+implementations, so an XPK-compressed repository is readable only by
+an Amiga with the same sublibrary installed. That breaks the format's
+core promise — *a snapshot is recoverable on a PC even if the Amiga is
+dead* — and adds runtime dependency/reentrancy lottery on top. XPK is
+for interactive crunching on one machine, not archival formats.
+
+The two built-ins and why these two:
+
+- **LZ4** — the default choice for the CPU budget: single-file BSD-2
+  C (vendored into `src/core/` like xxhash32), tiny memory footprint,
+  fastest real compressor on a 68030, near-free decompression (matters
+  for restore and `verify FULL`). Modest ratios (~2:1) but real wins
+  on a NAS pipe.
+- **deflate/zlib (via miniz or equivalent BSD-licensed source)** —
+  better ratios, universally readable, slower to compress on 68k even
+  at low levels; the right pick for slow WAN links where ratio beats
+  CPU. (LZO rejected on license — GPLv2 vs. this repo's BSD-2. zstd
+  rejected for the Amiga side on code size/working memory; see below.)
+
+Shipping *two* algorithms rather than one is deliberate: it forces the
+format's algorithm tag and the code's dispatch to be genuinely
+algorithm-agnostic from the start (a table, not a boolean), so adding
+a third later — e.g. zstd in the host-side backup client, where CPU
+and RAM are free — is a new table entry and a tag value, not a format
+break. Unknown-algorithm handling in readers is therefore testable
+from day one.
+
+Binding rules that fall out of this:
+
+- **Identity is the uncompressed content.** The BLAKE2s hash stored in
+  the index/manifest is always of the *uncompressed* bytes; dedup and
+  verify semantics are unchanged by compression. `verify FULL`
+  decompresses, then re-hashes.
+- **Compress-then-encrypt**, never the reverse — written down now so
+  the Phase 4 ChaCha20 path can't get the order wrong
+  (encrypting first makes compression useless).
+- **Store-raw fallback** (normative in format.md): if compression
+  doesn't shrink an object, store it framed with `alg` 0. Keeps CPU
+  cost near zero for the already-packed content common on Amiga
+  volumes (LhA, ADF, mods), and means enabling compression is never a
+  net loss. Objects are capped at CHUNK_SIZE (256 KiB), which bounds
+  compression working memory.
+- **Containers**: LZ4 *block* format (not the frame format — `usize`
+  in our frame supplies what block decompression needs, without LZ4
+  frame's redundant overhead) and *zlib* (RFC 1950, not raw deflate —
+  it's what `zlib.decompress` and miniz produce by default and carries
+  its own Adler-32 check).
+- The Python reference reader must handle every shipped algorithm
+  (both are in the Python standard ecosystem: `lz4.block`, `zlib`) and
+  must fail loudly, not silently, on an unknown `alg` or `OBJCOMP`.
+
 ## Minimum requirements
 
 - **68020, AmigaOS 2.04 (V37), no FPU** (`-m68020 -msoft-float
@@ -525,6 +594,12 @@ full superset metadata):
 - Content objects stored under BLAKE2s-256 hash; whole-file at first
   (chunking is phase 2, but the manifest's content-ref record is
   designed to reference either from day one).
+- Compression: REC_REPO's `OBJCOMP` selects raw vs framed objects at
+  init; in a framed repository every object carries `alg:u8` (stored /
+  LZ4 / zlib) + `usize:u64`, and the hash is always of the
+  uncompressed bytes. See the compression decision above — two
+  algorithms ship in v1 precisely so the alg dispatch is real and a
+  third algorithm later is a tag value, not a format break.
 - Manifest: per-snapshot, listing every path with its full metadata
   record and content refs; plus per-volume identification (DosType,
   volume name/creation date, probed capability set).
