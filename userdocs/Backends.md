@@ -18,6 +18,19 @@ library or TLS overhead at all.
 AmiSnap ACTION=SNAPSHOT SOURCE=Work: REPO=Backup:MyRepo
 ```
 
+**Under emulation, this is also the easy way to get a repository onto
+the host disk.** Copperline, Amiberry, WinUAE, and FS-UAE can all mount
+a plain host directory as a normal AmigaDOS device -- point `REPO=` at
+that device (or a subdirectory under it) and every object AmiSnap
+writes lands directly in that host directory, with no networking, no
+WebDAV/S3 destination, and no separate export step. Since
+`tools/amisnap_reader.py` (see [Disaster Recovery](Disaster-Recovery.md))
+reads a repository straight off a host directory, a repository built
+this way is immediately listable/verifiable/restorable from the host
+side too, the moment the emulated `SNAPSHOT` finishes -- useful for
+trying AmiSnap out, or for testing against real emulated AmigaOS
+without a second machine or a network link at all.
+
 ## WebDAV (`http://` / `https://`)
 
 ```

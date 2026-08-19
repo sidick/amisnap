@@ -24,10 +24,13 @@ rubber-stamping whatever it's given.
 - The repository's raw files, reachable as a normal directory on the PC
   running the reader -- either because the repository lives on a
   mounted volume/network share the PC can also see directly (the common
-  case for a Tier 1 mounted-volume destination), or because you've
-  copied the repository's directory tree off wherever it was stored.
-  The reader operates on the repository as a plain host filesystem
-  directory; it does not itself speak WebDAV or S3 to fetch a remote
+  case for a Tier 1 mounted-volume destination, and trivially true
+  under emulation: `REPO=` pointed at a host-directory-backed device
+  already lives on the host disk with nothing to copy -- see
+  [Destinations](Backends.md)), or because you've copied the
+  repository's directory tree off wherever it was stored. The reader
+  operates on the repository as a plain host filesystem directory; it
+  does not itself speak WebDAV or S3 to fetch a remote
   repository's content for you.
 
 ## Listing what's in a repository
