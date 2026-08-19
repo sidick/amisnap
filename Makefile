@@ -31,6 +31,17 @@ CC      ?= cc
 CFLAGS  ?= -std=c99 -O2 -Wall -Wextra -Werror
 CORE_INC := -Isrc/core
 
+# Vendored miniz (src/core/miniz.[ch], zlib/deflate for OBJCOMP framed
+# objects): strip everything but the compression core -- no zip archive
+# APIs, no stdio, no time -- and force byte-by-byte loads: the 68020
+# tolerates unaligned access but the flag also covers any stricter
+# future target, and miniz's default detection can't know about m68k.
+# Must be identical on host and m68k builds (miniz.c and its header
+# have to agree).
+MINIZ_DEFS := -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_STDIO -DMINIZ_NO_TIME \
+              -DMINIZ_USE_UNALIGNED_LOADS_AND_STORES=0
+CFLAGS += $(MINIZ_DEFS)
+
 # --- m68k cross toolchain (Amiga build) ---
 M68K_CC     ?= m68k-amigaos-gcc
 # -m68020/-msoft-float: the target floor above, no FPU assumed. -noixemul
@@ -39,6 +50,7 @@ M68K_CC     ?= m68k-amigaos-gcc
 M68K_CFLAGS ?= -std=c99 -O2 -Wall -Wextra -Werror -m68020 -msoft-float -noixemul \
                $(CORE_INC) -Isrc/amiga \
                -DVERSION=$(VERSION) -DREVISION=$(REVISION)
+M68K_CFLAGS += $(MINIZ_DEFS)
 
 CORE_SRCS  := $(wildcard src/core/*.c)
 AMIGA_SRCS := $(wildcard src/amiga/*.c)
