@@ -1,0 +1,1518 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Versioned network backup with snapshots for classic AmigaOS">
+      
+      
+      
+        <link rel="canonical" href="https://sidick.github.io/amisnap/v0.1/CLI-Reference/">
+      
+      
+        <link rel="prev" href="../Getting-Started/">
+      
+      
+        <link rel="next" href="../Exclude-Lists/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>CLI Reference - AmiSnap</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#cli-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="AmiSnap" class="md-header__button md-logo" aria-label="AmiSnap" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AmiSnap
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              CLI Reference
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/sidick/amisnap" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    sidick/amisnap
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="AmiSnap" class="md-nav__button md-logo" aria-label="AmiSnap" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    AmiSnap
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/sidick/amisnap" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    sidick/amisnap
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting going
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting going
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Getting-Started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using AmiSnap
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using AmiSnap
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#return-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Return codes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#snapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SNAPSHOT
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#restore" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RESTORE
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LIST
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verify" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VERIFY
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prune" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PRUNE
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#applyuaem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        APPLYUAEM
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#init" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        INIT
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rekey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        REKEY
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        BENCHMARK
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-action-keywords" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-action keywords
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-one-template" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why one template
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Exclude-Lists/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Exclude Lists
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Destinations (Backends)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Encryption/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encryption
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Under the hood
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Under the hood
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Disaster-Recovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Disaster Recovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Repository-Format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Repository Format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Help
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Help
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Building-from-Source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building from Source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#return-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Return codes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#snapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SNAPSHOT
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#restore" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RESTORE
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LIST
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verify" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VERIFY
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prune" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PRUNE
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#applyuaem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        APPLYUAEM
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#init" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        INIT
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rekey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        REKEY
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        BENCHMARK
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-action-keywords" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-action keywords
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-one-template" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why one template
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/sidick/amisnap/edit/main/userdocs/CLI-Reference.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="cli-reference">CLI Reference<a class="headerlink" href="#cli-reference" title="Permanent link">&para;</a></h1>
+<p>AmiSnap is a single Shell command, <code>AmiSnap</code>, dispatched by a required
+positional <code>ACTION</code> and a set of <code>KEY=value</code> (<code>/K</code>) or switch (<code>/S</code>)
+arguments -- standard <code>ReadArgs()</code> keyword syntax, so quoting rules are
+the usual AmigaDOS ones (wrap a value containing spaces in double
+quotes). The full template, verbatim from the binary itself:</p>
+<pre><code>ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,
+LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,COMPRESS/K,TLS13/S,
+TLSINSECURE/S,CIPHERS/K,EXCLUDE/K,SIZE/K/N
+</code></pre>
+<p><code>ACTION</code> is one of <code>SNAPSHOT</code>, <code>RESTORE</code>, <code>LIST</code>, <code>VERIFY</code>, <code>PRUNE</code>,
+<code>APPLYUAEM</code>, <code>INIT</code>, <code>REKEY</code>, <code>BENCHMARK</code> (case-insensitive). Each keyword below only
+does something for the actions it's listed under; giving it elsewhere is
+silently ignored, not an error, since one shared template covers every
+action (see "Why one template" at the end of this page).</p>
+<h2 id="return-codes">Return codes<a class="headerlink" href="#return-codes" title="Permanent link">&para;</a></h2>
+<p>Every AmigaDOS-standard value, checkable from a script with <code>IF WARN</code>
+etc.:</p>
+<table>
+<thead>
+<tr>
+<th>RC</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0 (<code>RETURN_OK</code>)</td>
+<td>Full success.</td>
+</tr>
+<tr>
+<td>5 (<code>RETURN_WARN</code>)</td>
+<td>Completed, but something was degraded or skipped -- reported in the summary line, not fatal. E.g. some files failed to read, some links were skipped, some objects were missing on verify.</td>
+</tr>
+<tr>
+<td>10 (<code>RETURN_ERROR</code>)</td>
+<td>A usage/argument problem -- e.g. a required keyword missing, or <code>PRUNE</code> given both <code>SNAPID=</code> and <code>KEEP_LAST=</code>.</td>
+</tr>
+<tr>
+<td>20 (<code>RETURN_FAIL</code>)</td>
+<td>The operation could not run at all -- repository unreachable, out of memory, a corrupt/missing manifest, a wrong passphrase.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="snapshot">SNAPSHOT<a class="headerlink" href="#snapshot" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=SNAPSHOT SOURCE=&lt;path&gt; REPO=&lt;path&gt; [COMMENT=&lt;text&gt;]
+                        [PARANOID] [EXCLUDE=&lt;path&gt;] [COMPRESS=LZ4|DEFLATE|NONE]
+</code></pre>
+<p>Creates a new snapshot of <code>SOURCE=</code> (an AmigaDOS path -- a volume,
+assign, or subdirectory) inside <code>REPO=</code> (see
+<a href="../Backends/">Destinations</a> for what <code>REPO=</code> may be). <code>SOURCE=</code> and
+<code>REPO=</code> must not overlap.</p>
+<ul>
+<li><code>COMMENT=&lt;text&gt;</code> -- free-text note stored with the snapshot, shown by
+  <code>LIST</code>.</li>
+<li><code>PARANOID</code> -- for files at or under the chunk-size threshold, don't
+  just trust a metadata match against the previous snapshot: re-read the
+  file and cross-check its xxHash32 (recorded on every snapshot,
+  paranoid or not) before skipping it. Catches a file whose bytes
+  changed while every other piece of metadata (including the archive
+  bit) happens to still match. A mismatch is reported separately from
+  the ordinary "changed" count. Large (chunked) files skip this check --
+  see <a href="../Performance/">Performance</a>.</li>
+<li><code>EXCLUDE=&lt;path&gt;</code> -- a plain-text pattern file naming entries to skip
+  entirely (never scanned, never emitted). See
+  <a href="../Exclude-Lists/">Exclude Lists</a> for the file format.</li>
+<li><code>COMPRESS=LZ4|DEFLATE|NONE</code> -- only valid against a repository that
+  was created with <code>INIT ... COMPRESS=</code> (compression is a repository
+  property, fixed at init): overrides that repository's default
+  algorithm for this run's new objects. <code>NONE</code> stores this run's new
+  objects uncompressed (zero CPU cost) while the repository stays a
+  compressed one; already-stored objects are never rewritten either
+  way. On an uncompressed repository this keyword is an error, not a
+  silent no-op.</li>
+</ul>
+<p>The summary line reports dirs/files seen, how many files were unchanged
+(reused without reading), how many failed to read, how many soft/hard
+links were skipped (link restoration isn't implemented yet -- see
+<a href="../Repository-Format/">the repository format doc</a>), and how many
+dirs/files an <code>EXCLUDE=</code> list matched.</p>
+<h2 id="restore">RESTORE<a class="headerlink" href="#restore" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=RESTORE REPO=&lt;path&gt; DEST=&lt;path&gt; [SNAPID=&lt;id&gt;]
+                       [SUBTREE=&lt;path&gt;]
+</code></pre>
+<p>Restores content and metadata from a snapshot into <code>DEST=</code>. Without
+<code>SNAPID=</code>, the most recent snapshot is used. Without <code>SUBTREE=</code>, the
+whole tree is restored; with it, only the entry at that exact path plus
+everything under it (a real path-component match, not a string prefix
+-- <code>SUBTREE=Work</code> does not also match <code>Workbench</code>). Full relative paths
+are always preserved under <code>DEST=</code>, even for a subtree restore --
+restoring <code>SUBTREE=Work/Projects</code> into <code>DEST=RAM:Recovered</code> produces
+<code>RAM:Recovered/Work/Projects/...</code>, not a flattened copy.</p>
+<p>Every restored file's content is verified against its recorded
+BLAKE2s-256 hash before being written; restore aborts immediately on a
+hash mismatch or a missing object rather than writing unverified
+content. Metadata (protection, comment, datestamp, owner where
+supported) is applied last, after content, so a restrictive protection
+mask never blocks the restore of the file's own content first.</p>
+<h2 id="list">LIST<a class="headerlink" href="#list" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=LIST REPO=&lt;path&gt;
+</code></pre>
+<p>Prints every snapshot in the repository: id, dir/file counts, and
+comment.</p>
+<h2 id="verify">VERIFY<a class="headerlink" href="#verify" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=VERIFY REPO=&lt;path&gt; [SNAPID=&lt;id&gt;] [FULL]
+</code></pre>
+<p>Without <code>SNAPID=</code>, verifies the most recent snapshot. Structural verify
+(the default) checks the manifest decodes and every referenced object
+exists; <code>FULL</code> additionally re-reads and re-hashes every object's
+content against its recorded BLAKE2s-256. <code>VERIFY</code> never aborts early on
+finding a problem -- its whole point is a complete report, so a run
+always finishes and tells you exactly how many objects are missing or
+corrupt.</p>
+<h2 id="prune">PRUNE<a class="headerlink" href="#prune" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=PRUNE REPO=&lt;path&gt; SNAPID=&lt;id&gt;
+AmiSnap ACTION=PRUNE REPO=&lt;path&gt; KEEP_LAST=&lt;n&gt;
+</code></pre>
+<p>Exactly one of <code>SNAPID=</code> or <code>KEEP_LAST=</code> must be given -- combining them
+or giving neither is a usage error, not a guess at what you meant.
+<code>SNAPID=&lt;id&gt;</code> deletes exactly that one snapshot. <code>KEEP_LAST=&lt;n&gt;</code> keeps
+the <code>n</code> most recent snapshots and deletes every older one. Either way,
+pruning deletes the target snapshot's manifest(s) first, then sweeps any
+content object no longer referenced by any surviving snapshot -- a
+crash partway through a <code>PRUNE</code> never corrupts a snapshot that wasn't
+being deleted.</p>
+<p>Calendar-bucketed retention (daily/weekly/monthly, beyond plain
+"keep the last N") is not implemented yet.</p>
+<h2 id="applyuaem">APPLYUAEM<a class="headerlink" href="#applyuaem" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=APPLYUAEM SOURCE=&lt;path&gt;
+</code></pre>
+<p>Walks <code>SOURCE=</code> looking for <code>.uaem</code> sidecar files (the FS-UAE/Amiberry/
+Copperline host-directory-metadata convention: one plain-text line per
+entry recording protection flags, datestamp, and an optional comment)
+and applies each one to its corresponding real file via <code>SetComment()</code>/
+<code>SetFileDate()</code>/<code>SetProtection()</code>. This is for metadata that arrived via
+that convention -- e.g. a tree prepared on a PC and mounted into an
+emulator's host-directory filesystem -- not part of AmiSnap's own
+<code>SNAPSHOT</code>/<code>RESTORE</code> cycle, which applies metadata directly and never
+needs <code>.uaem</code> sidecars for itself.</p>
+<h2 id="init">INIT<a class="headerlink" href="#init" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=INIT REPO=&lt;path&gt; [PASSPHRASE] [COMPRESS=LZ4|DEFLATE]
+</code></pre>
+<p>One-time setup for an encrypted and/or compressed repository. Refuses
+to run against a repository that's already initialized.</p>
+<ul>
+<li><code>PASSPHRASE</code> -- make the repository encrypted; see
+  <a href="../Encryption/">Encryption</a> for the full picture.</li>
+<li><code>COMPRESS=LZ4|DEFLATE</code> -- make the repository compressed: every
+  content object is stored inside a compression frame, with the chosen
+  algorithm as the default for every future <code>SNAPSHOT</code> (overridable
+  per run -- see <code>SNAPSHOT</code>'s own <code>COMPRESS=</code>). <code>LZ4</code> is the
+  CPU-budget choice (fast on a 68030, modest ratios); <code>DEFLATE</code>
+  compresses harder and costs more CPU -- the right trade for a slow
+  uplink. Files that don't shrink (LhA archives, ADFs, mods) are
+  detected and stored raw inside their frame automatically, so
+  compression is never a net loss. This choice is fixed for the
+  repository's lifetime.</li>
+</ul>
+<p>The two options compose. <code>INIT</code> with neither is a usage error: a
+plain, uncompressed repository needs no <code>INIT</code> step at all -- just
+<code>SNAPSHOT</code> straight to <code>REPO=</code>.</p>
+<h2 id="rekey">REKEY<a class="headerlink" href="#rekey" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=REKEY REPO=&lt;path&gt;
+</code></pre>
+<p>Changes an encrypted repository's passphrase without touching the
+repository key itself, so every already-written object and manifest
+stays readable. Prompts for the current passphrase (failing closed on a
+wrong one) and then the new one, twice.</p>
+<h2 id="benchmark">BENCHMARK<a class="headerlink" href="#benchmark" title="Permanent link">&para;</a></h2>
+<pre><code>AmiSnap ACTION=BENCHMARK REPO=&lt;path&gt; [SOURCE=&lt;path&gt;] [SIZE=&lt;bytes&gt;]
+</code></pre>
+<p>Measures this machine and this destination together, so the
+<code>COMPRESS=</code> choice at <code>INIT</code> (see above) can be a real answer instead
+of a guess -- the right choice depends on the ratio of <em>this</em> CPU's
+compression speed to <em>this</em> destination's real write throughput, and
+that ratio varies enormously across the Amiga install base (a bare
+68020 to an accelerated 060; a mounted local volume to WebDAV over
+home broadband).</p>
+<ul>
+<li>Builds a sample: if <code>SOURCE=</code> is given, real file content read from
+  it (up to <code>SIZE=</code>, default 512KiB) -- more representative of your
+  actual data than a synthetic guess. Without <code>SOURCE=</code>, a synthetic
+  50/50 mix of compressible and incompressible data, standing in for
+  the realistic blend a real volume holds (text/structured data next
+  to already-packed archives and tracker modules).</li>
+<li>Writes and reads that sample back from <code>REPO=</code> to measure real
+  destination throughput (under <code>tmp/</code>, removed afterward; a later
+  <code>PRUNE</code> sweeps it up even if removal itself fails).</li>
+<li>Times LZ4 and DEFLATE compressing the same sample.</li>
+<li>Reports each measurement, an estimated effective throughput for
+  <code>NONE</code>/<code>LZ4</code>/<code>DEFLATE</code> (compress time plus write time at the
+  measured rates), and which one to pass to <code>INIT ... COMPRESS=</code>.</li>
+</ul>
+<p>To compare <code>CIPHERS=</code> choices for an <code>https://</code> destination, re-run
+<code>BENCHMARK</code> once per candidate value and compare the "Destination
+write" line -- see <a href="../Performance/">Performance</a>. <code>BENCHMARK</code>
+deliberately doesn't loop over ciphers itself: AmiSSL has a real,
+documented history of handshake fragility on this platform (see
+<code>docs/implementation-plan.md</code>'s TLS section), and reopening it
+repeatedly inside a shipped command is exactly the kind of thing that
+provoked it before.</p>
+<h2 id="cross-action-keywords">Cross-action keywords<a class="headerlink" href="#cross-action-keywords" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>LOG=&lt;path&gt;</code> -- also write every diagnostic/summary line to this file
+  (opened unbuffered, so a crash or hang never leaves behind a
+  misleadingly-empty log). Independent of <code>ACTION</code>.</li>
+<li><code>TLS13</code> -- allow TLS 1.3 for this run's <code>https://</code> destinations (the
+  default sticks to TLS 1.2; see <a href="../Backends/">Destinations</a>).</li>
+<li><code>TLSINSECURE</code> -- disable certificate verification entirely for this
+  run's <code>https://</code> destinations. An explicit, deliberate opt-out --
+  useful for a self-signed certificate on a home-lab NAS/WebDAV server,
+  never a default.</li>
+<li><code>CIPHERS=&lt;list&gt;</code> -- force a specific TLS cipher/list (a CPU-budget
+  lever on accelerated hardware, not a security setting -- see
+  <a href="../Performance/">Performance</a>).</li>
+</ul>
+<h2 id="why-one-template">Why one template<a class="headerlink" href="#why-one-template" title="Permanent link">&para;</a></h2>
+<p>AmiSnap uses a single combined <code>ReadArgs()</code> template with <code>ACTION</code> as
+the one required positional field, rather than a separate template per
+action. <code>ReadArgs()</code>'s own <code>/A</code> (required) can't be made conditional on
+another field's value, so each action validates its own required
+keywords itself after parsing (e.g. <code>SNAPSHOT</code> without <code>SOURCE=</code>/<code>REPO=</code>
+is a normal <code>RETURN_ERROR</code>, not a template-level rejection).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../Getting-Started/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Getting Started">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Getting Started
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../Exclude-Lists/" class="md-footer__link md-footer__link--next" aria-label="Next: Exclude Lists">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Exclude Lists
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      AmiSnap — versioned network backup for classic AmigaOS. BSD 2-Clause.
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.footer", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
