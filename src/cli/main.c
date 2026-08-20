@@ -305,9 +305,9 @@ static int open_backend(const char *path, amisnap_backend *out)
          * explicit non-default region without env-var credentials can
          * still use "?region=" in the URL, unaffected either way. */
         if (!url.has_credentials) {
-            LONG klen = GetVar((STRPTR)"AWS_ACCESS_KEY_ID", url.access_key,
+            LONG klen = GetVar((STRPTR)"AWS_ACCESS_KEY_ID", (STRPTR)url.access_key,
                                 sizeof(url.access_key), LV_VAR);
-            LONG slen = GetVar((STRPTR)"AWS_SECRET_ACCESS_KEY", url.secret_key,
+            LONG slen = GetVar((STRPTR)"AWS_SECRET_ACCESS_KEY", (STRPTR)url.secret_key,
                                 sizeof(url.secret_key), LV_VAR);
             if (klen <= 0 || slen <= 0) {
                 amilog_err("AmiSnap: no credentials for \"%s\" -- embed them in "
@@ -318,9 +318,9 @@ static int open_backend(const char *path, amisnap_backend *out)
 
             if (!url.has_region) {
                 char regionbuf[AMISNAP_S3_URL_REGION_MAX];
-                LONG rlen = GetVar((STRPTR)"AWS_REGION", regionbuf, sizeof(regionbuf), LV_VAR);
+                LONG rlen = GetVar((STRPTR)"AWS_REGION", (STRPTR)regionbuf, sizeof(regionbuf), LV_VAR);
                 if (rlen <= 0)
-                    rlen = GetVar((STRPTR)"AWS_DEFAULT_REGION", regionbuf, sizeof(regionbuf), LV_VAR);
+                    rlen = GetVar((STRPTR)"AWS_DEFAULT_REGION", (STRPTR)regionbuf, sizeof(regionbuf), LV_VAR);
                 /* Neither set: leave amisnap_s3_parse_url()'s own
                  * "us-east-1" default in url.region untouched --
                  * written into a separate buffer first specifically so
