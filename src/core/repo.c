@@ -132,11 +132,18 @@ static int write_object(const amisnap_repo_writer *rw,
         }
         if (subkeys) {
             uint8_t nonce[AMISNAP_REPO_NONCE_SIZE];
+            uint8_t body_hash[32];
             size_t framelen = AMISNAP_REPO_NONCE_SIZE + bodylen + AMISNAP_REPO_MAC_SIZE;
             uint8_t *frame = (uint8_t *)malloc(framelen);
             if (!frame) { amisnap_buf_free(&framed); return AMISNAP_ERR_NOMEM; }
 
-            amisnap_repo_object_nonce(subkeys->nonce, hash, nonce);
+            /* Nonce derived from a hash of `body` (what ChaCha20 actually
+             * encrypts -- the post-compression bytes), NOT `hash` (the
+             * object's content-address, over the pre-compression `data`)
+             * -- see amisnap_repo_object_nonce's own doc comment for why
+             * that distinction is the whole point. */
+            amisnap_blake2s256(body, bodylen, body_hash);
+            amisnap_repo_object_nonce(subkeys->nonce, body_hash, nonce);
             amisnap_repo_encrypt_frame(subkeys, nonce, (const uint8_t *)body, bodylen, frame);
             rc = amisnap_backend_put(be, key, frame, framelen);
             free(frame);

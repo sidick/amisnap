@@ -38,11 +38,24 @@ void amisnap_repo_derive_subkeys(const uint8_t key[AMISNAP_REPO_KEY_SIZE],
                                   amisnap_repo_subkeys *out);
 
 /* Object nonce = first 12 bytes of keyed-BLAKE2s-256(key=K_nonce,
- * message=content_hash) -- content_hash is the object's own plaintext
- * BLAKE2s-256 content address (the same hash that names it under
- * objects/<hh>/<hex64>), so this can never repeat for two different
- * plaintexts, and dedup guarantees a repeated plaintext is never
- * re-encrypted rather than re-nonced. */
+ * message=content_hash). `content_hash` MUST be a hash of the exact
+ * bytes ChaCha20 is about to encrypt (repo.c's `body`/`bodylen` --
+ * the post-COMPRESS frame, when framed -- not the object's own
+ * content-address hash over the pre-compression file bytes, which
+ * objects/<hh>/<hex64> is keyed on instead): two different byte
+ * streams reusing the same nonce under the same key is a real
+ * confidentiality break for a stream cipher, and the pre-compression
+ * content-address hash does NOT vary with the compression algorithm
+ * chosen for a given run, while the actual ciphertext input does.
+ * This bit a real case: an object pruned and later re-stored (same
+ * raw file content, different COMPRESS= setting than the first time)
+ * would otherwise encrypt two different byte streams under the exact
+ * same (key, nonce) pair. Hashing the real cipher input instead keeps
+ * the invariant repo.c's call site actually needs: a nonce can only
+ * repeat if the bytes it's protecting are identical too, in which
+ * case the ciphertext is identical as well and nothing new is
+ * leaked -- dedup existing beforehand just means this call never even
+ * runs for that case, it isn't what makes the nonce safe. */
 void amisnap_repo_object_nonce(const uint8_t subkey_nonce[AMISNAP_REPO_KEY_SIZE],
                                 const uint8_t content_hash[32],
                                 uint8_t nonce_out[AMISNAP_REPO_NONCE_SIZE]);

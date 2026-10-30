@@ -300,9 +300,99 @@ static void encrypted_framed(void)
     amisnap_backend_close(&be);
 }
 
+/* --- Regression for issue #31: the same raw file content, pruned
+ * and later re-stored with a DIFFERENT COMPRESS= setting, must not
+ * reuse the same (key, nonce) pair to encrypt two different byte
+ * streams (the two different compressed frames) -- a real
+ * confidentiality break for a stream cipher. Simulates "pruned" by
+ * just deleting the object between the two writes (same effect: the
+ * dedup exists-check in write_object sees nothing there, so it
+ * actually re-encrypts, exactly like a real prune-then-restore). --- */
+static void pruned_then_recompressed(void)
+{
+    amisnap_backend be;
+    amisnap_repo_writer rw;
+    amisnap_snap_meta snap;
+    amisnap_volume_meta vol;
+    amisnap_entry_meta e;
+    amisnap_repo_subkeys sk;
+    uint8_t key[32], hash[32];
+    char snapid1[17], snapid2[17];
+    char objkey[80];
+    amisnap_buf obj1, obj2;
+    int i;
+
+    for (i = 0; i < 32; i++) key[i] = (uint8_t)(0xA0 + i);
+    amisnap_repo_derive_subkeys(key, &sk);
+
+    TEST_CHECK(system("rm -rf " TESTDIR "-pr") == 0);
+    TEST_CHECK(amisnap_backend_dir_open(TESTDIR "-pr", &be) == AMISNAP_OK);
+
+    /* --- First write: LZ4. --- */
+    amisnap_repo_writer_init(&rw, &be, &sk);
+    amisnap_repo_writer_set_compression(&rw, AMISNAP_COMP_LZ4);
+    memset(&snap, 0, sizeof(snap));
+    snap.created_days = 2200; snap.created_mins = 1; snap.created_ticks = 1;
+    TEST_CHECK(amisnap_repo_writer_snap(&rw, &snap) == AMISNAP_OK);
+    memset(&vol, 0, sizeof(vol));
+    vol.vol_root = (const uint8_t *)"Work:"; vol.vol_root_len = 5;
+    TEST_CHECK(amisnap_repo_writer_volume(&rw, &vol) == AMISNAP_OK);
+    memset(&e, 0, sizeof(e));
+    e.path = (const uint8_t *)"runs.bin"; e.path_len = 8;
+    e.type = AMISNAP_ETYPE_FILE;
+    e.date_days = 2200;
+    TEST_CHECK(amisnap_repo_writer_file(&rw, &e, runs, sizeof runs) == AMISNAP_OK);
+    TEST_CHECK(amisnap_repo_writer_finish(&rw, snapid1) == AMISNAP_OK);
+    amisnap_repo_writer_free(&rw);
+
+    amisnap_blake2s256(runs, sizeof runs, hash);
+    object_key_for(hash, objkey);
+    TEST_CHECK(amisnap_backend_get(&be, objkey, &obj1) == AMISNAP_OK);
+
+    /* --- Simulate PRUNE deleting this object (its only snapshot
+     * gone): the dedup exists-check in write_object below will find
+     * nothing there, so the second write genuinely re-encrypts rather
+     * than skipping as a no-op duplicate. --- */
+    TEST_CHECK(amisnap_backend_remove(&be, objkey) == AMISNAP_OK);
+
+    /* --- Second write: same raw content, DEFLATE instead of LZ4 --
+     * a different compressed byte stream for the exact same file. --- */
+    amisnap_repo_writer_init(&rw, &be, &sk);
+    amisnap_repo_writer_set_compression(&rw, AMISNAP_COMP_ZLIB);
+    memset(&snap, 0, sizeof(snap));
+    snap.created_days = 2201; snap.created_mins = 1; snap.created_ticks = 1;
+    TEST_CHECK(amisnap_repo_writer_snap(&rw, &snap) == AMISNAP_OK);
+    TEST_CHECK(amisnap_repo_writer_volume(&rw, &vol) == AMISNAP_OK);
+    memset(&e, 0, sizeof(e));
+    e.path = (const uint8_t *)"runs.bin"; e.path_len = 8;
+    e.type = AMISNAP_ETYPE_FILE;
+    e.date_days = 2201;
+    TEST_CHECK(amisnap_repo_writer_file(&rw, &e, runs, sizeof runs) == AMISNAP_OK);
+    TEST_CHECK(amisnap_repo_writer_finish(&rw, snapid2) == AMISNAP_OK);
+    amisnap_repo_writer_free(&rw);
+
+    TEST_CHECK(amisnap_backend_get(&be, objkey, &obj2) == AMISNAP_OK);
+
+    /* Both objects share the same key (same raw-content hash -- that
+     * part is correct and unrelated to this bug) but must NOT share
+     * the same nonce (the frame's first AMISNAP_REPO_NONCE_SIZE
+     * bytes), since their ciphertexts (the compressed bytes actually
+     * encrypted) genuinely differ. */
+    TEST_CHECK(memcmp(obj1.data + AMISNAP_REPO_NONCE_SIZE, obj2.data + AMISNAP_REPO_NONCE_SIZE,
+                       obj1.len - AMISNAP_REPO_NONCE_SIZE < obj2.len - AMISNAP_REPO_NONCE_SIZE ?
+                       obj1.len - AMISNAP_REPO_NONCE_SIZE : obj2.len - AMISNAP_REPO_NONCE_SIZE) != 0);
+    TEST_CHECK(memcmp(obj1.data, obj2.data, AMISNAP_REPO_NONCE_SIZE) != 0);
+
+    amisnap_buf_free(&obj1);
+    amisnap_buf_free(&obj2);
+    amisnap_backend_close(&be);
+    TEST_CHECK(system("rm -rf " TESTDIR "-pr") == 0);
+}
+
 void run_repo_framed_tests(void)
 {
     fill_fixtures();
     plain_framed();
     encrypted_framed();
+    pruned_then_recompressed();
 }
