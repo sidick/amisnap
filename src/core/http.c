@@ -197,6 +197,17 @@ static int populate_headers(amisnap_http_response *r)
                     if (value[t] != ' ') return AMISNAP_ERR_MALFORMED; /* trailing garbage */
                 r->content_length = parse_u64(value, value_len, &ok);
                 if (!ok) return AMISNAP_ERR_MALFORMED; /* overflow */
+                /* A value that fits uint64 but not this platform's size_t
+                 * (always true on the 32-bit m68k target for anything
+                 * over 4GB-1) must be rejected here, not truncated later:
+                 * PARSE_BODY's `want` is computed as a size_t, and a
+                 * truncated/wrapped value can make it compute 0 forever
+                 * while body.len never reaches the real (64-bit)
+                 * content_length -- a hostile or just-large-enough server
+                 * locks the parser in a busy loop that never reaches
+                 * PARSE_DONE. */
+                if (r->content_length > (uint64_t)SIZE_MAX)
+                    return AMISNAP_ERR_TOO_LONG;
                 r->has_content_length = 1;
             } else if (header_name_eq(name, name_len, "Transfer-Encoding")) {
                 if (value_contains_ci(value, value_len, "chunked"))
