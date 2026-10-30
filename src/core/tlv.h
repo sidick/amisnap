@@ -28,6 +28,9 @@
 #define AMISNAP_ERR_HASH_MISMATCH   -7  /* END_HASH doesn't match the manifest bytes it covers */
 #define AMISNAP_ERR_IO              -8  /* a backend I/O primitive (open/write/rename/mkdir/...) failed */
 #define AMISNAP_ERR_NOT_FOUND       -9  /* a backend get/remove target does not exist */
+#define AMISNAP_ERR_UNSAFE_PATH     -10 /* E_PATH has an empty component (leading/doubled/
+                                          * trailing '/') or embeds ':' -- would escape the
+                                          * restore destination if used as-is */
 
 /* A tag's high bit (0x8000) marks it critical -- format.md "TLV encoding". */
 #define AMISNAP_TAG_CRITICAL 0x8000u

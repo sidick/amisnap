@@ -73,15 +73,30 @@ typedef struct {
     size_t links_skipped;     /* soft/hard links -- see this header's own note above */
 } amisnap_restore_result;
 
-/* Restores `manifest_data`/`manifest_len` (already-fetched manifest
- * bytes, e.g. via amisnap_backend_get on a repository backend) from
- * `repo` (where content objects are read) into `dest`. Every object
- * read is verified against its declared BLAKE2s-256 hash before being
- * written out (format.md's own "verifying each against its name") --
- * AMISNAP_ERR_HASH_MISMATCH or AMISNAP_ERR_NOT_FOUND on a corrupt or
- * missing object aborts the whole restore immediately (implementation-
- * plan.md principle 1: a data-losing bug is fatal, and silently
- * writing out unverified or partial content would be exactly that).
+/* Before anything is written to `dest`, the whole snapshot is verified
+ * (repo.h's amisnap_verify_manifest(), FULL mode -- every object
+ * re-read and re-hashed) -- a missing or corrupt object is rejected via
+ * AMISNAP_ERR_NOT_FOUND/AMISNAP_ERR_HASH_MISMATCH up front, with zero
+ * writes to `dest`, rather than being discovered partway through a
+ * restore that's already modified `dest` ("trust is everything": an
+ * aborted restore must leave `dest` exactly as it found it). Each E_PATH is
+ * also checked for an empty component (leading/doubled/trailing '/')
+ * or an embedded ':' -- either would let a corrupted or tampered
+ * *unencrypted* manifest write outside `dest` -- aborting with
+ * AMISNAP_ERR_UNSAFE_PATH before that entry is used as a destination
+ * key/path. Both checks cost an extra full read of every object (the
+ * verify pass) before the real one; see restore.c's own comment at the
+ * call site for why that cost is accepted here.
+ *
+ * Every object read for the actual restore is verified against its
+ * declared BLAKE2s-256 hash before being written out (format.md's own
+ * "verifying each against its name") -- AMISNAP_ERR_HASH_MISMATCH or
+ * AMISNAP_ERR_NOT_FOUND on a corrupt or missing object aborts the whole
+ * restore immediately (implementation-plan.md principle 1: a data-
+ * losing bug is fatal, and silently writing out unverified or partial
+ * content would be exactly that) -- in practice this should never fire
+ * given the pre-flight FULL verify above, but is kept as a second,
+ * independent check rather than trusted away.
  * Entries are processed in the manifest's own depth-first, directories
  * -before-contents order, so a directory's amisnap_backend_mkcol
  * always happens before anything is written under it. When
@@ -91,9 +106,11 @@ typedef struct {
  *
  * Returns AMISNAP_OK (check *result for what actually happened),
  * or the first error encountered (a manifest-decode error if
- * `manifest_data` itself never validated, or a backend/hash error from
- * partway through -- *result reflects only what completed before the
- * failure).
+ * `manifest_data` itself never validated, AMISNAP_ERR_NOT_FOUND/
+ * AMISNAP_ERR_HASH_MISMATCH from the pre-flight verify or
+ * AMISNAP_ERR_UNSAFE_PATH from the path check, both with zero writes
+ * performed, or a backend/hash error from partway through -- *result
+ * reflects only what completed before the failure).
  *
  * `manifest_data`/`manifest_len` are the raw manifest FILE bytes (as
  * fetched from the backend, still carrying the common header) --

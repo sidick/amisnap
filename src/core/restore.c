@@ -48,6 +48,36 @@ static int path_to_key(const uint8_t *path, size_t path_len, char out[RESTORE_PA
     return AMISNAP_OK;
 }
 
+/* format.md's E_PATH is "components joined with /", and both '/' and
+ * ':' are illegal in a real Amiga filename, so a well-formed path never
+ * contains an empty component or a ':'. An empty component means a
+ * leading '/' (AmigaDOS: "go to parent"), a doubled '/' (same, mid-path),
+ * or a trailing '/' -- any of those, or an embedded ':' (a volume/assign
+ * switch), would let a corrupted or tampered manifest steer a restore
+ * destination key/path outside the chosen destination (e.g. up to its
+ * parent, or onto a different volume entirely). This only matters for an
+ * unencrypted manifest -- an encrypted one's HMAC already rules out
+ * tampering -- but a damaged unencrypted manifest is just as capable of
+ * carrying this by accident, so the check applies unconditionally. */
+static int entry_path_is_safe(const uint8_t *path, size_t path_len)
+{
+    size_t i, start = 0;
+
+    if (path_len == 0)
+        return 1; /* the root entry itself */
+
+    for (i = 0; i <= path_len; i++) {
+        if (i == path_len || path[i] == '/') {
+            if (i == start)
+                return 0; /* empty component */
+            start = i + 1;
+        } else if (path[i] == ':') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* Streams each content object straight to the destination via
  * backend.h's put_begin/put_append/put_finish rather than accumulating
  * the whole reconstructed file into one buffer first -- for a file
@@ -117,6 +147,9 @@ static int on_entry(void *user, const amisnap_entry_meta *entry)
         rc->result->links_skipped++;
         return 0;
     }
+
+    if (!entry_path_is_safe(entry->path, entry->path_len))
+        return AMISNAP_ERR_UNSAFE_PATH; /* abort outright -- see entry_path_is_safe's comment */
 
     status = path_to_key(entry->path, entry->path_len, key);
     if (status != AMISNAP_OK) return status;
@@ -236,6 +269,29 @@ int amisnap_restore_manifest(amisnap_backend *repo, amisnap_backend *dest,
     int status;
 
     memset(result, 0, sizeof(*result));
+
+    /* "Trust is everything": a corrupted snapshot must be caught before
+     * any write to dest, not discovered partway through one -- a crashed
+     * or aborted restore must leave dest exactly as it found it, same as
+     * a crashed snapshot leaves the repository's previous state intact.
+     * FULL re-hashes every object up front, so a restore now reads every
+     * content object's bytes twice (once here, once in on_entry's own
+     * amisnap_repo_fetch_object) -- the CPU-budget cost of a guarantee
+     * that was previously just "mostly true, until the first corrupt
+     * object partway through". */
+    {
+        amisnap_verify_result vresult;
+
+        status = amisnap_verify_manifest(repo, subkeys, objcomp, snapid,
+                                          manifest_data, manifest_len, 1, &vresult);
+        if (status != AMISNAP_OK) return status;
+        /* Specific error codes preserved (rather than one generic
+         * AMISNAP_ERR_VERIFY_FAILED) so a caller can tell a missing
+         * object from a corrupt one, same as it always could when
+         * this was only discovered mid-restore. */
+        if (vresult.objects_corrupt > 0) return AMISNAP_ERR_HASH_MISMATCH;
+        if (vresult.objects_missing > 0) return AMISNAP_ERR_NOT_FOUND;
+    }
 
     status = amisnap_repo_open_manifest(subkeys, snapid, manifest_data, manifest_len, &plaintext);
     if (status != AMISNAP_OK) return status;

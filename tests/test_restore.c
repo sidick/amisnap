@@ -292,6 +292,62 @@ void run_restore_tests(void)
         TEST_CHECK(system("rm -rf " DESTDIR "5") == 0);
     }
 
+    /* --- A manifest path with an empty component (leading/doubled
+     * '/') or an embedded ':' -- as a damaged or tampered unencrypted
+     * manifest could carry -- aborts with AMISNAP_ERR_UNSAFE_PATH
+     * before anything is written, rather than being handed straight
+     * to the destination backend as a key/path. --- */
+    {
+        static const char *const unsafe_paths[] = {
+            "/evil",      /* leading '/': AmigaDOS "go to parent" */
+            "Sub//evil",  /* doubled '/': same, mid-path */
+            "Sub/",       /* trailing '/': empty final component */
+            "DH1:evil",   /* embedded ':': volume/assign switch */
+        };
+        size_t i;
+
+        for (i = 0; i < sizeof(unsafe_paths) / sizeof(unsafe_paths[0]); i++) {
+            amisnap_backend urepo, udest;
+            amisnap_repo_writer rw;
+            amisnap_snap_meta snap;
+            amisnap_entry_meta e;
+            amisnap_buf umf;
+            amisnap_restore_result ur;
+            char usnapid[17];
+
+            TEST_CHECK(system("rm -rf " REPODIR "-u " DESTDIR "-u") == 0);
+            TEST_CHECK(amisnap_backend_dir_open(REPODIR "-u", &urepo) == AMISNAP_OK);
+            TEST_CHECK(amisnap_backend_dir_open(DESTDIR "-u", &udest) == AMISNAP_OK);
+
+            amisnap_repo_writer_init(&rw, &urepo, NULL);
+            memset(&snap, 0, sizeof(snap));
+            snap.created_days = 2000; snap.created_mins = 1; snap.created_ticks = 1;
+            TEST_CHECK(amisnap_repo_writer_snap(&rw, &snap) == AMISNAP_OK);
+
+            memset(&e, 0, sizeof(e));
+            e.path = (const uint8_t *)unsafe_paths[i];
+            e.path_len = strlen(unsafe_paths[i]);
+            e.type = AMISNAP_ETYPE_FILE; e.date_days = 2000;
+            TEST_CHECK(amisnap_repo_writer_file(&rw, &e, "x", 1) == AMISNAP_OK);
+
+            TEST_CHECK(amisnap_repo_writer_finish(&rw, usnapid) == AMISNAP_OK);
+            {
+                char mfkey[64];
+                snprintf(mfkey, sizeof(mfkey), "snapshots/%s.mf", usnapid);
+                TEST_CHECK(amisnap_backend_get(&urepo, mfkey, &umf) == AMISNAP_OK);
+            }
+
+            TEST_CHECK(amisnap_restore_manifest(&urepo, &udest, NULL, AMISNAP_OBJCOMP_RAW, NULL,
+                                                 umf.data, umf.len, NULL, &ur) == AMISNAP_ERR_UNSAFE_PATH);
+            TEST_CHECK(ur.files_written == 0 && ur.dirs_created == 0);
+
+            amisnap_buf_free(&umf);
+            amisnap_backend_close(&urepo);
+            amisnap_backend_close(&udest);
+            TEST_CHECK(system("rm -rf " REPODIR "-u " DESTDIR "-u") == 0);
+        }
+    }
+
     amisnap_buf_free(&mf);
     amisnap_backend_close(&repo);
     amisnap_backend_close(&dest);
