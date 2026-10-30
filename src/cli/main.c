@@ -618,6 +618,9 @@ typedef struct {
     const char *source_root;
     const amisnap_index *prev_index; /* NULL on a first-ever backup (no previous snapshot) */
     int paranoid;
+    int no_archive_bit; /* NOARCHIVEBIT: skip mark_backed_up() -- every file is always
+                           * re-read+hashed next run, never the fast path, by the user's
+                           * own choice (see cmd_snapshot's own TEMPLATE help text) */
     size_t files_ok, files_failed, files_unchanged, files_paranoid_mismatch;
 } snapshot_ctx;
 
@@ -734,7 +737,7 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
             if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
             ctx->files_ok++;
             ctx->files_unchanged++;
-            mark_backed_up(path, e.prot);
+            if (!ctx->no_archive_bit) mark_backed_up(path, e.prot);
             return 0;
         }
 
@@ -756,7 +759,7 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
                 if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
                 ctx->files_ok++;
                 ctx->files_unchanged++;
-                mark_backed_up(path, e.prot);
+                if (!ctx->no_archive_bit) mark_backed_up(path, e.prot);
                 return 0;
             }
 
@@ -771,7 +774,7 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
             }
             if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
             ctx->files_ok++;
-            mark_backed_up(path, e.prot);
+            if (!ctx->no_archive_bit) mark_backed_up(path, e.prot);
             return 0;
         }
 
@@ -817,7 +820,7 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
                 if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
                 ctx->files_ok++;
                 ctx->files_unchanged++;
-                mark_backed_up(path, e.prot);
+                if (!ctx->no_archive_bit) mark_backed_up(path, e.prot);
                 return 0;
             }
             /* Metadata said "unchanged" but the paranoid re-check
@@ -1018,7 +1021,7 @@ static int parse_compress_arg(const char *word, int allow_none)
 }
 
 static LONG cmd_snapshot(const char *source, const char *repo, const char *comment, int paranoid,
-                          const char *exclude_path, const char *compress_arg)
+                          const char *exclude_path, const char *compress_arg, int no_archive_bit)
 {
     amisnap_backend be;
     amisnap_repo_writer rw;
@@ -1184,8 +1187,14 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
      * always. A previous manifest that fails to read or decode also
      * degrades to a full scan rather than aborting this snapshot over
      * it -- losing the speed-up is not the same class of problem as
-     * losing data (principle 1 is about the latter). */
-    {
+     * losing data (principle 1 is about the latter).
+     *
+     * Skipped entirely under NOARCHIVEBIT: without the archive bit
+     * ever getting set, amisnap_index_unchanged() can never match
+     * (index.c's own gate), so loading and decoding the previous
+     * manifest here would just be real work -- on real Amiga
+     * hardware, not free -- for zero possible benefit. */
+    if (!no_archive_bit) {
         char prev_snapid[17];
         int prc = resolve_snapid(&be, NULL, prev_snapid);
         if (prc == AMISNAP_OK) {
@@ -1211,6 +1220,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     ctx.source_root = source;
     ctx.prev_index = have_prev_index ? &prev_index : NULL;
     ctx.paranoid = paranoid;
+    ctx.no_archive_bit = no_archive_bit;
     ctx.files_ok = 0;
     ctx.files_failed = 0;
     ctx.files_unchanged = 0;
@@ -2366,10 +2376,10 @@ static LONG cmd_benchmark(const char *repo, const char *source, const LONG *size
 
 /* --- dispatch --------------------------------------------------------- */
 
-#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,COMPRESS/K,TLS13/S,TLSINSECURE/S,CIPHERS/K,EXCLUDE/K,SIZE/K/N"
+#define TEMPLATE "ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,COMPRESS/K,TLS13/S,TLSINSECURE/S,CIPHERS/K,EXCLUDE/K,SIZE/K/N,NOARCHIVEBIT/S"
 enum { ARG_ACTION, ARG_SOURCE, ARG_REPO, ARG_DEST, ARG_SNAPID, ARG_SUBTREE, ARG_COMMENT, ARG_FULL, ARG_LOG,
        ARG_KEEP_LAST, ARG_PARANOID, ARG_PASSPHRASE, ARG_COMPRESS, ARG_TLS13, ARG_TLSINSECURE, ARG_CIPHERS, ARG_EXCLUDE,
-       ARG_SIZE,
+       ARG_SIZE, ARG_NOARCHIVEBIT,
        ARG_COUNT };
 
 /* Second "?" at the ReadArgs() prompt prints this (RDA_ExtHelp,
@@ -2379,7 +2389,10 @@ static const char exthelp[] =
     "ACTION is one of:\n"
     "  SNAPSHOT   take a new snapshot -- SOURCE, REPO required; COMMENT,\n"
     "             PARANOID, EXCLUDE optional; COMPRESS=LZ4|DEFLATE|NONE\n"
-    "             overrides a compressed repository's default\n"
+    "             overrides a compressed repository's default;\n"
+    "             NOARCHIVEBIT skips setting the archive bit after\n"
+    "             backing up each file (every later run does a full\n"
+    "             re-read+hash instead of the usual fast path)\n"
     "  RESTORE    restore a snapshot -- REPO, DEST required; SNAPID\n"
     "             (default latest), SUBTREE optional\n"
     "  LIST       list snapshots in a repository -- REPO required\n"
@@ -2495,7 +2508,8 @@ static int real_main(void *arg)
     if (str_ieq(action, "SNAPSHOT")) {
         rc = cmd_snapshot((const char *)args[ARG_SOURCE], (const char *)args[ARG_REPO],
                            (const char *)args[ARG_COMMENT], args[ARG_PARANOID] != 0,
-                           (const char *)args[ARG_EXCLUDE], (const char *)args[ARG_COMPRESS]);
+                           (const char *)args[ARG_EXCLUDE], (const char *)args[ARG_COMPRESS],
+                           args[ARG_NOARCHIVEBIT] != 0);
     } else if (str_ieq(action, "RESTORE")) {
         rc = cmd_restore((const char *)args[ARG_REPO], (const char *)args[ARG_DEST],
                           (const char *)args[ARG_SNAPID], (const char *)args[ARG_SUBTREE]);

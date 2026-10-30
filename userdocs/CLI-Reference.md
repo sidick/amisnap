@@ -9,7 +9,7 @@ quotes). The full template, verbatim from the binary itself:
 ```
 ACTION/A,SOURCE/K,REPO/K,DEST/K,SNAPID/K,SUBTREE/K,COMMENT/K,FULL/S,
 LOG/K,KEEP_LAST/K/N,PARANOID/S,PASSPHRASE/S,COMPRESS/K,TLS13/S,
-TLSINSECURE/S,CIPHERS/K,EXCLUDE/K,SIZE/K/N
+TLSINSECURE/S,CIPHERS/K,EXCLUDE/K,SIZE/K/N,NOARCHIVEBIT/S
 ```
 
 `ACTION` is one of `SNAPSHOT`, `RESTORE`, `LIST`, `VERIFY`, `PRUNE`,
@@ -44,6 +44,7 @@ etc.:
 ```
 AmiSnap ACTION=SNAPSHOT SOURCE=<path> REPO=<path> [COMMENT=<text>]
                         [PARANOID] [EXCLUDE=<path>] [COMPRESS=LZ4|DEFLATE|NONE]
+                        [NOARCHIVEBIT]
 ```
 
 Creates a new snapshot of `SOURCE=` (an AmigaDOS path -- a volume,
@@ -72,6 +73,17 @@ assign, or subdirectory) inside `REPO=` (see
   compressed one; already-stored objects are never rewritten either
   way. On an uncompressed repository this keyword is an error, not a
   silent no-op.
+- `NOARCHIVEBIT` -- don't set the archive bit on each file backed up
+  this run. AmiSnap normally sets it (and relies on AmigaDOS clearing
+  it again whenever the file is next written) as the one signal its
+  own incremental fast path uses to recognize an unchanged file on the
+  *next* `SNAPSHOT` without re-reading it. Give this if something else
+  on the system needs the archive bit left alone, or if you'd simply
+  rather AmiSnap not touch it -- every file is then fully re-read and
+  re-hashed on every run (no incremental speed-up at all), but nothing
+  else about the backup changes. Not remembered across runs: give it
+  again on every `SNAPSHOT` call where it matters, since there is
+  nothing in the repository recording that a past run used it.
 
 The summary line reports dirs/files seen, how many files were unchanged
 (reused without reading), how many failed to read, how many soft/hard
