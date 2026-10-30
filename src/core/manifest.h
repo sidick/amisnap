@@ -95,15 +95,6 @@ int amisnap_manifest_writer_finish(amisnap_manifest_writer *w, amisnap_buf *out)
 
 /* --- Reader (visitor) --- */
 
-/* Scratch capacity for one entry's E_CONTENT refs during decode --
- * reused across entries within a single amisnap_manifest_decode() call
- * (each on_entry callback must copy anything it wants to keep past its
- * own invocation, same borrowing contract as meta.h). 4096 refs at the
- * default 8MB chunk size is 32GB, comfortably past anything OS 3.x can
- * produce; decode fails loudly (AMISNAP_ERR_MALFORMED, from meta.c) on
- * an entry needing more, rather than silently truncating it. */
-#define AMISNAP_MANIFEST_MAX_CONTENT_REFS 4096
-
 /* Each callback returns 0 to keep decoding, or a nonzero value
  * (conventionally a negative AMISNAP_ERR_* code, though decode never
  * interprets it -- just propagates it) to abort immediately: decode
@@ -129,7 +120,10 @@ typedef struct {
  *
  * All borrowed pointers handed to the visitor point into `data` and
  * are valid only during that callback (E_CONTENT refs point into a
- * reused scratch array -- see AMISNAP_MANIFEST_MAX_CONTENT_REFS).
+ * scratch array manifest.c grows as needed, sized per-entry from that
+ * entry's own record length -- not a fixed cap -- so a file chunked
+ * into arbitrarily many E_CONTENT refs decodes correctly; see
+ * manifest.c's amisnap_manifest_decode() for why that bound is safe).
  *
  * Returns AMISNAP_OK, a callback's own nonzero abort value (see
  * amisnap_manifest_visitor above), or: AMISNAP_ERR_TRUNCATED/MALFORMED

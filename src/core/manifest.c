@@ -322,16 +322,14 @@ int amisnap_manifest_decode(const uint8_t *data, size_t len, const amisnap_manif
     size_t body_start;
     uint16_t hdr_flags;
     amisnap_cursor c;
-    amisnap_content_ref *scratch;
+    amisnap_content_ref *scratch = NULL;
+    size_t scratch_cap = 0;
     int seen_snap = 0, seen_end = 0;
     size_t entry_count = 0;
     int rc;
 
     rc = amisnap_read_header(data, len, AMISNAP_FTYPE_MANIFEST, &hdr_flags, &body_start);
     if (rc != AMISNAP_OK) return rc;
-
-    scratch = (amisnap_content_ref *)malloc(AMISNAP_MANIFEST_MAX_CONTENT_REFS * sizeof(*scratch));
-    if (!scratch) return AMISNAP_ERR_NOMEM;
 
     amisnap_cursor_init(&c, data + body_start, len - body_start);
 
@@ -373,7 +371,29 @@ int amisnap_manifest_decode(const uint8_t *data, size_t len, const amisnap_manif
         }
         case AMISNAP_REC_ENTRY_TAG: {
             amisnap_entry_meta entry;
-            rc = amisnap_meta_decode_entry(val, vlen, &entry, scratch, AMISNAP_MANIFEST_MAX_CONTENT_REFS);
+            /* Sized from this record's own vlen, not a fixed cap: each
+             * E_CONTENT field costs at least 6 bytes of tag/length
+             * framing plus its fixed 40-byte value (tlv.h's
+             * amisnap_cursor_field), so this entry can never carry more
+             * than vlen/46 of them -- a real, physical upper bound
+             * already enforced by the manifest's own validated length,
+             * not a value this code is trusting from the file. A large
+             * file chunked into many refs (format.md's CHUNK_SIZE is
+             * 256KiB, so >1GiB already needed more than the old fixed
+             * 4096-ref scratch) decodes correctly instead of the whole
+             * manifest failing AMISNAP_ERR_MALFORMED after a successful
+             * SNAPSHOT. scratch only ever grows across entries in one
+             * decode call, matching repo.c's own writer-side
+             * amisnap_repo_writer_file_chunked() grow-only pattern. */
+            size_t need = vlen / 46 + 1;
+            if (need > scratch_cap) {
+                amisnap_content_ref *newscratch =
+                    (amisnap_content_ref *)realloc(scratch, need * sizeof(*newscratch));
+                if (!newscratch) { rc = AMISNAP_ERR_NOMEM; goto out; }
+                scratch = newscratch;
+                scratch_cap = need;
+            }
+            rc = amisnap_meta_decode_entry(val, vlen, &entry, scratch, scratch_cap);
             if (rc != AMISNAP_OK) goto out;
             entry_count++;
             if (visitor->on_entry) {

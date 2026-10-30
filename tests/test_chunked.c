@@ -252,5 +252,85 @@ void run_chunked_tests(void)
         TEST_CHECK(system("rm -rf " REPODIR "-err") == 0);
     }
 
+    /* --- a file needing more than the old fixed 4096-ref manifest
+     * decode scratch (issue #22: the writer has never capped
+     * content_count, but the reader used to -- a file between 1 and
+     * 2GB at the real 256KiB default chunk size hit exactly this,
+     * decoding-failing RESTORE/VERIFY/PRUNE on a snapshot that
+     * SNAPSHOT itself had reported as a success). 4097 chunks of this
+     * tiny CHUNK_SIZE is a ~32KB file, not a real 1GB+ one, but
+     * exercises the identical code path: more E_CONTENT refs for one
+     * entry than manifest.c's old AMISNAP_MANIFEST_MAX_CONTENT_REFS
+     * (4096) ever allowed it to decode. --- */
+    {
+        amisnap_backend repo4, dest4;
+        amisnap_repo_writer rw4;
+        amisnap_entry_meta e4;
+        amisnap_buf mf4;
+        amisnap_restore_result rresult4;
+        amisnap_verify_result vresult4;
+        amisnap_buf got4;
+        mem_reader many_reader;
+        uint8_t *content_many;
+        char snapid4[17];
+        char key4[32];
+#define MANY_CHUNK_COUNT 4097u
+#define MANY_LEN (MANY_CHUNK_COUNT * CHUNK_SIZE)
+        size_t i;
+
+        content_many = (uint8_t *)malloc(MANY_LEN);
+        TEST_CHECK(content_many != NULL);
+        for (i = 0; i < MANY_LEN; i++)
+            content_many[i] = (uint8_t)(i * 37 + i / CHUNK_SIZE); /* varies per chunk, no real dedup */
+
+        TEST_CHECK(system("rm -rf " REPODIR "-many") == 0);
+        TEST_CHECK(amisnap_backend_dir_open(REPODIR "-many", &repo4) == AMISNAP_OK);
+        amisnap_repo_writer_init(&rw4, &repo4, NULL);
+        memset(&snap, 0, sizeof(snap));
+        snap.created_days = 3003; snap.created_mins = 1; snap.created_ticks = 1;
+        TEST_CHECK(amisnap_repo_writer_snap(&rw4, &snap) == AMISNAP_OK);
+        TEST_CHECK(amisnap_repo_writer_volume(&rw4, &vol) == AMISNAP_OK);
+
+        memset(&e4, 0, sizeof(e4));
+        e4.path = (const uint8_t *)"many.bin"; e4.path_len = 8;
+        e4.type = AMISNAP_ETYPE_FILE; e4.date_days = 3003;
+
+        many_reader.data = content_many; many_reader.len = MANY_LEN; many_reader.pos = 0;
+        many_reader.force_short_at = (size_t)-1; many_reader.force_error = 0;
+
+        rc = amisnap_repo_writer_file_chunked(&rw4, &e4, MANY_LEN, CHUNK_SIZE, mem_read, &many_reader);
+        TEST_CHECK(rc == AMISNAP_OK);
+        TEST_CHECK(e4.content_count == MANY_CHUNK_COUNT);
+
+        TEST_CHECK(amisnap_repo_writer_finish(&rw4, snapid4) == AMISNAP_OK);
+        amisnap_repo_writer_free(&rw4);
+
+        snprintf(key4, sizeof(key4), "snapshots/%s.mf", snapid4);
+        TEST_CHECK(amisnap_backend_get(&repo4, key4, &mf4) == AMISNAP_OK);
+
+        TEST_CHECK(amisnap_verify_manifest(&repo4, NULL, AMISNAP_OBJCOMP_RAW, NULL,
+                                            mf4.data, mf4.len, 1, &vresult4) == AMISNAP_OK);
+        TEST_CHECK(vresult4.objects_checked == MANY_CHUNK_COUNT);
+        TEST_CHECK(vresult4.objects_missing == 0 && vresult4.objects_corrupt == 0);
+
+        TEST_CHECK(system("rm -rf " REPODIR "-many-dest") == 0);
+        TEST_CHECK(amisnap_backend_dir_open(REPODIR "-many-dest", &dest4) == AMISNAP_OK);
+        TEST_CHECK(amisnap_restore_manifest(&repo4, &dest4, NULL, AMISNAP_OBJCOMP_RAW, NULL,
+                                             mf4.data, mf4.len, NULL, &rresult4) == AMISNAP_OK);
+        TEST_CHECK(rresult4.files_written == 1);
+
+        TEST_CHECK(amisnap_backend_get(&dest4, "many.bin", &got4) == AMISNAP_OK);
+        TEST_CHECK(got4.len == MANY_LEN && memcmp(got4.data, content_many, MANY_LEN) == 0);
+        amisnap_buf_free(&got4);
+
+        free(content_many);
+        amisnap_buf_free(&mf4);
+        amisnap_backend_close(&repo4);
+        amisnap_backend_close(&dest4);
+        TEST_CHECK(system("rm -rf " REPODIR "-many " REPODIR "-many-dest") == 0);
+#undef MANY_LEN
+#undef MANY_CHUNK_COUNT
+    }
+
     TEST_CHECK(system("rm -rf " REPODIR) == 0);
 }
