@@ -312,6 +312,8 @@ void run_restore_tests(void)
             "Sub//evil",  /* doubled '/': same, mid-path */
             "Sub/",       /* trailing '/': empty final component */
             "DH1:evil",   /* embedded ':': volume/assign switch */
+            "../evil",    /* ".." component: a host build's real OS parent */
+            "Sub/../evil",/* same, not just at the start */
         };
         size_t i;
 

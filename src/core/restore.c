@@ -54,11 +54,23 @@ static int path_to_key(const uint8_t *path, size_t path_len, char out[RESTORE_PA
  * leading '/' (AmigaDOS: "go to parent"), a doubled '/' (same, mid-path),
  * or a trailing '/' -- any of those, or an embedded ':' (a volume/assign
  * switch), would let a corrupted or tampered manifest steer a restore
- * destination key/path outside the chosen destination (e.g. up to its
- * parent, or onto a different volume entirely). This only matters for an
- * unencrypted manifest -- an encrypted one's HMAC already rules out
- * tampering -- but a damaged unencrypted manifest is just as capable of
- * carrying this by accident, so the check applies unconditionally. */
+ * destination key/path outside the chosen destination on a real Amiga
+ * (e.g. up to its parent, or onto a different volume entirely).
+ *
+ * A literal ".." component is rejected too: it isn't special to
+ * AmigaDOS (nothing stops a real Amiga filename from being exactly
+ * "..", and backend_dir.c's join_path() does no path normalization of
+ * its own either way), but `dest` on a *host* build is a plain POSIX
+ * directory, where ".." really does mean "parent" to the OS doing the
+ * actual open()/mkdir() underneath -- the same escape, just via a
+ * different mechanism on a different platform this format also needs
+ * to be read back on (docs/format.md's own disaster-recovery story,
+ * tools/amisnap_reader.py).
+ *
+ * This only matters for an unencrypted manifest -- an encrypted one's
+ * HMAC already rules out tampering -- but a damaged unencrypted
+ * manifest is just as capable of carrying any of this by accident, so
+ * the check applies unconditionally. */
 static int entry_path_is_safe(const uint8_t *path, size_t path_len)
 {
     size_t i, start = 0;
@@ -68,8 +80,11 @@ static int entry_path_is_safe(const uint8_t *path, size_t path_len)
 
     for (i = 0; i <= path_len; i++) {
         if (i == path_len || path[i] == '/') {
-            if (i == start)
+            size_t complen = i - start;
+            if (complen == 0)
                 return 0; /* empty component */
+            if (complen == 2 && path[start] == '.' && path[start + 1] == '.')
+                return 0; /* ".." */
             start = i + 1;
         } else if (path[i] == ':') {
             return 0;

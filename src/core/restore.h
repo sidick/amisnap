@@ -92,11 +92,13 @@ typedef struct {
  * writes to `dest`, rather than being discovered partway through a
  * restore that's already modified `dest` ("trust is everything": an
  * aborted restore must leave `dest` exactly as it found it). Each E_PATH is
- * also checked for an empty component (leading/doubled/trailing '/')
- * or an embedded ':' -- either would let a corrupted or tampered
- * *unencrypted* manifest write outside `dest` -- aborting with
- * AMISNAP_ERR_UNSAFE_PATH before that entry is used as a destination
- * key/path. Both checks cost an extra full read of every object (the
+ * also checked for an empty component (leading/doubled/trailing '/'),
+ * a literal ".." component, or an embedded ':' -- any of those would
+ * let a corrupted or tampered *unencrypted* manifest write outside
+ * `dest` (the first and third on a real Amiga, ".." on a host build's
+ * plain POSIX `dest`) -- aborting with AMISNAP_ERR_UNSAFE_PATH before
+ * that entry is used as a destination key/path. Both checks cost an
+ * extra full read of every object (the
  * verify pass) before the real one; see restore.c's own comment at the
  * call site for why that cost is accepted here.
  *
