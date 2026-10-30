@@ -718,9 +718,28 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
         /* scan.c deliberately never sets has_size/size (it's a
          * metadata-only walk) -- this is the one place that does, and
          * it must happen before the amisnap_index_unchanged() check
-         * below, which compares it. */
+         * below, which compares it.
+         *
+         * fib_Size is dos.h's `LONG` (signed), but "Number of bytes
+         * in file" (its own autodoc) is inherently an unsigned count,
+         * and every classic AmigaDOS filesystem this runs against
+         * (OFS/FFS[+DC/Intl]) caps a file's real size well under 4GiB
+         * by its own on-disk block-count structures -- there is no
+         * real file this ever needs to represent in the 2-4GiB range
+         * that a plain `(uint64_t)size` sign-extension wouldn't get
+         * wrong (a file at, say, 3GiB reads back as a huge bogus
+         * negative-cast value instead of 3GiB). Reinterpreting the
+         * same 32 bits as unsigned instead gives the right answer for
+         * the entire 0..4GiB-1 range any of these filesystems can
+         * actually produce. Issue #32: a file genuinely at or past
+         * 4GiB (not possible on OFS/FFS, conceivably possible on a
+         * third-party filesystem like SFS/PFS3 this codebase hasn't
+         * verified against) is a real, inherent limit of this 32-bit
+         * dos.library ABI -- not detectable from fib_Size alone, and
+         * not fixed by this change, since there is no 64-bit
+         * alternative anywhere in the NDK to fall back to. */
         e.has_size = 1;
-        e.size = (uint64_t)size;
+        e.size = (uint64_t)(uint32_t)size;
 
         prev = ctx->prev_index ? amisnap_index_lookup(ctx->prev_index, entry->path, entry->path_len) : NULL;
         unchanged = prev && amisnap_index_unchanged(prev, &e);
