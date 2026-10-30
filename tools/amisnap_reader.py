@@ -902,12 +902,24 @@ def read_object(repo_dir, hash32, expected_size, subkeys=None, objcomp=OBJCOMP_R
             raise FormatError("%s: stored size %d, expected %d (E_CONTENT declared %d plaintext "
                                "bytes + the encryption frame overhead)"
                                % (key, len(data), expect_len, expected_size))
-    expect_nonce = object_nonce(subkeys["nonce"], hash32)
+    # The nonce is derived from a hash of the exact bytes ChaCha20
+    # encrypted (the post-compression frame body under OBJCOMP=1, or
+    # the raw content under OBJCOMP=0) -- NOT from `hash32` (the
+    # object's content-address, always over the pre-compression
+    # bytes): that hash doesn't change if the same raw file is later
+    # re-stored under a different COMPRESS= choice, while the actual
+    # cipher input does (format.md "Nonce discipline"). So this check
+    # has to happen on the decrypted plaintext, before any frame
+    # decoding strips the compression wrapper back off -- mirroring
+    # src/core/repo.c's write_object(), which hashes `body`/`bodylen`
+    # (the same bytes) for the identical reason.
+    plaintext = decrypt_frame(subkeys, data)
+    body_hash = hashlib.blake2s(plaintext, digest_size=32).digest()
+    expect_nonce = object_nonce(subkeys["nonce"], body_hash)
     if data[:NONCE_SIZE] != expect_nonce:
         raise FormatError("%s: nonce doesn't match the deterministic derivation from its "
-                           "own content hash -- this object wasn't produced the way this "
-                           "repository's own writer produces them" % key)
-    plaintext = decrypt_frame(subkeys, data)
+                           "own (post-compression) content hash -- this object wasn't "
+                           "produced the way this repository's own writer produces them" % key)
     if objcomp == OBJCOMP_FRAMED:
         plaintext = decode_object_frame(plaintext, expected_size, key)
     got_hash = hashlib.blake2s(plaintext, digest_size=32).digest()

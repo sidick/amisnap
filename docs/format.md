@@ -302,11 +302,22 @@ deterministically from data that is itself already guaranteed unique,
 at zero extra RNG cost:
 
 - **Object nonce** = first 12 bytes of `keyed-BLAKE2s-256(key=K_nonce,
-  message=<the object's own plaintext content-address hash>)`. Since
-  the object name *is* that hash and dedup guarantees a given
-  plaintext is only ever encrypted once per repository, this can never
-  repeat for two different plaintexts, and a repeated plaintext is
-  dedup'd (never re-encrypted) rather than re-nonced.
+  message=<BLAKE2s-256 of the exact bytes ChaCha20 is about to
+  encrypt>)` — the object's post-compression frame body under
+  OBJCOMP=1, or its raw content under OBJCOMP=0. This is deliberately
+  **not** the object's own content-address hash (the name under
+  `objects/<hh>/<hex64>`, which is always over the *pre*-compression
+  bytes): that hash never changes if the same raw file is later
+  re-stored under a different COMPRESS= choice, while the bytes
+  actually fed to the cipher do. Hashing the real cipher input instead
+  means a nonce can only repeat if the bytes it protects are identical
+  too — in which case the ciphertext is identical as well and nothing
+  new is leaked. Dedup (skipping re-encryption of an object still
+  present) means this derivation usually doesn't even run for a
+  repeated plaintext within one repository's lifetime, but it is not
+  what makes the nonce safe: an object can be deleted by `PRUNE` and
+  the same raw content re-stored later under different compression,
+  and this scheme stays safe across exactly that case.
 - **Manifest nonce** = first 12 bytes of `keyed-BLAKE2s-256(key=K_nonce,
   message=<snapid>)`. `<snapid>` is unique per manifest by
   construction (see "Layout" above).
