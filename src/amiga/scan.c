@@ -292,7 +292,14 @@ int amisnap_scan_volume(const char *root_path, const amisnap_scan_visitor *visit
                          amisnap_scan_caps *caps, amisnap_scan_result *result)
 {
     BPTR root_lock;
-    struct InfoData id;
+    struct InfoData *id; /* AllocMem, NOT a stack struct: Info()'s own
+                          * SPECIAL NOTE says "InfoData structure must
+                          * be longword aligned" -- same m68k-stack-is-
+                          * only-2-byte-aligned hazard as the FIB below.
+                          * There's no DOS_* AllocDosObject type for
+                          * InfoData, but Exec's AllocMem is documented
+                          * to always return long-word-aligned storage,
+                          * which satisfies this just as well. */
     struct FileInfoBlock *fib; /* AllocDosObject(DOS_FIB), NOT a stack
                                 * struct: Examine() hands the FIB to the
                                 * handler as a BPTR (addr >> 2), so it
@@ -322,9 +329,16 @@ int amisnap_scan_volume(const char *root_path, const amisnap_scan_visitor *visit
         return AMISNAP_ERR_NOMEM;
     }
 
-    memset(&id, 0, sizeof(id));
-    if (Info(root_lock, &id))
-        caps->dostype = (uint32_t)id.id_DiskType;
+    id = (struct InfoData *)AllocMem(sizeof(struct InfoData), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!id) {
+        FreeDosObject(DOS_FIB, fib);
+        UnLock(root_lock);
+        return AMISNAP_ERR_NOMEM;
+    }
+
+    if (Info(root_lock, id))
+        caps->dostype = (uint32_t)id->id_DiskType;
+    FreeMem(id, sizeof(struct InfoData));
 
     /* The root's own metadata: nothing else will emit it, since
      * nothing enumerates the root as a child of anything within this

@@ -616,7 +616,12 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
     {
         char path[AMISNAP_SCAN_PATH_BUF_LEN + 256];
         BPTR lock, fh;
-        struct FileInfoBlock fib;
+        struct FileInfoBlock *fib; /* AllocDosObject(DOS_FIB), NOT a stack
+                                    * struct -- same longword-alignment
+                                    * hazard as scan.c's own FIB (see its
+                                    * comment): Examine() hands this to the
+                                    * handler as a BPTR, and m68k gcc only
+                                    * 2-byte-aligns a stack struct. */
         LONG size;
         uint8_t *data = NULL;
         const amisnap_entry_meta *prev;
@@ -625,14 +630,19 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
         rc = amisnap_join_amiga_path(ctx->source_root, entry->path, entry->path_len, path, sizeof(path));
         if (rc != AMISNAP_OK) { ctx->files_failed++; return 0; }
 
+        fib = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
+        if (!fib) { ctx->files_failed++; return 0; }
+
         lock = Lock((STRPTR)path, ACCESS_READ);
-        if (!lock || !Examine(lock, &fib)) {
+        if (!lock || !Examine(lock, fib)) {
             if (lock) UnLock(lock);
+            FreeDosObject(DOS_FIB, fib);
             ctx->files_failed++;
             return 0;
         }
-        size = fib.fib_Size;
+        size = fib->fib_Size;
         UnLock(lock);
+        FreeDosObject(DOS_FIB, fib);
 
         /* scan.c deliberately never sets has_size/size (it's a
          * metadata-only walk) -- this is the one place that does, and
