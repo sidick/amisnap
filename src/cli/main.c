@@ -1063,10 +1063,30 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
         return RETURN_FAIL;
     }
 
+    /* Mutually exclusive against a concurrent PRUNE (or SNAPSHOT) --
+     * see repo.h's own comment on amisnap_repo_lock_acquire() for why
+     * this matters (PRUNE's mark phase can't see this snapshot's
+     * objects until the manifest is committed, so it would otherwise
+     * look exactly like garbage to sweep). */
+    rc = amisnap_repo_lock_acquire(&be, "SNAPSHOT");
+    if (rc != AMISNAP_OK) {
+        if (rc == AMISNAP_ERR_LOCKED)
+            amilog_err("AmiSnap: repository \"%s\" is locked by another SNAPSHOT or PRUNE "
+                       "-- if nothing is actually still running, remove its amisnap.lock\n",
+                       redact_url_for_log(repo));
+        else
+            amilog_err("AmiSnap: cannot acquire repository lock on \"%s\" (error %d)\n",
+                       redact_url_for_log(repo), rc);
+        amisnap_backend_close(&be);
+        if (have_exclude) amisnap_exclude_free(&exclude);
+        return RETURN_FAIL;
+    }
+
     if (snapshot_source_repo_overlap(source, repo)) {
         amilog_err("AmiSnap: REPO=\"%s\" is the same as, inside, or an ancestor of "
                         "SOURCE=\"%s\" -- refusing to back a volume up onto itself\n",
                 redact_url_for_log(repo), source);
+        amisnap_repo_lock_release(&be);
         amisnap_backend_close(&be);
         if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_ERROR;
@@ -1086,6 +1106,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
                               &caps_pass_result);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot scan \"%s\" (error %d)\n", source, rc);
+        amisnap_repo_lock_release(&be);
         amisnap_backend_close(&be);
         if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
@@ -1098,6 +1119,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
         if (alg < 0) {
             amilog_err("AmiSnap: COMPRESS=\"%s\" -- expected LZ4, DEFLATE, or NONE\n", compress_arg);
             amisnap_repo_writer_free(&rw);
+            amisnap_repo_lock_release(&be);
             amisnap_backend_close(&be);
             if (have_exclude) amisnap_exclude_free(&exclude);
             return RETURN_ERROR;
@@ -1108,6 +1130,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
                    "compression is fixed at INIT (INIT REPO=... COMPRESS=LZ4|DEFLATE)\n",
                    redact_url_for_log(repo));
         amisnap_repo_writer_free(&rw);
+        amisnap_repo_lock_release(&be);
         amisnap_backend_close(&be);
         if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_ERROR;
@@ -1127,6 +1150,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot start snapshot (error %d)\n", rc);
         amisnap_repo_writer_free(&rw);
+        amisnap_repo_lock_release(&be);
         amisnap_backend_close(&be);
         if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
@@ -1144,6 +1168,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: cannot record volume info (error %d)\n", rc);
         amisnap_repo_writer_free(&rw);
+        amisnap_repo_lock_release(&be);
         amisnap_backend_close(&be);
         if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
@@ -1198,6 +1223,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: scan failed partway through (error %d)\n", rc);
         amisnap_repo_writer_free(&rw);
+        amisnap_repo_lock_release(&be);
         amisnap_backend_close(&be);
         if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
@@ -1205,6 +1231,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
 
     rc = amisnap_repo_writer_finish(&rw, snapid);
     amisnap_repo_writer_free(&rw);
+    amisnap_repo_lock_release(&be);
     amisnap_backend_close(&be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: could not commit snapshot (error %d)\n", rc);
@@ -1443,6 +1470,21 @@ static LONG cmd_prune(const char *repo, const char *snapid_arg, const LONG *keep
         return RETURN_FAIL;
     }
 
+    /* Mutually exclusive against a concurrent SNAPSHOT (or PRUNE) --
+     * see repo.h's own comment on amisnap_repo_lock_acquire(). */
+    rc = amisnap_repo_lock_acquire(&be, "PRUNE");
+    if (rc != AMISNAP_OK) {
+        if (rc == AMISNAP_ERR_LOCKED)
+            amilog_err("AmiSnap: repository \"%s\" is locked by another SNAPSHOT or PRUNE "
+                       "-- if nothing is actually still running, remove its amisnap.lock\n",
+                       redact_url_for_log(repo));
+        else
+            amilog_err("AmiSnap: cannot acquire repository lock on \"%s\" (error %d)\n",
+                       redact_url_for_log(repo), rc);
+        amisnap_backend_close(&be);
+        return RETURN_FAIL;
+    }
+
     if (snapid_arg) {
         const char *ids[1];
         ids[0] = snapid_arg;
@@ -1455,6 +1497,7 @@ static LONG cmd_prune(const char *repo, const char *snapid_arg, const LONG *keep
         rc = list_all_snapshots(&be, &list);
         if (rc != AMISNAP_OK) {
             amilog_err("AmiSnap: cannot list snapshots (error %d)\n", rc);
+            amisnap_repo_lock_release(&be);
             amisnap_backend_close(&be);
             return RETURN_FAIL;
         }
@@ -1468,6 +1511,7 @@ static LONG cmd_prune(const char *repo, const char *snapid_arg, const LONG *keep
                                     (size_t)delete_count, &result);
     }
 
+    amisnap_repo_lock_release(&be);
     amisnap_backend_close(&be);
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: prune of \"%s\" aborted (error %d) -- %lu snapshots, %lu objects, "
@@ -1478,8 +1522,8 @@ static LONG cmd_prune(const char *repo, const char *snapid_arg, const LONG *keep
     }
 
     amilog("Prune %s: %lu snapshots, %lu objects, %lu tmp entries removed\n",
-           repo, (unsigned long)result.snapshots_deleted, (unsigned long)result.objects_deleted,
-           (unsigned long)result.tmp_deleted);
+           redact_url_for_log(repo), (unsigned long)result.snapshots_deleted,
+           (unsigned long)result.objects_deleted, (unsigned long)result.tmp_deleted);
     return RETURN_OK;
 }
 
@@ -1835,10 +1879,10 @@ static LONG cmd_init(const char *repo, int want_passphrase, const char *compress
         if (want_passphrase)
             amilog("AmiSnap: initialized %s repository \"%s\" (%lu PBKDF2 iterations)\n",
                    comp_alg >= 0 ? "encrypted, compressed" : "encrypted",
-                   repo, (unsigned long)iters);
+                   redact_url_for_log(repo), (unsigned long)iters);
         else
             amilog("AmiSnap: initialized compressed repository \"%s\" (%s)\n",
-                   repo, comp_alg == AMISNAP_COMP_ZLIB ? "DEFLATE" : "LZ4");
+                   redact_url_for_log(repo), comp_alg == AMISNAP_COMP_ZLIB ? "DEFLATE" : "LZ4");
         return RETURN_OK;
     }
 }
@@ -2006,7 +2050,7 @@ static LONG cmd_rekey(const char *repo)
 
         amilog("AmiSnap: re-keyed \"%s\" (%lu PBKDF2 iterations) -- the repository key "
                "itself is unchanged, every existing snapshot stays readable\n",
-               repo, (unsigned long)new_iters);
+               redact_url_for_log(repo), (unsigned long)new_iters);
         return RETURN_OK;
     }
 }

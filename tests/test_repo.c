@@ -240,3 +240,41 @@ void run_repo_tests(void)
     amisnap_backend_close(&be);
     TEST_CHECK(system("rm -rf " TESTDIR) == 0);
 }
+
+/* --- repository-wide write lock (issue #30: prune racing a concurrent
+ * snapshot) -- a plain check-then-act convention over backend.h's own
+ * put/exists/remove, so this is fully host-testable against a real
+ * directory backend. --- */
+#define LOCKDIR "build/test-repo-lock"
+
+void run_repo_lock_tests(void)
+{
+    amisnap_backend be;
+
+    TEST_CHECK(system("rm -rf " LOCKDIR) == 0);
+    TEST_CHECK(amisnap_backend_dir_open(LOCKDIR, &be) == AMISNAP_OK);
+
+    /* Acquire succeeds when nothing else holds it, and the lock
+     * object is really there under the exact documented key. */
+    TEST_CHECK(amisnap_repo_lock_acquire(&be, "SNAPSHOT") == AMISNAP_OK);
+    TEST_CHECK(amisnap_backend_exists(&be, AMISNAP_REPO_LOCK_KEY) == 1);
+
+    /* A second acquire (simulating a concurrent PRUNE) is refused --
+     * this is the actual fix: without it, both operations would have
+     * proceeded, exactly the race issue #30 described. */
+    TEST_CHECK(amisnap_repo_lock_acquire(&be, "PRUNE") == AMISNAP_ERR_LOCKED);
+
+    /* Release frees it up for the next caller. */
+    TEST_CHECK(amisnap_repo_lock_release(&be) == AMISNAP_OK);
+    TEST_CHECK(amisnap_backend_exists(&be, AMISNAP_REPO_LOCK_KEY) == 0);
+    TEST_CHECK(amisnap_repo_lock_acquire(&be, "PRUNE") == AMISNAP_OK);
+    TEST_CHECK(amisnap_repo_lock_release(&be) == AMISNAP_OK);
+
+    /* Releasing an already-absent lock is a harmless no-op, not an
+     * error -- a caller's unconditional cleanup-on-every-exit path
+     * must not itself fail just because there was nothing to do. */
+    TEST_CHECK(amisnap_repo_lock_release(&be) == AMISNAP_OK);
+
+    amisnap_backend_close(&be);
+    TEST_CHECK(system("rm -rf " LOCKDIR) == 0);
+}

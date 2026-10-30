@@ -584,3 +584,20 @@ int amisnap_verify_manifest(amisnap_backend *repo, const amisnap_repo_subkeys *s
     amisnap_buf_free(&plaintext);
     return rc;
 }
+
+int amisnap_repo_lock_acquire(amisnap_backend *repo, const char *label)
+{
+    int exists_rc = amisnap_backend_exists(repo, AMISNAP_REPO_LOCK_KEY);
+
+    if (exists_rc < 0) return exists_rc;
+    if (exists_rc) return AMISNAP_ERR_LOCKED;
+
+    return amisnap_backend_put(repo, AMISNAP_REPO_LOCK_KEY, label, strlen(label));
+}
+
+int amisnap_repo_lock_release(amisnap_backend *repo)
+{
+    int rc = amisnap_backend_remove(repo, AMISNAP_REPO_LOCK_KEY);
+
+    return (rc == AMISNAP_ERR_NOT_FOUND) ? AMISNAP_OK : rc;
+}

@@ -262,4 +262,51 @@ int amisnap_verify_manifest(amisnap_backend *repo, const amisnap_repo_subkeys *s
                              const uint8_t *manifest_data, size_t manifest_len,
                              int full, amisnap_verify_result *result);
 
+/* --- Repository-wide write lock --- */
+
+/* A bare top-level key, sibling to "amisnap.repo" -- not under tmp/,
+ * since prune.c's own sweep treats everything there as orphaned
+ * crash leftovers and deletes it unconditionally during a run (a
+ * PRUNE holding its own lock there would delete it out from under
+ * itself partway through its own sweep). */
+#define AMISNAP_REPO_LOCK_KEY "amisnap.lock"
+
+/* SNAPSHOT and PRUNE both acquire this before doing any real work and
+ * release it when done (success or failure) -- mutually exclusive
+ * against each other, and against a second instance of either: a
+ * PRUNE sweep's mark phase only ever sees *committed* manifests, so a
+ * concurrent SNAPSHOT writing new content objects (not yet referenced
+ * by any committed manifest, since format.md's commit protocol writes
+ * the manifest last) looks indistinguishable from garbage and gets
+ * swept -- the exact race this lock exists to prevent.
+ *
+ * This is a best-effort convention, not a true atomic lock:
+ * backend.h has no compare-and-swap or create-if-not-exists primitive
+ * that works identically across backend_dir/webdav/s3, so acquire is
+ * check-then-act (amisnap_backend_exists() then amisnap_backend_put())
+ * with a real, if narrow, TOCTOU window between the two. Acceptable
+ * for this tool's actual threat model -- one operator accidentally
+ * running SNAPSHOT and PRUNE from two Shells at once, not a hostile
+ * or high-frequency-contention environment -- and a large
+ * improvement over no protection at all. A lock left behind by a
+ * crashed or killed process is not auto-expired (no staleness
+ * heuristic is attempted): it is reported via AMISNAP_ERR_LOCKED and
+ * left for the user to remove by hand (`REMOVE REPO:amisnap.lock` or
+ * equivalent) once they've confirmed nothing is actually still
+ * running, consistent with this codebase's "fail loudly, never guess"
+ * convention.
+ *
+ * `label` is a short free-text marker (e.g. "SNAPSHOT", "PRUNE")
+ * stored as the lock object's content, purely to help a human who
+ * finds a stale lock understand what was running. Returns AMISNAP_OK,
+ * AMISNAP_ERR_LOCKED if already held, or a backend error. */
+int amisnap_repo_lock_acquire(amisnap_backend *repo, const char *label);
+
+/* Releases a lock this process acquired. Idempotent: removing an
+ * already-absent lock (e.g. a second release after the first
+ * succeeded) returns AMISNAP_OK, not an error -- a caller's cleanup
+ * path calling this unconditionally on every exit must not itself
+ * fail just because there was nothing to release. */
+int amisnap_repo_lock_release(amisnap_backend *repo);
+
 #endif /* AMISNAP_REPO_H */
