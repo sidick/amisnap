@@ -102,6 +102,52 @@ static void amilog_err(const char *fmt, ...)
     va_end(ap);
 }
 
+/* REPO=/DEST= accepts "scheme://[user[:pass]@]host[...]" for both
+ * WebDAV (amisnap_webdav_parse_url) and S3 (amisnap_s3_parse_url) --
+ * logging that string verbatim on any error path (every "cannot open
+ * ... \"%s\"" message below) puts a plaintext password straight into
+ * stderr, the log file, and a Startup-Sequence script's own captured
+ * output. Returns a redacted copy (userinfo replaced with "***") for
+ * logging when userinfo is present, or `in` unchanged otherwise (a
+ * plain AmigaDOS path, or a URL with no embedded credentials at all).
+ * Two alternating static buffers, not one -- safe even if a future
+ * call site ends up redacting two different URLs as separate
+ * arguments to the same amilog_err() call (C doesn't guarantee
+ * argument evaluation order, so two calls sharing one buffer could
+ * silently clobber each other's result first). Not reentrant/thread-
+ * safe, fine for this single-threaded CLI. */
+static const char *redact_url_for_log(const char *in)
+{
+    static char buf[2][320];
+    static int which = 0;
+    char *out;
+    const char *scheme_end, *at, *slash;
+    size_t prefix_len, suffix_len;
+
+    scheme_end = strstr(in, "://");
+    if (!scheme_end) return in;
+
+    at = strchr(scheme_end + 3, '@');
+    if (!at) return in;
+
+    /* A '@' only means "end of userinfo" if it appears before the
+     * next '/' (the start of the path) -- otherwise it's just a
+     * literal '@' somewhere in a path/query, not credentials. */
+    slash = strchr(scheme_end + 3, '/');
+    if (slash && slash < at) return in;
+
+    prefix_len = (size_t)(scheme_end + 3 - in);
+    suffix_len = strlen(at); /* includes the '@' itself */
+    if (prefix_len + 3 + suffix_len + 1 > sizeof(buf[0])) return in; /* doesn't fit -- log as-is */
+
+    which ^= 1;
+    out = buf[which];
+    memcpy(out, in, prefix_len);
+    memcpy(out + prefix_len, "***", 3);
+    memcpy(out + prefix_len + 3, at, suffix_len + 1); /* +1: the NUL */
+    return out;
+}
+
 /* --- backend dispatch: REPO=/DEST= is either a native AmigaDOS path
  * (mounted volume / assign, docs/proposal.md Tier 1) or a
  * "http://"/"https://" URL (Tier 2, WebDAV) -- decided purely by the
@@ -1004,14 +1050,14 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
 
     rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
     }
 
     rc = open_repo_key(&be, &rk);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         amisnap_backend_close(&be);
         if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_FAIL;
@@ -1020,7 +1066,7 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     if (snapshot_source_repo_overlap(source, repo)) {
         amilog_err("AmiSnap: REPO=\"%s\" is the same as, inside, or an ancestor of "
                         "SOURCE=\"%s\" -- refusing to back a volume up onto itself\n",
-                repo, source);
+                redact_url_for_log(repo), source);
         amisnap_backend_close(&be);
         if (have_exclude) amisnap_exclude_free(&exclude);
         return RETURN_ERROR;
@@ -1059,7 +1105,8 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
         amisnap_repo_writer_set_compression(&rw, (uint8_t)alg);
     } else if (compress_arg) {
         amilog_err("AmiSnap: COMPRESS given, but \"%s\" is a raw (uncompressed) repository -- "
-                   "compression is fixed at INIT (INIT REPO=... COMPRESS=LZ4|DEFLATE)\n", repo);
+                   "compression is fixed at INIT (INIT REPO=... COMPRESS=LZ4|DEFLATE)\n",
+                   redact_url_for_log(repo));
         amisnap_repo_writer_free(&rw);
         amisnap_backend_close(&be);
         if (have_exclude) amisnap_exclude_free(&exclude);
@@ -1221,13 +1268,13 @@ static LONG cmd_list(const char *repo)
 
     rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         return RETURN_FAIL;
     }
 
     rc = open_repo_key(&be, &rk);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         amisnap_backend_close(&be);
         return RETURN_FAIL;
     }
@@ -1240,7 +1287,7 @@ static LONG cmd_list(const char *repo)
     }
 
     if (list.count == 0)
-        amilog("No snapshots in \"%s\"\n", repo);
+        amilog("No snapshots in \"%s\"\n", redact_url_for_log(repo));
 
     for (i = 0; i < list.count; i++) {
         amisnap_buf mf;
@@ -1301,13 +1348,13 @@ static LONG cmd_verify(const char *repo, const char *snapid_arg, int full)
 
     rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         return RETURN_FAIL;
     }
 
     rc = open_repo_key(&be, &rk);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         amisnap_backend_close(&be);
         return RETURN_FAIL;
     }
@@ -1385,13 +1432,13 @@ static LONG cmd_prune(const char *repo, const char *snapid_arg, const LONG *keep
 
     rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         return RETURN_FAIL;
     }
 
     rc = open_repo_key(&be, &rk);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         amisnap_backend_close(&be);
         return RETURN_FAIL;
     }
@@ -1425,7 +1472,7 @@ static LONG cmd_prune(const char *repo, const char *snapid_arg, const LONG *keep
     if (rc != AMISNAP_OK) {
         amilog_err("AmiSnap: prune of \"%s\" aborted (error %d) -- %lu snapshots, %lu objects, "
                         "%lu tmp entries removed before the failure\n",
-                repo, rc, (unsigned long)result.snapshots_deleted,
+                redact_url_for_log(repo), rc, (unsigned long)result.snapshots_deleted,
                 (unsigned long)result.objects_deleted, (unsigned long)result.tmp_deleted);
         return RETURN_FAIL;
     }
@@ -1486,19 +1533,19 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
 
     rc = open_backend(repo, &repo_be);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         return RETURN_FAIL;
     }
     rc = open_backend(dest, &dest_be);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot open destination \"%s\" (error %d)\n", dest, rc);
+        amilog_err("AmiSnap: cannot open destination \"%s\" (error %d)\n", redact_url_for_log(dest), rc);
         amisnap_backend_close(&repo_be);
         return RETURN_FAIL;
     }
 
     rc = open_repo_key(&repo_be, &rk);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot unlock repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         amisnap_backend_close(&repo_be);
         amisnap_backend_close(&dest_be);
         return RETURN_FAIL;
@@ -1691,20 +1738,20 @@ static LONG cmd_init(const char *repo, int want_passphrase, const char *compress
     if (!want_passphrase && comp_alg < 0) {
         amilog_err("AmiSnap: INIT only does something useful with PASSPHRASE and/or "
                    "COMPRESS -- a plain, uncompressed repository needs no init step at "
-                   "all, just SNAPSHOT straight to REPO=\"%s\"\n", repo);
+                   "all, just SNAPSHOT straight to REPO=\"%s\"\n", redact_url_for_log(repo));
         return RETURN_ERROR;
     }
 
     rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         return RETURN_FAIL;
     }
 
     rc = amisnap_backend_exists(&be, AMISNAP_REPO_HEADER_KEY);
     if (rc != 0) {
         if (rc > 0)
-            amilog_err("AmiSnap: \"%s\" is already initialized (amisnap.repo exists)\n", repo);
+            amilog_err("AmiSnap: \"%s\" is already initialized (amisnap.repo exists)\n", redact_url_for_log(repo));
         else
             amilog_err("AmiSnap: cannot check for an existing amisnap.repo (error %d)\n", rc);
         amisnap_backend_close(&be);
@@ -1832,14 +1879,14 @@ static LONG cmd_rekey(const char *repo)
 
     rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         return RETURN_FAIL;
     }
 
     rc = amisnap_backend_get(&be, AMISNAP_REPO_HEADER_KEY, &raw);
     if (rc == AMISNAP_ERR_NOT_FOUND) {
         amilog_err("AmiSnap: \"%s\" has no amisnap.repo -- REKEY needs an already-"
-                   "encrypted repository (INIT PASSPHRASE first)\n", repo);
+                   "encrypted repository (INIT PASSPHRASE first)\n", redact_url_for_log(repo));
         amisnap_backend_close(&be);
         return RETURN_FAIL;
     }
@@ -1856,7 +1903,7 @@ static LONG cmd_rekey(const char *repo)
         return RETURN_FAIL;
     }
     if (old_hdr.cipher == 0) {
-        amilog_err("AmiSnap: \"%s\" is a plain repository -- there is no key to REKEY\n", repo);
+        amilog_err("AmiSnap: \"%s\" is a plain repository -- there is no key to REKEY\n", redact_url_for_log(repo));
         amisnap_buf_free(&raw);
         amisnap_backend_close(&be);
         return RETURN_FAIL;
@@ -2169,7 +2216,7 @@ static LONG cmd_benchmark(const char *repo, const char *source, const LONG *size
 
     rc = open_backend(repo, &be);
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot open repository \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         amisnap_buf_free(&sample);
         return RETURN_FAIL;
     }
@@ -2178,7 +2225,7 @@ static LONG cmd_benchmark(const char *repo, const char *source, const LONG *size
     rc = amisnap_backend_put(&be, AMISNAP_BENCHMARK_KEY, sample.data, sample.len);
     t1 = amisnap_millis();
     if (rc != AMISNAP_OK) {
-        amilog_err("AmiSnap: cannot write benchmark data to \"%s\" (error %d)\n", repo, rc);
+        amilog_err("AmiSnap: cannot write benchmark data to \"%s\" (error %d)\n", redact_url_for_log(repo), rc);
         amisnap_backend_close(&be);
         amisnap_buf_free(&sample);
         return RETURN_FAIL;
@@ -2201,7 +2248,7 @@ static LONG cmd_benchmark(const char *repo, const char *source, const LONG *size
     if (rc != AMISNAP_OK)
         amilog_err("AmiSnap: warning: could not remove temporary benchmark data "
                    "\"" AMISNAP_BENCHMARK_KEY "\" from \"%s\" (error %d) -- a later "
-                   "PRUNE will sweep it, or delete it by hand\n", repo, rc);
+                   "PRUNE will sweep it, or delete it by hand\n", redact_url_for_log(repo), rc);
     amisnap_backend_close(&be);
 
     t0 = amisnap_millis();
@@ -2260,7 +2307,7 @@ static LONG cmd_benchmark(const char *repo, const char *source, const LONG *size
                    "CPU -- compression is not worth it here, leave the repository "
                    "uncompressed\n");
         else
-            amilog("AmiSnap: recommendation: INIT REPO=\"%s\" ... COMPRESS=%s\n", repo, best);
+            amilog("AmiSnap: recommendation: INIT REPO=\"%s\" ... COMPRESS=%s\n", redact_url_for_log(repo), best);
 
         amilog("AmiSnap: to compare TLS CIPHERS= choices for an https:// destination, "
                "re-run BENCHMARK once per candidate CIPHERS= value and compare the "
