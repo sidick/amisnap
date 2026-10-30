@@ -203,8 +203,16 @@ static int process_entry(const char *root_path, struct ExAllData *ead, LONG type
 
         child_lock = Lock((STRPTR)lock_path, ACCESS_READ);
         free(lock_path);
-        if (!child_lock)
-            return AMISNAP_ERR_IO;
+        if (!child_lock) {
+            /* The directory existed moments ago (this parent's own
+             * ExAll() just listed it) and its own metadata is already
+             * emitted above -- a Lock() failure here is a real-world
+             * race (deleted mid-backup, a removable/network volume
+             * dropping out), not a reason to abort everything else
+             * still to be scanned. Skipped, counted, never silent. */
+            result->dirs_failed++;
+            return 0;
+        }
 
         abort_rc = scan_dir(root_path, child_lock, path_buf, child_len, type, visitor, exclude, caps,
                              result);

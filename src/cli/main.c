@@ -1213,18 +1213,18 @@ static LONG cmd_snapshot(const char *source, const char *repo, const char *comme
     }
 
     amilog("Snapshot %s: %lu dirs, %lu files (%lu unchanged, %lu failed), %lu links skipped, "
-           "%lu dirs and %lu files excluded\n",
+           "%lu dirs and %lu files excluded, %lu dirs failed (vanished mid-scan)\n",
            snapid, (unsigned long)real_result.dirs_seen, (unsigned long)ctx.files_ok,
            (unsigned long)ctx.files_unchanged, (unsigned long)ctx.files_failed,
            (unsigned long)real_result.links_skipped, (unsigned long)real_result.dirs_excluded,
-           (unsigned long)real_result.files_excluded);
+           (unsigned long)real_result.files_excluded, (unsigned long)real_result.dirs_failed);
     if (paranoid)
         amilog("Paranoid verify: %lu file(s) claimed unchanged by metadata but failed the "
                    "xxHash32 re-check and were re-read in full\n",
                (unsigned long)ctx.files_paranoid_mismatch);
 
     if (have_exclude) amisnap_exclude_free(&exclude);
-    if (ctx.files_failed > 0 || real_result.links_skipped > 0)
+    if (ctx.files_failed > 0 || real_result.links_skipped > 0 || real_result.dirs_failed > 0)
         return RETURN_WARN;
     return RETURN_OK;
 }

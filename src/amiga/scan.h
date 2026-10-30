@@ -63,6 +63,13 @@ typedef struct {
     size_t links_skipped;  /* see this header's own note above */
     size_t dirs_excluded;  /* matched an exclude.h pattern -- not walked, not emitted */
     size_t files_excluded; /* matched an exclude.h pattern -- not emitted */
+    size_t dirs_failed;    /* Lock() failed recursing into a child directory already
+                             * emitted via on_entry (its own metadata is captured;
+                             * only its contents are missing) -- most often the
+                             * directory was deleted, or a removable/network volume
+                             * dropped out, between being listed by the parent's
+                             * ExAll() and this recursion. Counted and skipped, not a
+                             * reason to abort the rest of the scan. */
 } amisnap_scan_result;
 
 /* Each callback returns 0 to continue or a nonzero value (propagated
@@ -92,6 +99,14 @@ typedef struct {
  * excluded subtree costs nothing beyond the one ExAll() batch call
  * that revealed the directory's own name, never a walk of its
  * contents. The root itself (E_PATH = "") is never excludable.
+ *
+ * A child directory that no longer Lock()s by the time this walk
+ * recurses into it (deleted mid-scan, a removable/network volume
+ * dropping out -- it existed moments ago, when its parent's own
+ * ExAll() listed it) is skipped, not fatal: its own entry was already
+ * emitted, result->dirs_failed counts it, and the rest of the scan
+ * continues. `root_path` itself failing to Lock() is still fatal --
+ * nothing to fall back to scanning at all.
  *
  * Returns AMISNAP_OK, a visitor abort value, or AMISNAP_ERR_IO if
  * `root_path` cannot be locked or a directory operation fails
