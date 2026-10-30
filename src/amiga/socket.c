@@ -133,6 +133,29 @@ int amisnap_socket_connect(const char *host, uint16_t port, LONG *sock_out)
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) return AMISNAP_ERR_IO;
 
+    /* Without this, a server that drops a connection without a clean
+     * close (a stall, a dead link, a middlebox silently eating the
+     * FIN) leaves amisnap_socket_recv()/_send() blocked in recv()/
+     * send() forever -- SNAPSHOT/RESTORE/VERIFY would just hang with
+     * no way back short of killing the process. SO_RCVTIMEO/
+     * SO_SNDTIMEO (present in the real Roadshow SDK's sys/socket.h,
+     * confirmed against the headers bundled in ghcr.io/sidick/amiga-
+     * dev per this file's own header comment) bound both directions;
+     * a timeout surfaces as the same AMISNAP_ERR_IO any other socket
+     * failure already does, not a new failure mode callers need to
+     * handle specially. */
+    {
+        struct timeval tv;
+        tv.tv_sec = AMISNAP_SOCKET_TIMEOUT_SECS;
+        tv.tv_usec = 0;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (APTR)&tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (APTR)&tv, sizeof(tv));
+        /* Deliberately not fatal if unsupported by a given bsdsocket
+         * stack: a connection with no timeout is the pre-existing
+         * behaviour, not a new regression, and a stack too old to
+         * support it shouldn't block AmiSnap from working at all. */
+    }
+
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         CloseSocket(sock);
         return AMISNAP_ERR_IO;

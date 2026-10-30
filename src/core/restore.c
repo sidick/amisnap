@@ -136,6 +136,9 @@ static int on_entry(void *user, const amisnap_entry_meta *entry)
     char key[RESTORE_PATH_BUF_LEN];
     int status;
 
+    if (rc->opts && rc->opts->should_abort && rc->opts->should_abort(rc->opts->user))
+        return AMISNAP_ERR_ABORTED;
+
     if (rc->opts && !path_in_subtree(entry->path, entry->path_len,
                                       rc->opts->subtree_prefix, rc->opts->subtree_prefix_len)) {
         rc->result->entries_skipped++;
@@ -244,6 +247,9 @@ static int apply_metadata_reverse(restore_ctx *rc, const meta_collect_ctx *cc)
 
     for (i = cc->count; i > 0; i--) {
         const amisnap_entry_meta *entry = &cc->entries[i - 1];
+
+        if (rc->opts->should_abort && rc->opts->should_abort(rc->opts->user))
+            return AMISNAP_ERR_ABORTED;
 
         if (rc->opts && !path_in_subtree(entry->path, entry->path_len,
                                           rc->opts->subtree_prefix, rc->opts->subtree_prefix_len))

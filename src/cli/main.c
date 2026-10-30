@@ -547,6 +547,20 @@ static int fetch_and_open_manifest(amisnap_backend *be, const repo_key_ctx *rk,
 
 /* --- snapshot ----------------------------------------------------------- */
 
+/* CheckSignal() is dos.library, V36 -- below this codebase's V37 floor,
+ * so no runtime version-gate is needed before calling it (implementation-
+ * plan.md's "OS floor is V37, not V39" policy only applies to calls
+ * newer than the floor). Checks and clears SIGBREAKF_CTRL_C so a long
+ * SNAPSHOT or RESTORE can be stopped with Ctrl-C/Break from the Shell
+ * instead of hanging around for however long the operation takes.
+ * `user` is unused -- matches the shape amisnap_scan_visitor's on_entry
+ * and amisnap_restore_options' should_abort both expect. */
+static int check_ctrl_c(void *user)
+{
+    (void)user;
+    return CheckSignal(SIGBREAKF_CTRL_C) != 0;
+}
+
 static int caps_only_on_entry(void *user, const amisnap_entry_meta *entry)
 {
     (void)user; (void)entry;
@@ -605,6 +619,14 @@ static int snapshot_on_entry(void *user, const amisnap_entry_meta *entry)
     snapshot_ctx *ctx = (snapshot_ctx *)user;
     amisnap_entry_meta e = *entry; /* local mutable copy -- writer_file overwrites size/content */
     int rc;
+
+    /* scan.h's own visitor contract propagates a nonzero return verbatim
+     * as amisnap_scan_volume()'s result -- this is the one place that
+     * gets called once per file read from the real source volume, so
+     * it's the hook point for letting a large SNAPSHOT be stopped with
+     * Ctrl-C/Break rather than running to completion regardless. */
+    if (check_ctrl_c(NULL))
+        return AMISNAP_ERR_ABORTED;
 
     if (entry->type == AMISNAP_ETYPE_DIR)
         return amisnap_repo_writer_entry(ctx->rw, &e);
@@ -1508,6 +1530,7 @@ static LONG cmd_restore(const char *repo, const char *dest, const char *snapid_a
     }
     opts.on_entry_restored = amisnap_restore_meta_on_entry;
     opts.user = &meta_ctx;
+    opts.should_abort = check_ctrl_c;
 
     rc = amisnap_restore_manifest(&repo_be, &dest_be, rk.have ? &rk.sk : NULL,
                                    rk.objcomp, snapid,

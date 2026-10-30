@@ -31,6 +31,8 @@
 #define AMISNAP_ERR_UNSAFE_PATH     -10 /* E_PATH has an empty component (leading/doubled/
                                           * trailing '/') or embeds ':' -- would escape the
                                           * restore destination if used as-is */
+#define AMISNAP_ERR_ABORTED         -11 /* the caller's own should_abort/break-signal check
+                                          * requested an early, clean stop */
 
 /* A tag's high bit (0x8000) marks it critical -- format.md "TLV encoding". */
 #define AMISNAP_TAG_CRITICAL 0x8000u

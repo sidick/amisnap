@@ -9,6 +9,13 @@
 
 #include "transport.h"
 
+/* SO_RCVTIMEO/SO_SNDTIMEO applied to every socket amisnap_socket_connect()
+ * opens -- see its own comment for why. 60s is generous enough for a
+ * slow object over a real WAN link without being so long that a dead
+ * connection looks indistinguishable from a working one for most of a
+ * backup run. */
+#define AMISNAP_SOCKET_TIMEOUT_SECS 60
+
 /* Opens bsdsocket.library (version 4, Roadshow/AmiTCP's own long-
  * standing baseline -- the inet_aton/getaddrinfo-era API this module
  * uses is well past that floor on any TCP/IP stack actually in use

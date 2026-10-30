@@ -127,6 +127,15 @@ static void record_entry_restored(void *user, const amisnap_entry_meta *entry)
     }
 }
 
+/* opts->user is a size_t* call counter -- aborts on the 3rd call so at
+ * least one entry gets through before the abort, proving this is a
+ * clean early stop rather than refusing to do anything at all. */
+static int should_abort_after_two(void *user)
+{
+    size_t *calls = (size_t *)user;
+    return ++(*calls) > 2;
+}
+
 void run_restore_tests(void)
 {
     amisnap_backend repo, dest;
@@ -346,6 +355,45 @@ void run_restore_tests(void)
             amisnap_backend_close(&udest);
             TEST_CHECK(system("rm -rf " REPODIR "-u " DESTDIR "-u") == 0);
         }
+    }
+
+    /* --- opts->should_abort aborts with AMISNAP_ERR_ABORTED partway
+     * through, leaving fewer than the full set of entries restored --
+     * the hook point an Amiga caller uses for Ctrl-C/Break. A fresh
+     * repo is built for this (not the shared `repo` above, which the
+     * corrupted-object block just above deliberately left with a
+     * corrupt "Sub/nested.txt" object and never repaired -- restoring
+     * from it would hit the pre-flight FULL verify and fail with
+     * AMISNAP_ERR_HASH_MISMATCH before should_abort ever got a
+     * chance to run). --- */
+    {
+        amisnap_backend repo6, dest6;
+        char snapid6[17];
+        amisnap_buf mf6;
+        amisnap_restore_options opts6;
+        amisnap_restore_result r6;
+        size_t calls = 0;
+
+        TEST_CHECK(system("rm -rf " REPODIR "6 " DESTDIR "6") == 0);
+        TEST_CHECK(amisnap_backend_dir_open(REPODIR "6", &repo6) == AMISNAP_OK);
+        TEST_CHECK(amisnap_backend_dir_open(DESTDIR "6", &dest6) == AMISNAP_OK);
+        mf6 = build_and_commit(&repo6, snapid6);
+
+        memset(&opts6, 0, sizeof(opts6));
+        opts6.should_abort = should_abort_after_two;
+        opts6.user = &calls;
+
+        TEST_CHECK(amisnap_restore_manifest(&repo6, &dest6, NULL, AMISNAP_OBJCOMP_RAW, NULL,
+                                             mf6.data, mf6.len, &opts6, &r6) == AMISNAP_ERR_ABORTED);
+        /* The fixture has 6 entries total (root, root.txt, Empty,
+         * Sub, Sub/nested.txt, Sub/empty.txt) -- aborting after 2
+         * means strictly fewer than that were ever created/written. */
+        TEST_CHECK(r6.dirs_created + r6.files_written < 6);
+
+        amisnap_buf_free(&mf6);
+        amisnap_backend_close(&repo6);
+        amisnap_backend_close(&dest6);
+        TEST_CHECK(system("rm -rf " REPODIR "6 " DESTDIR "6") == 0);
     }
 
     amisnap_buf_free(&mf);

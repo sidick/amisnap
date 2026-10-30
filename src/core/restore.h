@@ -63,6 +63,18 @@ typedef struct {
      * portable-core-only restore (e.g. these host tests). */
     void (*on_entry_restored)(void *user, const amisnap_entry_meta *entry);
     void *user;
+
+    /* Optional: polled once per entry during both the content-write
+     * pass and the metadata pass (when on_entry_restored is set).
+     * Returning nonzero aborts the restore immediately with
+     * AMISNAP_ERR_ABORTED -- what's already been written to `dest`
+     * stays (this is a user-requested stop, not a corruption, so
+     * there's nothing to roll back; RESTORE can simply be re-run).
+     * The hook point for an Amiga CheckSignal(SIGBREAKF_CTRL_C) check
+     * -- restore.c has no AmigaOS dependency of its own, so this
+     * stays a plain function pointer rather than calling exec.library
+     * directly. NULL = never abort (e.g. these host tests). */
+    int (*should_abort)(void *user);
 } amisnap_restore_options;
 
 typedef struct {
@@ -109,7 +121,8 @@ typedef struct {
  * `manifest_data` itself never validated, AMISNAP_ERR_NOT_FOUND/
  * AMISNAP_ERR_HASH_MISMATCH from the pre-flight verify or
  * AMISNAP_ERR_UNSAFE_PATH from the path check, both with zero writes
- * performed, or a backend/hash error from partway through -- *result
+ * performed, AMISNAP_ERR_ABORTED if opts->should_abort requested an
+ * early stop, or a backend/hash error from partway through -- *result
  * reflects only what completed before the failure).
  *
  * `manifest_data`/`manifest_len` are the raw manifest FILE bytes (as
