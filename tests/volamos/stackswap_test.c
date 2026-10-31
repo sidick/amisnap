@@ -1,4 +1,5 @@
-/* stackswap_test.c -- Phase 1 item 7's vamos regression test:
+/* stackswap_test.c -- Phase 1 item 7's regression test (originally
+ * run under amitools' vamos, migrated to volamos -- see CLAUDE.md):
  * confirms amisnap_stackswap_run() genuinely swaps to a new stack.
  *
  * Deliberately does NOT test by triggering a real overflow on the
@@ -17,7 +18,8 @@
  *
  * Only exercises stackswap.c itself (AllocMem/FreeMem/StackSwap, all
  * confirmed V36 -- see stackswap.h) -- no ExAll()/Info()/
- * AllocDosObject, so unlike scan.c this genuinely runs under vamos
+ * AllocDosObject, so unlike scan.c this genuinely runs under an
+ * emulator with API-level (not full-system) dos.library coverage
  * (implementation-plan.md's "Stack management" testing section).
  */
 #include <stdio.h>

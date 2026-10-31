@@ -55,7 +55,9 @@ unbuilt.
 - `tests/` -- host-side unit/vector tests (`tests/test.h` harness, same
   shape as sibling AmiAuth's: TEST_CHECK fails the run, TEST_PENDING
   doesn't), plus `tests/cross/` (C<->Python reference-reader
-  cross-check), `tests/vamos/` (m68k binaries run under amitools vamos),
+  cross-check), `tests/volamos/` (m68k binaries run under volamos,
+  Simon's own API-level AmigaOS runtime -- `~/src/volamos`; migrated
+  from amitools' vamos, see implementation-plan.md),
   `tests/webdav/` and `tests/s3/` (container-backed backend tests), and
   `tests/copperline/` (on-target emulator harness; skips honestly,
   exit 0, when the emulator isn't available locally).
@@ -73,7 +75,7 @@ unbuilt.
 
 ```sh
 make test          # host unit/vector tests (default target)
-make test-host     # everything CI runs on the host: test + vamos +
+make test-host     # everything CI runs on the host: test + volamos +
                    #   cross-check + webdav-check + s3-check
 make test-target   # on-target harness (Copperline) + fixtures
 make m68k          # cross-build build/AmiSnap (m68k-amigaos-gcc on PATH)

@@ -80,7 +80,7 @@ AMIGA_GCC_IMAGE ?= ghcr.io/sidick/amiga-dev:1
 # for real in sibling AmiAuth's release rehearsal).
 DOCKER_USER     := --user "$(shell id -u):$(shell id -g)"
 
-.PHONY: all test m68k m68k-docker clean build test-host stackswap-vamos-test cross-check \
+.PHONY: all test m68k m68k-docker clean build test-host stackswap-volamos-test cross-check \
 	copperline-fixtures test-target lint dist version guide
 
 all: test
@@ -91,25 +91,27 @@ all: test
 # own build steps rather than assuming a prior job ran.
 build: m68k
 
-test-host: test stackswap-vamos-test cross-check webdav-check s3-check
+test-host: test stackswap-volamos-test cross-check webdav-check s3-check
 
-# --- stackswap-vamos-test: Phase 1 item 7's vamos regression test ---------
+# --- stackswap-volamos-test: Phase 1 item 7's regression test -------------
 # Confirms amisnap_stackswap_run() genuinely swaps to a new stack -- see
-# tests/vamos/stackswap_test.c's own header for the safe (never
+# tests/volamos/stackswap_test.c's own header for the safe (never
 # deliberately-overflow-triggering) test design, and
 # docs/implementation-plan.md's "Stack management" section for why.
-# Runs directly (no docker wrapping): like sibling AmiAuth's own vamos
-# asm-crypto-tests, this assumes it's running inside the amiga-dev image,
-# which has m68k-amigaos-gcc and vamos on PATH together -- the CI
-# test-host job's actual environment, not a bare host.
-STACKSWAP_TEST_SRC := tests/vamos/stackswap_test.c
+# Runs directly (no docker wrapping): assumes m68k-amigaos-gcc and volamos
+# are both on PATH already -- the actual test-host environment, not a
+# bare host. Originally ran under amitools' vamos; migrated to volamos
+# (~/src/volamos, Simon's own Rust runtime) since it covers this binary's
+# real call surface (dos.library stdio + exec.library AllocMem/FreeMem/
+# StackSwap) with no change to the test itself.
+STACKSWAP_TEST_SRC := tests/volamos/stackswap_test.c
 STACKSWAP_TEST_BIN := $(BUILD)/stackswap-test
 
 $(STACKSWAP_TEST_BIN): $(STACKSWAP_TEST_SRC) src/amiga/stackswap.c src/amiga/stackswap.h | $(BUILD)/.dir
 	$(M68K_CC) $(M68K_CFLAGS) $(STACKSWAP_TEST_SRC) src/amiga/stackswap.c -o $@
 
-stackswap-vamos-test: $(STACKSWAP_TEST_BIN)
-	vamos -C 020 $(STACKSWAP_TEST_BIN)
+stackswap-volamos-test: $(STACKSWAP_TEST_BIN)
+	volamos --cpu 68020 $(STACKSWAP_TEST_BIN)
 
 # --- cross-check: Phase 2's CI cross-implementation check -----------------
 # docs/format.md's own opening line: "the C implementation and the host-

@@ -300,6 +300,35 @@ What "investigate" means before committing effort here:
   "verified" means for vendored/hand-written crypto-adjacent code) for
   what might turn out to be a case that's rarely CPU-bound anyway.
 
+### Host-CI m68k runner: migrated from vamos to volamos (2026-10-30)
+
+`tests/volamos/stackswap_test.c` (formerly `tests/vamos/`) now runs
+under `volamos` (Simon's own Rust API-level AmigaOS runtime,
+`~/src/volamos`) instead of amitools' `vamos` -- `make
+stackswap-volamos-test` (part of `test-host`) invokes `volamos --cpu
+68020 $(STACKSWAP_TEST_BIN)` where it used to invoke `vamos -C 020`.
+No change to the test itself: it only exercises dos.library stdio and
+exec.library `AllocMem`/`FreeMem`/`StackSwap`, all confirmed covered by
+both emulators, and ran clean under volamos exactly as it did under
+vamos (confirmed via a real cross-build + run, both before and after
+the Makefile/path changes).
+
+Deliberately **not** rolled into the shared `ghcr.io/sidick/amiga-dev`
+image -- that stays vamos-only (sibling projects, e.g. AmiAuth, using
+it for their own vamos-based tests are unaffected). `volamos` is
+assumed to already be on PATH wherever `test-host` actually runs, the
+same convention this Makefile already uses for `m68k-amigaos-gcc` and
+previously used for `vamos` itself.
+
+Noted but not acted on here: unlike vamos (confirmed, no bsdsocket.
+library emulation at all), volamos implements a compatible
+bsdsocket.library over real host sockets via its own `--net` flag
+(confirmed by the user) -- `src/amiga/socket.c`'s own header comment
+now tracks this as a real opportunity to genuinely exercise that
+module (today cross-build-verified only) against `tests/webdav/`'s
+existing mini server over real loopback TCP, rather than only
+cross-build-verifying it. Not built yet.
+
 ## Minimum requirements
 
 - **68020, AmigaOS 2.04 (V37), no FPU** (`-m68020 -msoft-float
@@ -3223,17 +3252,27 @@ ClassAct GUI + ARexx, repository mirroring.
   snapshot/restore/prune/verify cycle against the directory backend,
   C↔Python cross-implementation check, and (from phase 3/5) container
   services (WebDAV, MinIO).
-- **Host CI, m68k binaries via vamos:** the cross-built `AmiSnap`
-  binary runs directly under amitools' vamos (already in
-  `ghcr.io/sidick/amiga-dev`, same tool sibling AmiAuth uses for its
-  asm crypto tests, and confirmed to need `-C <cpu>` explicitly) with
-  a controlled stack size -- the stack-swap regression test above, and
-  later the 68k asm crypto paths (phase 4's optimisation work) the
-  same way AmiAuth validates theirs. Confirmed working: `Lock()`/
-  `Examine()`/`Open()`/`Write()`/`Close()`. Confirmed NOT implemented
-  by vamos's own dos.library emulation, so anything needing them is
-  cross-build-verified only until item 8's real on-target harness:
-  `Info()`, `AllocDosObject(DOS_EXALLCONTROL,...)`, `ExAll()`.
+- **Host CI, m68k binaries via volamos (migrated from amitools' vamos,
+  2026-10-30):** small cross-built binaries run directly under
+  `volamos` (Simon's own Rust API-level AmigaOS runtime,
+  `~/src/volamos`, assumed on PATH -- deliberately not added to the
+  shared `ghcr.io/sidick/amiga-dev` image, see "Decisions since the
+  proposal" above) -- the stack-swap regression test today, and
+  potentially later the 68k asm crypto paths (phase 4's optimisation
+  work) the same way AmiAuth validates theirs under vamos. The
+  dos.library coverage facts below were confirmed specifically against
+  **vamos** at the time and have not been re-verified against volamos:
+  confirmed working under vamos: `Lock()`/`Examine()`/`Open()`/
+  `Write()`/`Close()`. Confirmed NOT implemented by vamos's own
+  dos.library emulation, so anything needing them was cross-build-
+  verified only: `Info()`, `AllocDosObject(DOS_EXALLCONTROL,...)`,
+  `ExAll()`. Re-confirming this coverage matrix against volamos (whose
+  dos.library implementation is a different, independent one) is open
+  work, not assumed to match. What *is* newly confirmed for volamos
+  specifically (not vamos, which has none): a compatible
+  bsdsocket.library over real host sockets via `--net` -- see
+  `src/amiga/socket.c`'s own header comment on the resulting, not-yet-
+  built opportunity to genuinely test that module.
 - **On-target (Copperline):** deterministic boot, snapshot inside the
   guest, assert `.uaem` sidecar metadata on the host; deterministic
   `rtc_time` makes "byte-identical repository given identical input" a

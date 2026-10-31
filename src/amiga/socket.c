@@ -21,17 +21,22 @@
  * m68k build only (this file lives in src/amiga/, per the module map) --
  * host CI cannot build or exercise it at all (no bsdsocket.library on a
  * host), so unlike the rest of this codebase's Amiga-side modules there
- * is no cross-build-then-vamos-then-Copperline staged verification story
- * yet: this is cross-build-verified only (compiles and links clean
- * under m68k-amigaos-gcc -noixemul against the real Roadshow headers).
- * vamos has no bsdsocket.library emulation (confirmed: no bsdsocket
- * references anywhere in the vamos skill's own reference material,
- * unlike its partial dos.library coverage) and Copperline's own
- * network-emulation capability is unconfirmed -- genuine on-target
- * verification is deferred to whenever webdav.c (item 3) gives this
- * module something real to connect to and Phase 3 item 5's host-CI
- * WebDAV-container plan clarifies what's actually testable where.
- */
+ * was no cross-build-then-emulator-then-Copperline staged verification
+ * story for a while: this was cross-build-verified only (compiles and
+ * links clean under m68k-amigaos-gcc -noixemul against the real
+ * Roadshow headers). amitools' vamos has no bsdsocket.library emulation
+ * at all (confirmed: no bsdsocket references anywhere in its own
+ * reference material, unlike its partial dos.library coverage), which
+ * was true when this module was first written and is why that gap
+ * existed. volamos (this codebase's host-CI m68k runner since the
+ * vamos->volamos migration, CLAUDE.md) implements a compatible
+ * bsdsocket.library over real host sockets via its own `--net` flag,
+ * covering this file's own socket()/connect()/send()/recv()/
+ * setsockopt() calls -- genuinely running this module against
+ * tests/webdav/'s existing mini_webdav_server.py (or tests/s3/'s
+ * harness) over real loopback TCP, rather than only cross-build-
+ * verifying it, is now a real possibility. Not yet built as an actual
+ * test target -- tracked as a follow-up, not done here. */
 #include <stdlib.h>
 #include <string.h>
 
